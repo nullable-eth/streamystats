@@ -1,6 +1,6 @@
 {
-  "id": "01fae73e-e45d-42b6-abd3-64a1b6c7a857",
-  "prevId": "01deb5f6-724d-4756-84f9-0eda8e9a4808",
+  "id": "a819fdb7-ffbc-43bd-b12e-621c5d08cf16",
+  "prevId": "01fae73e-e45d-42b6-abd3-64a1b6c7a857",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -177,6 +177,27 @@
           "columns": [
             {
               "expression": "server_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "activities_server_date_idx": {
+          "name": "activities_server_date_idx",
+          "columns": [
+            {
+              "expression": "server_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "date",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -660,7 +681,29 @@
           "default": "now()"
         }
       },
-      "indexes": {},
+      "indexes": {
+        "hidden_recommendations_server_user_idx": {
+          "name": "hidden_recommendations_server_user_idx",
+          "columns": [
+            {
+              "expression": "server_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "hidden_recommendations_server_id_servers_id_fk": {
           "name": "hidden_recommendations_server_id_servers_id_fk",
@@ -1277,6 +1320,21 @@
           "method": "btree",
           "with": {}
         },
+        "items_library_id_idx": {
+          "name": "items_library_id_idx",
+          "columns": [
+            {
+              "expression": "library_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "items_search_vector_idx": {
           "name": "items_search_vector_idx",
           "columns": [
@@ -1381,7 +1439,53 @@
           "default": "now()"
         }
       },
-      "indexes": {},
+      "indexes": {
+        "job_results_job_id_idx": {
+          "name": "job_results_job_id_idx",
+          "columns": [
+            {
+              "expression": "job_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "job_results_job_name_idx": {
+          "name": "job_results_job_name_idx",
+          "columns": [
+            {
+              "expression": "job_name",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "job_results_created_at_idx": {
+          "name": "job_results_created_at_idx",
+          "columns": [
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
@@ -1432,7 +1536,23 @@
           "default": "now()"
         }
       },
-      "indexes": {},
+      "indexes": {
+        "libraries_server_id_idx": {
+          "name": "libraries_server_id_idx",
+          "columns": [
+            {
+              "expression": "server_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
       "foreignKeys": {
         "libraries_server_id_servers_id_fk": {
           "name": "libraries_server_id_servers_id_fk",
@@ -2483,6 +2603,21 @@
           "method": "btree",
           "with": {}
         },
+        "sessions_item_id_idx": {
+          "name": "sessions_item_id_idx",
+          "columns": [
+            {
+              "expression": "item_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "sessions_server_created_at_idx": {
           "name": "sessions_server_created_at_idx",
           "columns": [
@@ -3417,10 +3552,10 @@
   },
   "enums": {},
   "schemas": {},
-  "views": {},
   "sequences": {},
   "roles": {},
   "policies": {},
+  "views": {},
   "_meta": {
     "columns": {},
     "schemas": {},
