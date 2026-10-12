@@ -20,9 +20,9 @@ export interface SubtitleCandidate {
 /** A transcript shorter than this is a forced/signs track or a broken file. */
 export const MIN_TRANSCRIPT_WORDS = 150;
 
-const CHUNK_MAX_MS = 60_000;
-const CHUNK_MAX_CHARS = 900;
-const CHUNK_OVERLAP_MS = 10_000;
+const CHUNK_MAX_MS = 120_000;
+const CHUNK_MAX_CHARS = 1_500;
+const CHUNK_OVERLAP_MS = 15_000;
 
 const NOT_DIALOGUE_TITLE = /forced|foreign|signs?\b|songs?\b|commentary/i;
 const ADVERT =
@@ -138,7 +138,7 @@ export function wordCount(cues: Cue[]): number {
 }
 
 /**
- * About a minute of dialogue per window, overlapping by ~10s so a line that
+ * About two minutes of dialogue per window, overlapping by ~15s so a line that
  * straddles a boundary is whole in at least one window.
  */
 export function chunkCues(cues: Cue[]): Cue[] {

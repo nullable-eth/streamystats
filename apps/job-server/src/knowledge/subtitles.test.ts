@@ -62,21 +62,21 @@ describe("rankTranscriptStreams", () => {
 });
 
 describe("chunkCues", () => {
-  const cues = Array.from({ length: 40 }, (_, i) => ({
+  const cues = Array.from({ length: 80 }, (_, i) => ({
     startMs: i * 5000,
     endMs: i * 5000 + 4000,
     text: `line ${i}`,
   }));
 
-  test("windows of about a minute that overlap and cover every cue", () => {
+  test("windows of up to two minutes that overlap and cover every cue", () => {
     const chunks = chunkCues(cues);
     expect(chunks.length).toBeGreaterThan(3);
-    for (const c of chunks) expect(c.endMs - c.startMs).toBeLessThanOrEqual(60_000);
+    for (const c of chunks) expect(c.endMs - c.startMs).toBeLessThanOrEqual(120_000);
     for (let i = 1; i < chunks.length; i++) {
       expect(chunks[i].startMs).toBeLessThan(chunks[i - 1].endMs);
     }
-    expect(chunks.at(-1)?.text.endsWith("line 39")).toBe(true);
-    expect(wordCount(cues)).toBe(80);
+    expect(chunks.at(-1)?.text.endsWith("line 79")).toBe(true);
+    expect(wordCount(cues)).toBe(160);
   });
 
   test("always makes progress on a single huge cue", () => {
