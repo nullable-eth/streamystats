@@ -41,10 +41,17 @@ import {
   type EmbeddingProvider,
   getEmbeddingProgressAction,
   saveEmbeddingConfigAction,
+  setEmbeddingItemTypesAction,
   startEmbeddingAction,
   stopEmbeddingAction,
   toggleAutoEmbeddingsAction,
 } from "./embedding-actions";
+
+const TYPE_LABELS: Record<string, string> = {
+  Movie: "Movies",
+  Series: "Series",
+  Episode: "Episodes",
+};
 
 // Presets for common embedding providers
 const PROVIDER_PRESETS = {
@@ -181,6 +188,7 @@ export function EmbeddingsManager({ server }: { server: ServerPublic }) {
     server.autoGenerateEmbeddings || false,
   );
   const [isUpdatingAutoEmbed, setIsUpdatingAutoEmbed] = useState(false);
+  const [isSavingTypes, setIsSavingTypes] = useState(false);
 
   const {
     data: progress,
@@ -332,6 +340,27 @@ export function EmbeddingsManager({ server }: { server: ServerPublic }) {
     } finally {
       setIsClearing(false);
       setShowClearDialog(false);
+    }
+  };
+
+  const handleToggleType = async (type: string, on: boolean) => {
+    const current = (progress?.byType ?? [])
+      .filter((t) => t.enabled)
+      .map((t) => t.type);
+    const next = on
+      ? [...new Set<string>([...current, type])]
+      : current.filter((t) => t !== type);
+    setIsSavingTypes(true);
+    try {
+      await setEmbeddingItemTypesAction(server.id, next);
+      await refetch();
+      toast.success(
+        `${TYPE_LABELS[type] ?? type} ${on ? "will be" : "will no longer be"} embedded`,
+      );
+    } catch {
+      toast.error("Failed to update which items are embedded");
+    } finally {
+      setIsSavingTypes(false);
     }
   };
 
@@ -544,8 +573,8 @@ export function EmbeddingsManager({ server }: { server: ServerPublic }) {
                 Status: {getStatusText(progress?.status ?? "idle")}
               </span>
               <span className="text-sm text-gray-400">
-                {progress?.processed ?? 0} of {progress?.total ?? 0} items
-                embedded
+                {(progress?.embedded ?? 0).toLocaleString()} of{" "}
+                {(progress?.total ?? 0).toLocaleString()} items embedded
                 {(progress?.total ?? 0) > 0
                   ? ` (${(progress?.percentage ?? 0).toFixed(1)}%)`
                   : ""}
@@ -553,6 +582,34 @@ export function EmbeddingsManager({ server }: { server: ServerPublic }) {
             </div>
 
             <Progress value={progress?.percentage ?? 0} className="h-2" />
+
+            <div className="space-y-2">
+              {(progress?.byType ?? []).map((t) => (
+                <div
+                  key={t.type}
+                  className="flex items-center justify-between gap-4 text-sm"
+                >
+                  <div className="flex items-center gap-3">
+                    <Switch
+                      id={`embed-type-${t.type}`}
+                      checked={t.enabled}
+                      disabled={isSavingTypes}
+                      onCheckedChange={(on) => handleToggleType(t.type, on)}
+                    />
+                    <Label htmlFor={`embed-type-${t.type}`}>
+                      {TYPE_LABELS[t.type]}
+                    </Label>
+                  </div>
+                  <span className="text-gray-400">
+                    {t.embedded.toLocaleString()} of {t.total.toLocaleString()}{" "}
+                    embedded
+                    {t.refreshing > 0
+                      ? ` · ${t.refreshing.toLocaleString()} refreshing with new plots`
+                      : ""}
+                  </span>
+                </div>
+              ))}
+            </div>
 
             <div className="flex gap-2 mt-4">
               <Button

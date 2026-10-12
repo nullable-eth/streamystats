@@ -2,6 +2,7 @@ import "server-only";
 
 import {
   db,
+  EMBEDDABLE_ITEM_TYPES,
   embeddableItemCondition,
   items,
   jobResults,
@@ -308,10 +309,23 @@ export const clearEmbeddings = async ({ serverId }: { serverId: number }) => {
   }
 };
 
-export interface EmbeddingProgress {
+export interface EmbeddingTypeProgress {
+  type: (typeof EMBEDDABLE_ITEM_TYPES)[number];
+  enabled: boolean;
   total: number;
-  processed: number;
+  /** Items that have an embedding (refreshing ones included). */
+  embedded: number;
+  /** Embedded, but queued to be re-embedded (e.g. a new synopsis). */
+  refreshing: number;
+}
+
+export interface EmbeddingProgress {
+  /** Totals over the enabled types only. */
+  total: number;
+  embedded: number;
+  refreshing: number;
   percentage: number;
+  byType: EmbeddingTypeProgress[];
   status: string;
   existingDimension: number | null;
 }
@@ -354,27 +368,41 @@ export const getEmbeddingProgress = async ({
   serverId: number;
 }): Promise<EmbeddingProgress> => {
   try {
-    // Items that get an embedding (movies, series, episodes in the library)
-    const totalResult = await db
-      .select({ count: count() })
+    // Per type, so the counts stay put while synopses re-queue items: an
+    // item keeps counting as embedded while it waits to be refreshed.
+    const [serverRow] = await db
+      .select({ types: servers.embeddingItemTypes })
+      .from(servers)
+      .where(eq(servers.id, serverId))
+      .limit(1);
+    const enabledTypes: readonly string[] =
+      serverRow?.types ?? EMBEDDABLE_ITEM_TYPES;
+    const rows = await db
+      .select({
+        type: items.type,
+        total: count(),
+        embedded: count(items.embedding),
+        refreshing: sql<number>`count(*) filter (where ${items.embedding} is not null and ${items.processed} = false)::int`,
+      })
       .from(items)
-      .where(and(eq(items.serverId, serverId), embeddableItemCondition()));
+      .where(and(eq(items.serverId, serverId), embeddableItemCondition()))
+      .groupBy(items.type);
 
-    const total = totalResult[0]?.count || 0;
-
-    // Of those, the ones already embedded
-    const processedResult = await db
-      .select({ count: count() })
-      .from(items)
-      .where(
-        and(
-          eq(items.serverId, serverId),
-          eq(items.processed, true),
-          embeddableItemCondition(),
-        ),
-      );
-
-    const processed = processedResult[0]?.count || 0;
+    const byType = EMBEDDABLE_ITEM_TYPES.map((type) => {
+      const row = rows.find((r) => r.type === type);
+      return {
+        type,
+        enabled: enabledTypes.includes(type),
+        total: row?.total ?? 0,
+        embedded: row?.embedded ?? 0,
+        refreshing: row?.refreshing ?? 0,
+      };
+    });
+    const enabled = byType.filter((t) => t.enabled);
+    const total = enabled.reduce((n, t) => n + t.total, 0);
+    const embedded = enabled.reduce((n, t) => n + t.embedded, 0);
+    const refreshing = enabled.reduce((n, t) => n + t.refreshing, 0);
+    const processed = embedded - refreshing;
 
     // Check if there's an active embedding job
     const recentJob = await db
@@ -435,15 +463,17 @@ export const getEmbeddingProgress = async ({
       }
     }
 
-    const percentage = total > 0 ? (processed / total) * 100 : 0;
+    const percentage = total > 0 ? (embedded / total) * 100 : 0;
 
     // Get existing embedding dimension
     const existingDimension = await getExistingEmbeddingDimension({ serverId });
 
     return {
       total,
-      processed,
+      embedded,
+      refreshing,
       percentage,
+      byType,
       status,
       existingDimension,
     };
@@ -614,6 +644,21 @@ export const stopEmbedding = async ({ serverId }: { serverId: number }) => {
         : "Failed to stop embedding process",
     );
   }
+};
+
+/** Which item types get an item embedding (subset of EMBEDDABLE_ITEM_TYPES). */
+export const setEmbeddingItemTypes = async ({
+  serverId,
+  types,
+}: {
+  serverId: number;
+  types: string[];
+}) => {
+  const allowed: readonly string[] = EMBEDDABLE_ITEM_TYPES;
+  await db
+    .update(servers)
+    .set({ embeddingItemTypes: types.filter((t) => allowed.includes(t)) })
+    .where(eq(servers.id, serverId));
 };
 
 export const toggleAutoEmbeddings = async ({

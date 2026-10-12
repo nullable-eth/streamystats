@@ -953,7 +953,10 @@ export async function generateItemEmbeddingsJob(
 
       // Check if we should continue (manual start or auto-embeddings enabled)
       const serverCheck = await db
-        .select({ autoGenerateEmbeddings: servers.autoGenerateEmbeddings })
+        .select({
+          autoGenerateEmbeddings: servers.autoGenerateEmbeddings,
+          embeddingItemTypes: servers.embeddingItemTypes,
+        })
         .from(servers)
         .where(eq(servers.id, serverId))
         .limit(1);
@@ -974,7 +977,7 @@ export async function generateItemEmbeddingsJob(
           and(
             eq(items.serverId, serverId),
             eq(items.processed, false),
-            embeddableItemCondition()
+            embeddableItemCondition(serverCheck[0]?.embeddingItemTypes)
           )
         )
         .limit(ITEMS_PER_BATCH);

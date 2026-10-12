@@ -166,6 +166,17 @@ export const servers = pgTable(
       .notNull()
       .default(false),
 
+    // Which item types get an item embedding, and which get transcripts and
+    // synopses. Admin-selectable: episodes are most of a typical library.
+    embeddingItemTypes: text("embedding_item_types")
+      .array()
+      .notNull()
+      .default(["Movie", "Series", "Episode"]),
+    knowledgeItemTypes: text("knowledge_item_types")
+      .array()
+      .notNull()
+      .default(["Movie", "Episode"]),
+
     // Display timezone for this server (IANA timezone identifier)
     // All data is stored in UTC; this controls display formatting only
     timezone: text("timezone").notNull().default("Etc/UTC"),
