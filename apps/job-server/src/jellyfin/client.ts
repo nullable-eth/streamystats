@@ -361,6 +361,7 @@ export class JellyfinClient {
       timeoutMs?: number;
       signal?: AbortSignal;
       retries?: number;
+      responseType?: "json" | "text";
     }
   ): Promise<T> {
     const timeoutMs = options?.timeoutMs ?? this.config.timeout;
@@ -375,6 +376,7 @@ export class JellyfinClient {
           data: options?.data,
           timeout: timeoutMs,
           signal: options?.signal,
+          responseType: options?.responseType,
         })
       );
       return response.data;
@@ -774,6 +776,40 @@ export class JellyfinClient {
       if (parsed.pageSize === 0 || offset >= parsed.total) break;
     }
     return reviews;
+  }
+
+  /**
+   * The media source an item plays by default (its first), with its streams.
+   * External subtitle files (e.g. Bazarr's sidecars) appear here alongside
+   * embedded tracks.
+   */
+  async getPrimaryMediaSource(
+    itemId: string
+  ): Promise<{ id: string; streams: unknown[] } | null> {
+    const item = await this.request<{ MediaSources?: unknown[] }>(
+      "get",
+      `/Items/${itemId}`,
+      { params: { Fields: "MediaSources" } }
+    );
+    const source = item.MediaSources?.[0];
+    if (!isRecord(source) || typeof source.Id !== "string") return null;
+    return {
+      id: source.Id,
+      streams: Array.isArray(source.MediaStreams) ? source.MediaStreams : [],
+    };
+  }
+
+  /** A text subtitle stream converted to SRT by Jellyfin. */
+  async getSubtitleSrt(
+    itemId: string,
+    mediaSourceId: string,
+    streamIndex: number
+  ): Promise<string> {
+    return this.request<string>(
+      "get",
+      `/Videos/${itemId}/${mediaSourceId}/Subtitles/${streamIndex}/Stream.srt`,
+      { responseType: "text", timeoutMs: 120_000 }
+    );
   }
 
   // Helper method to create client from server configuration

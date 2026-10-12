@@ -4,6 +4,7 @@ import {
   type Item,
   itemPeople,
   items,
+  itemTexts,
   people,
   servers,
 } from "@streamystats/database";
@@ -284,6 +285,8 @@ async function ensureEmbeddingIndex(dimensions: number): Promise<void> {
 async function prepareEpisodeTextForEmbedding(item: Item): Promise<string> {
   const parts: string[] = [`Title: ${item.name}`, "Type: Episode"];
   if (item.overview) parts.push(`Overview: ${item.overview}`);
+  const plot = await getPlot(item.id);
+  if (plot) parts.push(`Plot: ${plot}`);
 
   let genres = item.genres ?? [];
   if (genres.length === 0 && item.seriesId) {
@@ -298,6 +301,25 @@ async function prepareEpisodeTextForEmbedding(item: Item): Promise<string> {
   if (item.tags?.length) parts.push(`Tags: ${item.tags.join(", ")}`);
 
   return parts.join("\n").substring(0, DEFAULT_MAX_TEXT_LENGTH);
+}
+
+/**
+ * The knowledge index's synopsis for an item, when one has been written. It
+ * gives the item vector the whole story rather than a two-line blurb.
+ */
+async function getPlot(itemId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ content: itemTexts.content })
+    .from(itemTexts)
+    .where(
+      and(
+        eq(itemTexts.itemId, itemId),
+        eq(itemTexts.kind, "synopsis"),
+        eq(itemTexts.status, "ready")
+      )
+    )
+    .limit(1);
+  return row?.content || null;
 }
 
 /**
@@ -316,6 +338,8 @@ async function prepareTextForEmbedding(item: Item, serverId: number): Promise<st
   if (item.seriesName) parts.push(`Series: ${item.seriesName}`);
   if (item.type) parts.push(`Type: ${item.type}`);
   if (item.overview) parts.push(`Overview: ${item.overview}`);
+  const plot = await getPlot(item.id);
+  if (plot) parts.push(`Plot: ${plot}`);
   if (item.genres?.length) parts.push(`Genres: ${item.genres.join(", ")}`);
   if (item.tags?.length) parts.push(`Tags: ${item.tags.join(", ")}`);
   if (item.productionYear) parts.push(`Year: ${item.productionYear}`);

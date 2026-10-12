@@ -27,6 +27,7 @@ import {
   securityFullSyncJob,
   SECURITY_SYNC_JOB_NAME,
 } from "./security-sync-job";
+import { KNOWLEDGE_INDEX_JOB_NAME, knowledgeIndexJob } from "./knowledge-jobs";
 import {
   schedulerMaintenanceWorker,
   SCHEDULER_MAINTENANCE_JOB_NAME,
@@ -132,6 +133,7 @@ async function createQueues(boss: PgBoss) {
     GEOLOCATION_JOB_NAMES.CALCULATE_FINGERPRINTS,
     GEOLOCATION_JOB_NAMES.BACKFILL_LOCATIONS,
     SECURITY_SYNC_JOB_NAME,
+    KNOWLEDGE_INDEX_JOB_NAME,
     BACKFILL_JOB_NAMES.BACKFILL_JELLYFIN_IDS,
     INFER_WATCHTIME_JOB_NAME,
     SCHEDULER_MAINTENANCE_JOB_NAME,
@@ -171,6 +173,9 @@ async function registerJobHandlers(boss: PgBoss) {
 
   // Register security sync job
   await boss.work(SECURITY_SYNC_JOB_NAME, DEFAULT_WORK_OPTIONS, firstJob(securityFullSyncJob));
+
+  // Register knowledge index job (subtitle transcripts + synopses)
+  await boss.work(KNOWLEDGE_INDEX_JOB_NAME, DEFAULT_WORK_OPTIONS, firstJob(knowledgeIndexJob));
 
   // Register backfill jobs
   await boss.work(BACKFILL_JOB_NAMES.BACKFILL_JELLYFIN_IDS, DEFAULT_WORK_OPTIONS, firstJob(backfillJellyfinIdsJob));

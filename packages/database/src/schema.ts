@@ -14,6 +14,7 @@ import {
   customType,
   primaryKey,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 // Custom vector type that supports variable dimensions
 // This allows storing embeddings of any size without hardcoding dimensions
@@ -156,6 +157,12 @@ export const servers = pgTable(
 
     // Embedding job control - set to true to stop a running embedding job
     embeddingStopRequested: boolean("embedding_stop_requested")
+      .notNull()
+      .default(false),
+
+    // Knowledge index: transcripts from library subtitles, chunked and
+    // embedded, plus a chat-model synopsis folded into each item's embedding.
+    knowledgeIndexEnabled: boolean("knowledge_index_enabled")
       .notNull()
       .default(false),
 
@@ -506,6 +513,68 @@ export const mediaSources = pgTable(
   (table) => [
     index("media_sources_item_id_idx").on(table.itemId),
     index("media_sources_server_id_idx").on(table.serverId),
+  ]
+);
+
+// Full texts behind the knowledge index, one row per item and kind:
+// "transcript" (cleaned dialogue from a library subtitle track) or
+// "synopsis" (written by the chat model from the transcript). status
+// "missing" records that no usable subtitle existed when last checked, so the
+// item is retried later instead of on every run.
+export const itemTexts = pgTable(
+  "item_texts",
+  {
+    id: serial("id").primaryKey(),
+    serverId: integer("server_id")
+      .notNull()
+      .references(() => servers.id, { onDelete: "cascade" }),
+    itemId: text("item_id")
+      .notNull()
+      .references(() => items.id, { onDelete: "cascade" }),
+    kind: text("kind").notNull(), // "transcript" | "synopsis"
+    status: text("status").notNull(), // "ready" | "missing"
+    // transcript: the subtitle stream it was read from; synopsis: the
+    // transcript hash it was written from. A change means rebuild.
+    source: text("source"),
+    content: text("content").notNull().default(""),
+    contentHash: text("content_hash"),
+    checkedAt: timestamp("checked_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    unique("item_texts_item_kind_unique").on(table.itemId, table.kind),
+    index("item_texts_server_kind_idx").on(table.serverId, table.kind),
+  ]
+);
+
+// Searchable windows of a transcript: ~1 minute of dialogue each, with
+// timestamps, an embedding (HNSW index created per dimension at runtime, as
+// for items.embedding) and a generated tsvector for exact-quote search.
+export const itemTextChunks = pgTable(
+  "item_text_chunks",
+  {
+    id: serial("id").primaryKey(),
+    itemTextId: integer("item_text_id")
+      .notNull()
+      .references(() => itemTexts.id, { onDelete: "cascade" }),
+    serverId: integer("server_id")
+      .notNull()
+      .references(() => servers.id, { onDelete: "cascade" }),
+    itemId: text("item_id")
+      .notNull()
+      .references(() => items.id, { onDelete: "cascade" }),
+    startMs: integer("start_ms").notNull(),
+    endMs: integer("end_ms").notNull(),
+    text: text("text").notNull(),
+    embedding: vector("embedding"),
+    searchVector: tsvector("search_vector").generatedAlwaysAs(
+      sql`to_tsvector('english', text)`
+    ),
+  },
+  (table) => [
+    index("item_text_chunks_item_idx").on(table.itemId),
+    index("item_text_chunks_server_idx").on(table.serverId),
+    index("item_text_chunks_search_idx").using("gin", table.searchVector),
   ]
 );
 
@@ -1218,6 +1287,9 @@ export type NewJobResult = typeof jobResults.$inferInsert;
 
 export type Item = typeof items.$inferSelect;
 export type NewItem = typeof items.$inferInsert;
+
+export type ItemText = typeof itemTexts.$inferSelect;
+export type ItemTextChunk = typeof itemTextChunks.$inferSelect;
 
 export type MediaSource = typeof mediaSources.$inferSelect;
 export type NewMediaSource = typeof mediaSources.$inferInsert;

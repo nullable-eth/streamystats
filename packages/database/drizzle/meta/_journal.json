@@ -330,6 +330,13 @@
       "when": 1791809603955,
       "tag": "0046_recommendation_profiles",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1791842904310,
+      "tag": "0047_knowledge_index",
+      "breakpoints": true
     }
   ]
 }

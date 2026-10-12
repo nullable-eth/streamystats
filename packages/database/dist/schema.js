@@ -1,7 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.itemPeopleRelations = exports.peopleRelations = exports.watchlistItemsRelations = exports.watchlistsRelations = exports.hiddenRecommendationsRelations = exports.anomalyEventsRelations = exports.userFingerprintsRelations = exports.activityLocationsRelations = exports.sessionsRelations = exports.itemsRelations = exports.activitiesRelations = exports.usersRelations = exports.librariesRelations = exports.serverJobConfigurationsRelations = exports.serversRelations = exports.watchlistItems = exports.watchlists = exports.itemPeople = exports.people = exports.anomalyEvents = exports.userFingerprints = exports.activityLocations = exports.userItemRatings = exports.userRecommendationProfiles = exports.hiddenRecommendations = exports.activityLogCursors = exports.activeSessions = exports.sessions = exports.mediaSources = exports.items = exports.serverJobConfigurations = exports.jobResults = exports.activities = exports.users = exports.libraries = exports.servers = void 0;
+exports.itemPeopleRelations = exports.peopleRelations = exports.watchlistItemsRelations = exports.watchlistsRelations = exports.hiddenRecommendationsRelations = exports.anomalyEventsRelations = exports.userFingerprintsRelations = exports.activityLocationsRelations = exports.sessionsRelations = exports.itemsRelations = exports.activitiesRelations = exports.usersRelations = exports.librariesRelations = exports.serverJobConfigurationsRelations = exports.serversRelations = exports.watchlistItems = exports.watchlists = exports.itemPeople = exports.people = exports.anomalyEvents = exports.userFingerprints = exports.activityLocations = exports.userItemRatings = exports.userRecommendationProfiles = exports.hiddenRecommendations = exports.activityLogCursors = exports.activeSessions = exports.sessions = exports.itemTextChunks = exports.itemTexts = exports.mediaSources = exports.items = exports.serverJobConfigurations = exports.jobResults = exports.activities = exports.users = exports.libraries = exports.servers = void 0;
 const pg_core_1 = require("drizzle-orm/pg-core");
+const drizzle_orm_1 = require("drizzle-orm");
 // Custom vector type that supports variable dimensions
 // This allows storing embeddings of any size without hardcoding dimensions
 const vector = (0, pg_core_1.customType)({
@@ -32,7 +33,7 @@ const tsvector = (0, pg_core_1.customType)({
         return value;
     },
 });
-const drizzle_orm_1 = require("drizzle-orm");
+const drizzle_orm_2 = require("drizzle-orm");
 // =============================================================================
 // Tables
 // =============================================================================
@@ -85,6 +86,11 @@ exports.servers = (0, pg_core_1.pgTable)("servers", {
     excludedLibraryIds: (0, pg_core_1.text)("excluded_library_ids").array().default([]),
     // Embedding job control - set to true to stop a running embedding job
     embeddingStopRequested: (0, pg_core_1.boolean)("embedding_stop_requested")
+        .notNull()
+        .default(false),
+    // Knowledge index: transcripts from library subtitles, chunked and
+    // embedded, plus a chat-model synopsis folded into each item's embedding.
+    knowledgeIndexEnabled: (0, pg_core_1.boolean)("knowledge_index_enabled")
         .notNull()
         .default(false),
     // Display timezone for this server (IANA timezone identifier)
@@ -371,6 +377,56 @@ exports.mediaSources = (0, pg_core_1.pgTable)("media_sources", {
 }, (table) => [
     (0, pg_core_1.index)("media_sources_item_id_idx").on(table.itemId),
     (0, pg_core_1.index)("media_sources_server_id_idx").on(table.serverId),
+]);
+// Full texts behind the knowledge index, one row per item and kind:
+// "transcript" (cleaned dialogue from a library subtitle track) or
+// "synopsis" (written by the chat model from the transcript). status
+// "missing" records that no usable subtitle existed when last checked, so the
+// item is retried later instead of on every run.
+exports.itemTexts = (0, pg_core_1.pgTable)("item_texts", {
+    id: (0, pg_core_1.serial)("id").primaryKey(),
+    serverId: (0, pg_core_1.integer)("server_id")
+        .notNull()
+        .references(() => exports.servers.id, { onDelete: "cascade" }),
+    itemId: (0, pg_core_1.text)("item_id")
+        .notNull()
+        .references(() => exports.items.id, { onDelete: "cascade" }),
+    kind: (0, pg_core_1.text)("kind").notNull(), // "transcript" | "synopsis"
+    status: (0, pg_core_1.text)("status").notNull(), // "ready" | "missing"
+    // transcript: the subtitle stream it was read from; synopsis: the
+    // transcript hash it was written from. A change means rebuild.
+    source: (0, pg_core_1.text)("source"),
+    content: (0, pg_core_1.text)("content").notNull().default(""),
+    contentHash: (0, pg_core_1.text)("content_hash"),
+    checkedAt: (0, pg_core_1.timestamp)("checked_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: (0, pg_core_1.timestamp)("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+    (0, pg_core_1.unique)("item_texts_item_kind_unique").on(table.itemId, table.kind),
+    (0, pg_core_1.index)("item_texts_server_kind_idx").on(table.serverId, table.kind),
+]);
+// Searchable windows of a transcript: ~1 minute of dialogue each, with
+// timestamps, an embedding (HNSW index created per dimension at runtime, as
+// for items.embedding) and a generated tsvector for exact-quote search.
+exports.itemTextChunks = (0, pg_core_1.pgTable)("item_text_chunks", {
+    id: (0, pg_core_1.serial)("id").primaryKey(),
+    itemTextId: (0, pg_core_1.integer)("item_text_id")
+        .notNull()
+        .references(() => exports.itemTexts.id, { onDelete: "cascade" }),
+    serverId: (0, pg_core_1.integer)("server_id")
+        .notNull()
+        .references(() => exports.servers.id, { onDelete: "cascade" }),
+    itemId: (0, pg_core_1.text)("item_id")
+        .notNull()
+        .references(() => exports.items.id, { onDelete: "cascade" }),
+    startMs: (0, pg_core_1.integer)("start_ms").notNull(),
+    endMs: (0, pg_core_1.integer)("end_ms").notNull(),
+    text: (0, pg_core_1.text)("text").notNull(),
+    embedding: vector("embedding"),
+    searchVector: tsvector("search_vector").generatedAlwaysAs((0, drizzle_orm_1.sql) `to_tsvector('english', text)`),
+}, (table) => [
+    (0, pg_core_1.index)("item_text_chunks_item_idx").on(table.itemId),
+    (0, pg_core_1.index)("item_text_chunks_server_idx").on(table.serverId),
+    (0, pg_core_1.index)("item_text_chunks_search_idx").using("gin", table.searchVector),
 ]);
 // Sessions table - user sessions and playback information
 exports.sessions = (0, pg_core_1.pgTable)("sessions", {
@@ -721,7 +777,7 @@ exports.watchlistItems = (0, pg_core_1.pgTable)("watchlist_items", {
     (0, pg_core_1.unique)("watchlist_items_unique").on(table.watchlistId, table.itemId),
 ]);
 // Define relationships
-exports.serversRelations = (0, drizzle_orm_1.relations)(exports.servers, ({ many }) => ({
+exports.serversRelations = (0, drizzle_orm_2.relations)(exports.servers, ({ many }) => ({
     libraries: many(exports.libraries),
     users: many(exports.users),
     activities: many(exports.activities),
@@ -735,20 +791,20 @@ exports.serversRelations = (0, drizzle_orm_1.relations)(exports.servers, ({ many
     itemPeople: many(exports.itemPeople),
     jobConfigurations: many(exports.serverJobConfigurations),
 }));
-exports.serverJobConfigurationsRelations = (0, drizzle_orm_1.relations)(exports.serverJobConfigurations, ({ one }) => ({
+exports.serverJobConfigurationsRelations = (0, drizzle_orm_2.relations)(exports.serverJobConfigurations, ({ one }) => ({
     server: one(exports.servers, {
         fields: [exports.serverJobConfigurations.serverId],
         references: [exports.servers.id],
     }),
 }));
-exports.librariesRelations = (0, drizzle_orm_1.relations)(exports.libraries, ({ one, many }) => ({
+exports.librariesRelations = (0, drizzle_orm_2.relations)(exports.libraries, ({ one, many }) => ({
     server: one(exports.servers, {
         fields: [exports.libraries.serverId],
         references: [exports.servers.id],
     }),
     items: many(exports.items),
 }));
-exports.usersRelations = (0, drizzle_orm_1.relations)(exports.users, ({ one, many }) => ({
+exports.usersRelations = (0, drizzle_orm_2.relations)(exports.users, ({ one, many }) => ({
     server: one(exports.servers, {
         fields: [exports.users.serverId],
         references: [exports.servers.id],
@@ -758,7 +814,7 @@ exports.usersRelations = (0, drizzle_orm_1.relations)(exports.users, ({ one, man
     fingerprints: many(exports.userFingerprints),
     anomalyEvents: many(exports.anomalyEvents),
 }));
-exports.activitiesRelations = (0, drizzle_orm_1.relations)(exports.activities, ({ one, many }) => ({
+exports.activitiesRelations = (0, drizzle_orm_2.relations)(exports.activities, ({ one, many }) => ({
     server: one(exports.servers, {
         fields: [exports.activities.serverId],
         references: [exports.servers.id],
@@ -770,7 +826,7 @@ exports.activitiesRelations = (0, drizzle_orm_1.relations)(exports.activities, (
     location: one(exports.activityLocations),
     anomalyEvents: many(exports.anomalyEvents),
 }));
-exports.itemsRelations = (0, drizzle_orm_1.relations)(exports.items, ({ one, many }) => ({
+exports.itemsRelations = (0, drizzle_orm_2.relations)(exports.items, ({ one, many }) => ({
     server: one(exports.servers, {
         fields: [exports.items.serverId],
         references: [exports.servers.id],
@@ -788,7 +844,7 @@ exports.itemsRelations = (0, drizzle_orm_1.relations)(exports.items, ({ one, man
     watchlistItems: many(exports.watchlistItems),
     itemPeople: many(exports.itemPeople),
 }));
-exports.sessionsRelations = (0, drizzle_orm_1.relations)(exports.sessions, ({ one, many }) => ({
+exports.sessionsRelations = (0, drizzle_orm_2.relations)(exports.sessions, ({ one, many }) => ({
     server: one(exports.servers, {
         fields: [exports.sessions.serverId],
         references: [exports.servers.id],
@@ -802,13 +858,13 @@ exports.sessionsRelations = (0, drizzle_orm_1.relations)(exports.sessions, ({ on
         references: [exports.items.id],
     }),
 }));
-exports.activityLocationsRelations = (0, drizzle_orm_1.relations)(exports.activityLocations, ({ one }) => ({
+exports.activityLocationsRelations = (0, drizzle_orm_2.relations)(exports.activityLocations, ({ one }) => ({
     activity: one(exports.activities, {
         fields: [exports.activityLocations.activityId],
         references: [exports.activities.id],
     }),
 }));
-exports.userFingerprintsRelations = (0, drizzle_orm_1.relations)(exports.userFingerprints, ({ one }) => ({
+exports.userFingerprintsRelations = (0, drizzle_orm_2.relations)(exports.userFingerprints, ({ one }) => ({
     user: one(exports.users, {
         fields: [exports.userFingerprints.userId],
         references: [exports.users.id],
@@ -818,7 +874,7 @@ exports.userFingerprintsRelations = (0, drizzle_orm_1.relations)(exports.userFin
         references: [exports.servers.id],
     }),
 }));
-exports.anomalyEventsRelations = (0, drizzle_orm_1.relations)(exports.anomalyEvents, ({ one }) => ({
+exports.anomalyEventsRelations = (0, drizzle_orm_2.relations)(exports.anomalyEvents, ({ one }) => ({
     user: one(exports.users, {
         fields: [exports.anomalyEvents.userId],
         references: [exports.users.id],
@@ -832,7 +888,7 @@ exports.anomalyEventsRelations = (0, drizzle_orm_1.relations)(exports.anomalyEve
         references: [exports.activities.id],
     }),
 }));
-exports.hiddenRecommendationsRelations = (0, drizzle_orm_1.relations)(exports.hiddenRecommendations, ({ one }) => ({
+exports.hiddenRecommendationsRelations = (0, drizzle_orm_2.relations)(exports.hiddenRecommendations, ({ one }) => ({
     server: one(exports.servers, {
         fields: [exports.hiddenRecommendations.serverId],
         references: [exports.servers.id],
@@ -842,14 +898,14 @@ exports.hiddenRecommendationsRelations = (0, drizzle_orm_1.relations)(exports.hi
         references: [exports.items.id],
     }),
 }));
-exports.watchlistsRelations = (0, drizzle_orm_1.relations)(exports.watchlists, ({ one, many }) => ({
+exports.watchlistsRelations = (0, drizzle_orm_2.relations)(exports.watchlists, ({ one, many }) => ({
     server: one(exports.servers, {
         fields: [exports.watchlists.serverId],
         references: [exports.servers.id],
     }),
     items: many(exports.watchlistItems),
 }));
-exports.watchlistItemsRelations = (0, drizzle_orm_1.relations)(exports.watchlistItems, ({ one }) => ({
+exports.watchlistItemsRelations = (0, drizzle_orm_2.relations)(exports.watchlistItems, ({ one }) => ({
     watchlist: one(exports.watchlists, {
         fields: [exports.watchlistItems.watchlistId],
         references: [exports.watchlists.id],
@@ -859,14 +915,14 @@ exports.watchlistItemsRelations = (0, drizzle_orm_1.relations)(exports.watchlist
         references: [exports.items.id],
     }),
 }));
-exports.peopleRelations = (0, drizzle_orm_1.relations)(exports.people, ({ one, many }) => ({
+exports.peopleRelations = (0, drizzle_orm_2.relations)(exports.people, ({ one, many }) => ({
     server: one(exports.servers, {
         fields: [exports.people.serverId],
         references: [exports.servers.id],
     }),
     itemPeople: many(exports.itemPeople),
 }));
-exports.itemPeopleRelations = (0, drizzle_orm_1.relations)(exports.itemPeople, ({ one }) => ({
+exports.itemPeopleRelations = (0, drizzle_orm_2.relations)(exports.itemPeople, ({ one }) => ({
     item: one(exports.items, {
         fields: [exports.itemPeople.itemId],
         references: [exports.items.id],

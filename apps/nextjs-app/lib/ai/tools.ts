@@ -11,6 +11,7 @@ import {
   ilike,
   inArray,
   isNotNull,
+  isNull,
   sql,
 } from "drizzle-orm";
 import { z } from "zod";
@@ -29,6 +30,11 @@ import {
   getSimilarStatistics,
 } from "@/lib/db/similar-statistics";
 import { getMostWatchedItems } from "@/lib/db/statistics";
+import {
+  formatTimestamp,
+  getMatchedItems,
+  searchTranscripts,
+} from "@/lib/db/transcript-search";
 import {
   getUserStatsSummaryForServer,
   getUsers,
@@ -85,6 +91,18 @@ function formatItem(
     };
   }
   return base;
+}
+
+/** Series, season and episode for an episode, so results name the show. */
+function episodeOf(
+  item: Pick<Item, "type" | "seriesName" | "parentIndexNumber" | "indexNumber">,
+) {
+  if (item.type !== "Episode") return {};
+  const pad = (n: number | null) => String(n ?? 0).padStart(2, "0");
+  return {
+    series: item.seriesName,
+    episode: `S${pad(item.parentIndexNumber)}E${pad(item.indexNumber)}`,
+  };
 }
 
 function getHolidayHintScore(item: Item): number {
@@ -1075,16 +1093,16 @@ export function createChatTools(
 
     searchLibraryBySemanticQuery: tool({
       description:
-        "Semantic search across the user's library using embeddings. Use this for theme-based queries like 'Christmas movie I have', 'cozy winter movie', or 'something like a heist thriller'. Returns items from the library ranked by semantic similarity.",
+        "Semantic search across the user's library using embeddings. Use this for theme-based queries like 'Christmas movie I have', 'cozy winter movie', or 'something like a heist thriller', and for identifying a title from a vague description of its plot. Where a plot synopsis has been indexed it is part of each item's embedding, so describe the story in plain words. Use type 'all' when it is unclear whether it was a movie, a series or a single episode. Returns items from the library ranked by semantic similarity.",
       inputSchema: z.object({
         query: z
           .string()
           .describe("What the user is looking for (theme/query)"),
         type: z
-          .enum(["Movie", "Series", "all"])
+          .enum(["Movie", "Series", "Episode", "all"])
           .optional()
           .default("Movie")
-          .describe("Filter by item type"),
+          .describe("Filter by item type ('all' includes episodes)"),
         limit: z.number().optional().default(10).describe("Number of results"),
       }),
       execute: async ({
@@ -1093,7 +1111,7 @@ export function createChatTools(
         limit,
       }: {
         query: string;
-        type: "Movie" | "Series" | "all";
+        type: "Movie" | "Series" | "Episode" | "all";
         limit: number;
       }) => {
         const embed = await embedTextForServer({
@@ -1157,13 +1175,14 @@ export function createChatTools(
 
         const conditions = [
           eq(items.serverId, serverId),
+          isNull(items.deletedAt),
           isNotNull(items.embedding),
           dimensionFilter,
         ];
         if (type !== "all") {
           conditions.push(eq(items.type, type));
         } else {
-          conditions.push(inArray(items.type, ["Movie", "Series"]));
+          conditions.push(inArray(items.type, ["Movie", "Series", "Episode"]));
         }
 
         const candidates = await db
@@ -1194,6 +1213,7 @@ export function createChatTools(
         return {
           items: ranked.map((r) => ({
             ...formatItem(r.item),
+            ...episodeOf(r.item),
             similarityPercent: Math.round(r.similarity * 100),
             reason: `Semantic match for "${query}"`,
           })),
@@ -1202,6 +1222,43 @@ export function createChatTools(
               ? `Found ${ranked.length} semantically similar items for "${query}"`
               : `No items found for "${query}" (embeddings search)`,
           usedEmbeddings: true,
+        };
+      },
+    }),
+
+    searchTranscripts: tool({
+      description:
+        "Search the dialogue of every movie and episode in the library (indexed from their subtitles). Use it to find which title has a remembered line or quote, or a scene the user half-remembers (what was said, names mentioned, a situation). Put exact remembered wording in double quotes for a phrase match. Returns titles with the matching moments and their timestamps.",
+      inputSchema: z.object({
+        query: z
+          .string()
+          .describe("Remembered line, quote or description of the scene"),
+        limit: z.number().optional().default(8).describe("Number of titles"),
+      }),
+      execute: async ({ query, limit }: { query: string; limit: number }) => {
+        const embed = await embedTextForServer({ serverId, text: query });
+        const matches = await searchTranscripts({
+          serverId,
+          userId,
+          query,
+          embedding: embed.ok ? embed.embedding : null,
+          limit,
+        });
+        const matched = await getMatchedItems(matches.map((m) => m.itemId));
+        const moments = new Map(matches.map((m) => [m.itemId, m.moments]));
+        return {
+          items: matched.map((item) => ({
+            ...formatItem(item),
+            ...episodeOf(item),
+            moments: (moments.get(item.id) ?? []).map((m) => ({
+              at: formatTimestamp(m.startMs),
+              dialogue: m.text,
+            })),
+          })),
+          message:
+            matched.length > 0
+              ? `Found ${matched.length} titles whose dialogue matches "${query}"`
+              : `No dialogue matches "${query}". Transcripts exist only for titles with a full text subtitle, once the knowledge index has run.`,
         };
       },
     }),

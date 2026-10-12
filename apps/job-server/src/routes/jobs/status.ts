@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { getJobQueue, JobTypes, latestQueueStats } from "../../jobs/queue";
 import { JELLYFIN_JOB_NAMES } from "../../jellyfin/workers";
+import { KNOWLEDGE_INDEX_JOB_NAME } from "../../jobs/knowledge-jobs";
 import {
   db,
   servers,
@@ -64,6 +65,12 @@ app.get("/servers/:serverId/status", async (c) => {
         label: "Embeddings",
         name: JobTypes.GENERATE_ITEM_EMBEDDINGS,
         category: "foreground",
+      },
+      {
+        key: KNOWLEDGE_INDEX_JOB_NAME,
+        label: "Knowledge index",
+        name: KNOWLEDGE_INDEX_JOB_NAME,
+        category: "background",
       },
       {
         key: "jellyfin-full-sync",
