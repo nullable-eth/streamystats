@@ -786,12 +786,14 @@ export class JellyfinClient {
   async getPrimaryMediaSource(
     itemId: string
   ): Promise<{ id: string; streams: unknown[] } | null> {
-    const item = await this.request<{ MediaSources?: unknown[] }>(
+    // The item query, not /Items/{id}: with a server API key and no user,
+    // Jellyfin 10.11 answers /Items/{id} with 400.
+    const page = await this.request<{ Items?: Array<{ MediaSources?: unknown[] }> }>(
       "get",
-      `/Items/${itemId}`,
-      { params: { Fields: "MediaSources" } }
+      "/Items",
+      { params: { ids: itemId, fields: "MediaSources", enableImages: false } }
     );
-    const source = item.MediaSources?.[0];
+    const source = page.Items?.[0]?.MediaSources?.[0];
     if (!isRecord(source) || typeof source.Id !== "string") return null;
     return {
       id: source.Id,
