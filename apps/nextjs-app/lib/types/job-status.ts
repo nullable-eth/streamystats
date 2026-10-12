@@ -36,4 +36,5 @@ export const JOB_NAME_TO_KEY: Record<string, string> = {
   "jellyfin-people-sync": "jellyfin-people-sync",
   "jellyfin-ratings-sync": "jellyfin-ratings-sync",
   "generate-item-embeddings": "generate-item-embeddings",
+  "knowledge-index-sync": "knowledge-index-sync",
 };

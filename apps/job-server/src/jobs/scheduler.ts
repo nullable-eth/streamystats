@@ -14,6 +14,7 @@ import { GEOLOCATION_JOB_NAMES } from "./geolocation-jobs";
 import { BACKFILL_JOB_NAMES } from "./server-jobs";
 import { cancelJobsByName } from "../routes/jobs/utils";
 import { SCHEDULER_MAINTENANCE_JOB_NAME } from "./scheduler-maintenance";
+import { KNOWLEDGE_INDEX_JOB_NAME } from "./knowledge-jobs";
 
 interface ServerJobConfig {
   cronExpression: string | null;
@@ -73,6 +74,11 @@ const SCHEDULER_JOB_CONFIG: Record<JobKey, {
     pgBossName: "generate-item-embeddings",
     buildData: (serverId) => ({ serverId, batchSize: 50 }),
     sendOptions: SEND_OPTIONS.MEDIUM,
+  },
+  "knowledge-sync": {
+    pgBossName: KNOWLEDGE_INDEX_JOB_NAME,
+    buildData: (serverId) => ({ serverId }),
+    sendOptions: SEND_OPTIONS.LONG,
   },
   "full-sync": {
     pgBossName: JELLYFIN_JOB_NAMES.FULL_SYNC,
@@ -884,6 +890,7 @@ class SyncScheduler {
         peopleSync: getDefaultCron("people-sync"),
         ratingsSync: getDefaultCron("ratings-sync"),
         embeddingsSync: getDefaultCron("embeddings-sync"),
+        knowledgeSync: getDefaultCron("knowledge-sync"),
         geolocationSync: getDefaultCron("geolocation-sync"),
         fingerprintSync: getDefaultCron("fingerprint-sync"),
         jobCleanup: getDefaultCron("job-cleanup"),

@@ -11,6 +11,7 @@ export const CRON_JOB_KEYS = [
   "people-sync",
   "ratings-sync",
   "embeddings-sync",
+  "knowledge-sync",
   "geolocation-sync",
   "fingerprint-sync",
   "job-cleanup",
@@ -95,6 +96,15 @@ export const JOB_DEFAULTS: Record<JobKey, JobDefaultConfig> = {
     type: "cron",
     label: "Embeddings Sync",
     description: "Generates AI embeddings for media items",
+    defaultCron: "*/15 * * * *",
+    category: "ai",
+  },
+  "knowledge-sync": {
+    key: "knowledge-sync",
+    type: "cron",
+    label: "Knowledge Index",
+    description:
+      "Indexes subtitle transcripts and writes plot synopses (when enabled in AI settings)",
     defaultCron: "*/15 * * * *",
     category: "ai",
   },
