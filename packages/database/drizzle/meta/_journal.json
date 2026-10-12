@@ -323,6 +323,13 @@
       "when": 1791809208686,
       "tag": "0045_user_item_ratings",
       "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1791809603955,
+      "tag": "0046_recommendation_profiles",
+      "breakpoints": true
     }
   ]
 }
