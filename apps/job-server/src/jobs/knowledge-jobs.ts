@@ -5,6 +5,7 @@ import {
   itemTexts,
   items,
   type ItemText,
+  KNOWLEDGE_ITEM_TYPES,
   servers,
 } from "@streamystats/database";
 import { and, eq, sql } from "drizzle-orm";
@@ -74,12 +75,19 @@ function titleOf(item: DueItem): string {
 }
 
 /**
- * Movies and episodes that need work: never looked at; no usable subtitle a
+ * Selected movies/episodes that need work: never looked at; no usable subtitle a
  * day ago (Bazarr may have fetched one since); a weekly re-check for upgraded
  * subtitles; or, with a chat model, a synopsis missing or written from an
  * older transcript.
  */
-async function dueItems(serverId: number, withSynopses: boolean): Promise<DueItem[]> {
+async function dueItems(
+  serverId: number,
+  types: readonly string[],
+  withSynopses: boolean
+): Promise<DueItem[]> {
+  const allowed: readonly string[] = KNOWLEDGE_ITEM_TYPES;
+  const selected = types.filter((t) => allowed.includes(t));
+  if (selected.length === 0) return [];
   const rows = await db.execute<DueItem>(sql`
     SELECT i.id, i.name, i.type, i.series_name, i.parent_index_number,
            i.index_number, i.production_year, i.overview
@@ -88,7 +96,7 @@ async function dueItems(serverId: number, withSynopses: boolean): Promise<DueIte
     LEFT JOIN item_texts s ON s.item_id = i.id AND s.kind = 'synopsis'
     WHERE i.server_id = ${serverId}
       AND i.deleted_at IS NULL
-      AND i.type IN ('Movie', 'Episode')
+      AND i.type IN ${selected}
       AND (
         t.id IS NULL
         OR (t.status <> 'ready' AND t.checked_at < now() - interval '1 day')
@@ -274,7 +282,7 @@ export async function knowledgeIndexJob(job: PgBossJob<ServerIdJobData>) {
   console.info(`[knowledge] serverId=${serverId} action=start synopses=${chat ? chat.model : "off"}`);
   try {
     while (Date.now() - startTime < RUN_BUDGET_MS) {
-      const batch = await dueItems(serverId, chat !== null);
+      const batch = await dueItems(serverId, server.knowledgeItemTypes, chat !== null);
       if (batch.length === 0) break;
       for (const item of batch) {
         try {

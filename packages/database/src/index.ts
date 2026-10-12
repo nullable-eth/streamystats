@@ -15,7 +15,11 @@ export * from "./schema";
 // Export job defaults
 export * from "./job-defaults";
 
-export { embeddableItemCondition } from "./embeddable";
+export {
+  EMBEDDABLE_ITEM_TYPES,
+  embeddableItemCondition,
+  KNOWLEDGE_ITEM_TYPES,
+} from "./embeddable";
 
 // Export migration utilities
 export { migrate } from "./migrate";

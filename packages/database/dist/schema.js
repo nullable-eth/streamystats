@@ -93,6 +93,16 @@ exports.servers = (0, pg_core_1.pgTable)("servers", {
     knowledgeIndexEnabled: (0, pg_core_1.boolean)("knowledge_index_enabled")
         .notNull()
         .default(false),
+    // Which item types get an item embedding, and which get transcripts and
+    // synopses. Admin-selectable: episodes are most of a typical library.
+    embeddingItemTypes: (0, pg_core_1.text)("embedding_item_types")
+        .array()
+        .notNull()
+        .default(["Movie", "Series", "Episode"]),
+    knowledgeItemTypes: (0, pg_core_1.text)("knowledge_item_types")
+        .array()
+        .notNull()
+        .default(["Movie", "Episode"]),
     // Display timezone for this server (IANA timezone identifier)
     // All data is stored in UTC; this controls display formatting only
     timezone: (0, pg_core_1.text)("timezone").notNull().default("Etc/UTC"),

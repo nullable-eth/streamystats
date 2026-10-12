@@ -30,6 +30,7 @@ import {
   getSimilarStatistics,
 } from "@/lib/db/similar-statistics";
 import { getMostWatchedItems } from "@/lib/db/statistics";
+import { lookupSynopsis } from "@/lib/db/synopsis-lookup";
 import {
   formatTimestamp,
   getMatchedItems,
@@ -1222,6 +1223,55 @@ export function createChatTools(
               ? `Found ${ranked.length} semantically similar items for "${query}"`
               : `No items found for "${query}" (embeddings search)`,
           usedEmbeddings: true,
+        };
+      },
+    }),
+
+    getPlotSynopsis: tool({
+      description:
+        "Get the full plot synopsis (spoilers included) of a movie, or of one episode of a series in the library. For a series, it defaults to the series' last episode; pass season to get that season's last episode, or season and episode for a specific one, or position 'first'. Use it to answer how something ends, whether a series or season ends on a cliffhanger, or to recap an episode before the user resumes a show. Only reveal endings when the user asked about them.",
+      inputSchema: z.object({
+        title: z.string().describe("Movie or series name"),
+        season: z.number().optional().describe("Season number"),
+        episode: z
+          .number()
+          .optional()
+          .describe("Episode number within the season"),
+        position: z
+          .enum(["first", "last"])
+          .optional()
+          .default("last")
+          .describe("Which episode when no episode number is given"),
+      }),
+      execute: async ({
+        title,
+        season,
+        episode,
+        position,
+      }: {
+        title: string;
+        season?: number;
+        episode?: number;
+        position: "first" | "last";
+      }) => {
+        const found = await lookupSynopsis({
+          serverId,
+          userId,
+          title,
+          season,
+          episode,
+          position,
+        });
+        if (!found) {
+          return {
+            message: `Nothing in the library matches "${title}"${season ? ` season ${season}` : ""}${episode ? ` episode ${episode}` : ""}.`,
+          };
+        }
+        return {
+          ...found,
+          message: found.synopsis
+            ? "Synopsis written from the episode's subtitles; it may simplify or get minor details wrong."
+            : "No synopsis has been indexed for this item yet (it needs a full subtitle); only the spoiler-free overview is available.",
         };
       },
     }),
