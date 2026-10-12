@@ -11,6 +11,8 @@ export interface KnowledgeIndexStatus {
   total: number;
   transcripts: number;
   synopses: number;
+  /** Movies and episodes the job has looked at so far (any outcome). */
+  checked: number;
   /** Checked, but no full text subtitle: Bazarr's to-do list. */
   missing: number;
   missingExamples: string[];
@@ -85,6 +87,9 @@ export async function getKnowledgeIndexStatus(
     total,
     transcripts: count("transcript", "ready"),
     synopses: count("synopsis", "ready"),
+    checked: counts
+      .filter((c) => c.kind === "transcript")
+      .reduce((sum, c) => sum + c.n, 0),
     missing: count("transcript", "missing"),
     missingExamples: examples.map((e) =>
       e.seriesName
