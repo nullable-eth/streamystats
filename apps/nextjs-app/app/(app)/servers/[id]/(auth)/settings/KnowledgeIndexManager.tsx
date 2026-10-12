@@ -98,18 +98,22 @@ export function KnowledgeIndexManager({
           ))}
         </div>
 
-        {status.missing > 0 && (
-          <div className="space-y-1 text-sm">
-            <p>
-              {status.missing.toLocaleString()} items have no full text
-              subtitle. Add one with Bazarr and they are picked up within a day.
-            </p>
+        <div className="space-y-1 text-sm">
+          <p>
+            Checked {status.checked.toLocaleString()} of{" "}
+            {status.total.toLocaleString()} so far.
+            {status.missing > 0 &&
+              ` ${status.missing.toLocaleString()} of them ${
+                status.missing === 1 ? "has" : "have"
+              } no full text subtitle yet; they are checked again daily, so a subtitle Bazarr adds later is picked up.`}
+          </p>
+          {status.missing > 0 && (
             <p className="text-muted-foreground">
               {status.missingExamples.join(" · ")}
               {status.missing > status.missingExamples.length ? " …" : ""}
             </p>
-          </div>
-        )}
+          )}
+        </div>
       </CardContent>
     </Card>
   );
