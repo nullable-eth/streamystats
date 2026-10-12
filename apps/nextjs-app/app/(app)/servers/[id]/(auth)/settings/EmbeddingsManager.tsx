@@ -364,7 +364,7 @@ export function EmbeddingsManager({ server }: { server: ServerPublic }) {
       case "starting":
         return "Starting embedding process...";
       case "processing":
-        return "Generating embeddings for movies and series...";
+        return "Generating embeddings for movies, series and episodes...";
       case "completed":
         return "All requested items have embeddings";
       case "failed":
@@ -538,7 +538,7 @@ export function EmbeddingsManager({ server }: { server: ServerPublic }) {
           <Separator />
 
           <div className="space-y-4">
-            <h3 className="text-sm font-medium">Movie Embeddings</h3>
+            <h3 className="text-sm font-medium">Media Embeddings</h3>
             <div className="flex justify-between mb-2">
               <span className="text-sm font-medium">
                 Status: {getStatusText(progress?.status ?? "idle")}
