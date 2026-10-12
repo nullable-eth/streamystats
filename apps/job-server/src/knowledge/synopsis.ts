@@ -1,7 +1,6 @@
 import { db, servers } from "@streamystats/database";
 import axios from "axios";
 import { eq } from "drizzle-orm";
-import OpenAI from "openai";
 
 /**
  * Plot synopses written by the server's configured chat model from an item's
@@ -30,6 +29,18 @@ export async function getChatSettings(serverId: number): Promise<ChatSettings | 
     .from(servers)
     .where(eq(servers.id, serverId))
     .limit(1);
+  // Optional override for the synopsis model only, e.g. a plain
+  // OpenAI-compatible endpoint when the chat model sits behind an agent
+  // gateway that would narrate instead of answering. Defaults to AI Chat.
+  const { KNOWLEDGE_SYNOPSIS_BASE_URL: url, KNOWLEDGE_SYNOPSIS_MODEL: model } = process.env;
+  if (url) {
+    return {
+      provider: "openai-compatible",
+      baseUrl: url,
+      apiKey: process.env.KNOWLEDGE_SYNOPSIS_API_KEY || s?.apiKey || null,
+      model: model || s?.model || "default",
+    };
+  }
   if (!s?.provider || !s.model) return null;
   return { provider: s.provider, baseUrl: s.baseUrl, apiKey: s.apiKey, model: s.model };
 }
@@ -52,15 +63,20 @@ export function synopsisPrompt(title: string, overview: string | null, transcrip
     "Write the complete plot synopsis of this title in 200-400 words of plain prose.",
     "Name the setting, the main characters, what happens, every twist and how it ends.",
     "Use only what the transcript and overview support; never invent events.",
-    "Reply with the synopsis only: no heading, no preamble, no notes.",
+    "Reply with the synopsis between <synopsis> and </synopsis>, nothing else.",
   ]
     .filter((line) => line !== null)
     .join("\n");
 }
 
-/** Reasoning models may prefix their answer with a thinking block. */
-export function stripThinking(text: string): string {
-  return text.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+/**
+ * The synopsis itself: drops a reasoning model's thinking block and any
+ * chatter around the <synopsis> tags (agent gateways like to narrate).
+ */
+export function extractSynopsis(text: string): string {
+  const answer = text.replace(/<think>[\s\S]*?<\/think>/gi, "");
+  const tagged = /<synopsis>([\s\S]*?)(?:<\/synopsis>|$)/i.exec(answer);
+  return (tagged ? tagged[1] : answer).trim();
 }
 
 async function complete(chat: ChatSettings, prompt: string): Promise<string> {
@@ -94,17 +110,23 @@ async function complete(chat: ChatSettings, prompt: string): Promise<string> {
     }
     default: {
       // "openai-compatible" and "ollama" (its OpenAI-compatible /v1 API).
-      const client = new OpenAI({
-        apiKey: chat.apiKey || "not-needed",
-        baseURL: base || (chat.provider === "ollama" ? "http://localhost:11434/v1" : undefined),
-        timeout: TIMEOUT_MS,
-        maxRetries: 1,
-      });
-      const res = await client.chat.completions.create({
-        model: chat.model,
-        messages: [{ role: "user", content: prompt }],
-      });
-      return res.choices[0]?.message?.content ?? "";
+      // A synopsis needs no reasoning: ask templates that support it (Qwen3,
+      // llama.cpp, vLLM) to skip thinking, which otherwise costs thousands of
+      // tokens per item. Servers that reject the extra field get a plain retry.
+      const url = `${base || (chat.provider === "ollama" ? "http://localhost:11434/v1" : "https://api.openai.com/v1")}/chat/completions`;
+      const headers = chat.apiKey ? { Authorization: `Bearer ${chat.apiKey}` } : {};
+      const body = { model: chat.model, messages: [{ role: "user", content: prompt }] };
+      const post = (extra: object) =>
+        axios.post(url, { ...body, ...extra }, { headers, timeout: TIMEOUT_MS });
+      const res = await post({ chat_template_kwargs: { enable_thinking: false } }).catch(
+        (error: unknown) => {
+          const status = axios.isAxiosError(error) ? error.response?.status : undefined;
+          if (status === 400 || status === 422) return post({});
+          throw error;
+        }
+      );
+      const content: unknown = res.data?.choices?.[0]?.message?.content;
+      return typeof content === "string" ? content : "";
     }
   }
 }
@@ -122,7 +144,7 @@ export async function writeSynopsis(
   let lastError: unknown;
   for (const maxChars of [FULL_CHARS, SHORT_CHARS]) {
     try {
-      const text = stripThinking(
+      const text = extractSynopsis(
         await complete(chat, synopsisPrompt(title, overview, fitTranscript(transcript, maxChars)))
       );
       if (text.split(/\s+/).length >= 50) return text;
