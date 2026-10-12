@@ -354,7 +354,7 @@ export const getEmbeddingProgress = async ({
   serverId: number;
 }): Promise<EmbeddingProgress> => {
   try {
-    // Get total count of movies and series for this server
+    // Items that get an embedding (movies, series, episodes in the library)
     const totalResult = await db
       .select({ count: count() })
       .from(items)
@@ -362,7 +362,7 @@ export const getEmbeddingProgress = async ({
 
     const total = totalResult[0]?.count || 0;
 
-    // Get count of processed movies and series
+    // Of those, the ones already embedded
     const processedResult = await db
       .select({ count: count() })
       .from(items)
