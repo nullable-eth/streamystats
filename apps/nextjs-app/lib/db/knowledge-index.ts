@@ -119,7 +119,9 @@ export async function getKnowledgeIndexStatus(
       total: totals.find((t) => t.type === type)?.n ?? 0,
       checked: count(type, "transcript"),
       transcripts: count(type, "transcript", "ready"),
-      synopses: count(type, "synopsis", "ready"),
+      // Written together with the scene notes; a synopsis from before scene
+      // notes is rewritten with them.
+      synopses: count(type, "scenes", "ready"),
       missing: count(type, "transcript", "missing"),
     })),
     missing: summarizeMissing(missingRows),

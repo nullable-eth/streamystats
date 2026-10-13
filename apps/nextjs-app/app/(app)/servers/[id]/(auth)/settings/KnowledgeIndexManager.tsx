@@ -90,10 +90,11 @@ export function KnowledgeIndexManager({
           (external subtitle files, such as those from your subtitle downloader,
           or embedded text tracks) and embeds the dialogue, so the AI chat can
           find titles from a remembered line or scene. With a chat model
-          configured, it also writes a plot synopsis from each transcript and
-          adds it to the item&apos;s embedding, which sharpens plot search and
-          recommendations, and lets the chat answer how an episode or series
-          ends. Forced and image-based subtitles are skipped.
+          configured, it also writes the plot from each transcript, scene by
+          scene with times, and a synopsis that is added to the item&apos;s
+          embedding, which sharpens plot search and recommendations, lets the
+          chat answer how an episode or series ends, and finds when something
+          happens. Forced and image-based subtitles are skipped.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">

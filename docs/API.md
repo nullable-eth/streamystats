@@ -278,11 +278,14 @@ curl "https://streamystats.example.com/api/search?q=astronauts%20operate%20repli
 
 `mode=plot` finds titles from what happens in them rather than their names:
 "the one where two astronauts operate replica bodies back on Earth", or a
-line someone remembers. It ranks two things together and returns the best
-items:
+line someone remembers. It ranks three things together and returns the
+best items:
 
 - **Item embeddings**: each movie, series and episode's overview and
   details, plus its plot synopsis once the knowledge index has written one.
+- **Plot**: the synopsis, whole and by paragraph, and the scene notes (the
+  plot part by part, as the knowledge index writes it from the transcript),
+  so a single plot point can match.
 - **Transcripts**: the dialogue of every movie and episode with a full text
   subtitle, by meaning and by exact wording (quote a phrase for an exact
   match).
@@ -295,10 +298,10 @@ nothing. Results are limited to the libraries the user can see, and only
 titles are returned, never synopsis text, so the response is spoiler-free.
 The response formats are the same as title search.
 
-A title found through its dialogue also says where: in the `full` format its
-`metadata` has `momentMs` (milliseconds into the title where the matching
-line, or the two-minute window it is in, starts) and `momentPrecision`
-(`line` or `window`). A client can start playback there; Jellyfin starts an
+A title found through its dialogue or its scene notes also says where: in
+the `full` format its `metadata` has `momentMs` (milliseconds into the title
+where the matching line, or the dialogue window or scene it is in, starts)
+and `momentPrecision` (`line` or `window`). A client can start playback there; Jellyfin starts an
 item at a position with `POST /Sessions/{sessionId}/Playing?playCommand=PlayNow&itemIds={id}&startPositionTicks={momentMs * 10000}`.
 To find moments in one title, use [GET /api/moments](#get-apimoments).
 
@@ -331,11 +334,14 @@ playback at that point.
 | `limit` | integer | No | 3 | Moments to return, best first (1-10) |
 
 Moments come from the title's transcript (the knowledge index reads it from
-the library's subtitles), ranked by exact wording and by meaning, and each is
-located to the line of dialogue that matches. They cover what is said: a
-scene nobody talks in has no moment, and titles without a transcript return
-none. Lines are timed for transcripts indexed since line timings were kept;
-older ones give the start of the two-minute window until their next check.
+the library's subtitles) and its scene notes (the plot, written from the
+transcript a few minutes at a time, each part with its times), ranked by
+exact wording and by meaning, and each is located to the line of dialogue
+that matches within it. They come from what is said: a scene nobody talks
+in has no moment, and titles without a transcript return none. Lines are
+timed for transcripts indexed since line timings were kept; older ones, and
+a scene with no line matching the query, give the start of the window (two
+minutes of dialogue, or the scene).
 
 #### Response
 
@@ -360,7 +366,7 @@ older ones give the start of the two-minute window until their next check.
 |-------|------|-------------|
 | `itemId` | string | The movie or episode (for a series, the episode it is in) |
 | `startMs` | integer | When the matching line starts, in milliseconds; the window's start when `precision` is `window` |
-| `endMs` | integer | When the dialogue window ends |
+| `endMs` | integer | When the window (dialogue, or scene) ends |
 | `precision` | string | `line` or `window` |
 | `line` | string | The matching dialogue (two subtitle lines when it runs over a break); null for `window` |
 

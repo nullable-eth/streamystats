@@ -26,8 +26,13 @@ import {
 } from "../knowledge/subtitles";
 import {
   type ChatSettings,
+  formatScenes,
   getChatSettings,
+  parseScenes,
+  sceneWindows,
   synopsisWindows,
+  transcriptParts,
+  writeScenes,
   writeSynopsis,
 } from "../knowledge/synopsis";
 import type { PgBossJob, ServerIdJobData } from "../types/job-status";
@@ -110,7 +115,8 @@ function titleOf(item: DueItem): string {
  * Selected movies/episodes that need work: never looked at; no usable subtitle a
  * day ago (a subtitle downloader may have fetched one since); a weekly re-check for upgraded
  * subtitles; a transcript indexed before line timings were kept; or, with a
- * chat model, a synopsis missing or written from an older transcript.
+ * chat model, scene notes (and the synopsis written with them) missing or
+ * written from an older transcript.
  */
 async function dueItems(
   serverId: number,
@@ -125,7 +131,7 @@ async function dueItems(
            i.index_number, i.production_year, i.overview
     FROM items i
     LEFT JOIN item_texts t ON t.item_id = i.id AND t.kind = 'transcript'
-    LEFT JOIN item_texts s ON s.item_id = i.id AND s.kind = 'synopsis'
+    LEFT JOIN item_texts s ON s.item_id = i.id AND s.kind = 'scenes'
     WHERE i.server_id = ${serverId}
       AND i.deleted_at IS NULL
       AND i.type IN ${selected}
@@ -274,25 +280,36 @@ async function indexTranscript(
   return "indexed";
 }
 
-/** The synopsis as search windows (see synopsisWindows), replacing any it had. */
-async function indexSynopsisWindows(
+type PlotText = { id: number; itemId: string; kind: string; content: string };
+
+/**
+ * A plot text as search windows of the plot ranking, replacing any it had:
+ * the synopsis whole and by paragraph (see synopsisWindows), or each part of
+ * the scene notes with its times.
+ */
+async function indexPlotWindows(
   serverId: number,
   embedding: EmbeddingSettings,
-  synopsis: { id: number; itemId: string; content: string },
+  text: PlotText,
   title: string
 ): Promise<void> {
-  const windows = synopsisWindows(title, synopsis.content);
-  const vectors = await embedAll(embedding, windows, "synopsis");
+  const windows =
+    text.kind === "scenes"
+      ? sceneWindows(title, parseScenes(text.content))
+      : synopsisWindows(title, text.content).map((w) => ({ text: w, startMs: null, endMs: null }));
+  const vectors = await embedAll(embedding, windows.map((w) => w.text), "synopsis");
   await db.transaction(async (tx) => {
-    await tx.delete(itemTextChunks).where(eq(itemTextChunks.itemTextId, synopsis.id));
+    await tx.delete(itemTextChunks).where(eq(itemTextChunks.itemTextId, text.id));
     if (windows.length === 0) return;
     await tx.insert(itemTextChunks).values(
-      windows.map((text, i) => ({
-        itemTextId: synopsis.id,
+      windows.map((w, i) => ({
+        itemTextId: text.id,
         serverId,
-        itemId: synopsis.itemId,
+        itemId: text.itemId,
         kind: "synopsis",
-        text,
+        startMs: w.startMs,
+        endMs: w.endMs,
+        text: w.text,
         embedding: vectors[i],
       }))
     );
@@ -300,9 +317,10 @@ async function indexSynopsisWindows(
 }
 
 /**
- * Write the synopsis and re-queue the item for embedding, so the plot becomes
- * part of the item vector that search and recommendations already use; then
- * index it as search windows of its own.
+ * Write the scene notes and the synopsis summarised from them, and re-queue
+ * the item for embedding, so the plot becomes part of the item vector that
+ * search and recommendations already use; then index both as search windows
+ * of their own.
  */
 async function indexSynopsis(
   serverId: number,
@@ -311,49 +329,59 @@ async function indexSynopsis(
   item: DueItem
 ): Promise<boolean> {
   const transcript = await getText(item.id, "transcript");
-  if (transcript?.status !== "ready" || !transcript.contentHash) return false;
-  const synopsis = await getText(item.id, "synopsis");
-  if (synopsis?.status === "ready" && synopsis.source === transcript.contentHash) return false;
+  if (transcript?.status !== "ready" || !transcript.contentHash || !transcript.cueStartsMs) return false;
+  const previous = await getText(item.id, "scenes");
+  if (previous?.status === "ready" && previous.source === transcript.contentHash) return false;
 
-  let saved: { id: number; content: string };
+  const title = titleOf(item);
+  const saved: PlotText[] = [];
   try {
-    const content = await writeSynopsis(chat, titleOf(item), item.overview, transcript.content);
-    const id = await saveText(serverId, item.id, "synopsis", {
-      status: "ready",
-      source: transcript.contentHash,
-      content,
-      contentHash: hash(content),
-    });
+    const parts = transcriptParts(transcript.content.split("\n"), transcript.cueStartsMs);
+    const scenes = await writeScenes(chat, title, item.overview, parts);
+    const synopsis = await writeSynopsis(chat, title, item.overview, scenes);
+    for (const [kind, content] of [
+      ["scenes", formatScenes(scenes)],
+      ["synopsis", synopsis],
+    ] as const) {
+      const id = await saveText(serverId, item.id, kind, {
+        status: "ready",
+        source: transcript.contentHash,
+        content,
+        contentHash: hash(content),
+      });
+      saved.push({ id, itemId: item.id, kind, content });
+    }
     await db.update(items).set({ processed: false }).where(eq(items.id, item.id));
-    saved = { id, content };
   } catch (error) {
     // Back off a day rather than retrying a failing model every run.
-    await saveText(serverId, item.id, "synopsis", { status: "missing" });
+    await saveText(serverId, item.id, "scenes", { status: "missing" });
     throw error;
   }
 
-  try {
-    await indexSynopsisWindows(serverId, embedding, { ...saved, itemId: item.id }, titleOf(item));
-  } catch (error) {
-    // The synopsis stands; the backlog pass retries its windows.
-    console.warn(
-      `[knowledge] serverId=${serverId} item=${item.id} synopsis windows: ${error instanceof Error ? error.message : String(error)}`
-    );
+  for (const text of saved) {
+    try {
+      await indexPlotWindows(serverId, embedding, text, title);
+    } catch (error) {
+      // The text stands; the backlog pass retries its windows.
+      console.warn(
+        `[knowledge] serverId=${serverId} item=${item.id} ${text.kind} windows: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
   }
   return true;
 }
 
-type SynopsisRow = DueItem & { synopsis_id: number; content: string };
+type PlotTextRow = DueItem & { text_id: number; kind: string; content: string };
 
-/** Synopses without search windows: written before they existed, or their embedding failed. */
-async function synopsesWithoutWindows(serverId: number): Promise<SynopsisRow[]> {
-  const rows = await db.execute<SynopsisRow>(sql`
-    SELECT s.id AS synopsis_id, s.content, i.id, i.name, i.type, i.series_name,
+/** Plot texts without search windows: written before they existed, or their embedding failed. */
+async function plotTextsWithoutWindows(serverId: number): Promise<PlotTextRow[]> {
+  const rows = await db.execute<PlotTextRow>(sql`
+    SELECT s.id AS text_id, s.kind, s.content, i.id, i.name, i.type, i.series_name,
            i.parent_index_number, i.index_number, i.production_year, i.overview
     FROM item_texts s
     JOIN items i ON i.id = s.item_id
     WHERE s.server_id = ${serverId}
-      AND s.kind = 'synopsis'
+      AND s.kind IN ('synopsis', 'scenes')
       AND s.status = 'ready'
       AND btrim(s.content) <> ''
       AND i.deleted_at IS NULL
@@ -387,16 +415,16 @@ export async function knowledgeIndexJob(job: PgBossJob<ServerIdJobData>) {
     `[knowledge] serverId=${serverId} action=start synopses=${chat ? chat.model : "off"} language=${languages.join("/")}`
   );
   try {
-    // Synopses still without search windows: embedding only, no model calls.
+    // Plot texts still without search windows: embedding only, no model calls.
     backlog: while (Date.now() - startTime < RUN_BUDGET_MS) {
-      const rows = await synopsesWithoutWindows(serverId);
+      const rows = await plotTextsWithoutWindows(serverId);
       if (rows.length === 0) break;
       for (const row of rows) {
         try {
-          await indexSynopsisWindows(
+          await indexPlotWindows(
             serverId,
             embedding,
-            { id: row.synopsis_id, itemId: row.id, content: row.content },
+            { id: row.text_id, itemId: row.id, kind: row.kind, content: row.content },
             titleOf(row)
           );
           counts.windows++;

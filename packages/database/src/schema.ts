@@ -549,10 +549,11 @@ export const itemTexts = pgTable(
     itemId: text("item_id")
       .notNull()
       .references(() => items.id, { onDelete: "cascade" }),
-    kind: text("kind").notNull(), // "transcript" | "synopsis"
+    kind: text("kind").notNull(), // "transcript" | "scenes" | "synopsis"
     status: text("status").notNull(), // "ready" | "missing"
-    // transcript: the subtitle stream it was read from; synopsis: the
-    // transcript hash it was written from. A change means rebuild.
+    // transcript: the subtitle stream it was read from; scenes (the plot part
+    // by part, each under its times) and synopsis: the transcript hash they
+    // were written from. A change means rebuild.
     source: text("source"),
     content: text("content").notNull().default(""),
     contentHash: text("content_hash"),
@@ -571,9 +572,10 @@ export const itemTexts = pgTable(
 // Searchable windows of an item's texts, each with an embedding (HNSW index
 // created per dimension at runtime, as for items.embedding) and a generated
 // tsvector for exact-wording search. Transcript windows are up to two
-// minutes of dialogue with their timestamps; synopsis windows are the whole
-// synopsis and each of its paragraphs, so a single plot point can match on
-// its own, and have no timestamps.
+// minutes of dialogue with their timestamps; synopsis windows are the plot:
+// the whole synopsis and each of its paragraphs (no timestamps) and each
+// part of the scene notes (with its timestamps), so a single plot point can
+// match on its own.
 export const itemTextChunks = pgTable(
   "item_text_chunks",
   {

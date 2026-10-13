@@ -1276,7 +1276,7 @@ export function createChatTools(
 
     findMoment: tool({
       description:
-        "Find when something is said or happens in a movie, series or episode the user names, e.g. 'when does Neo meet the Architect in The Matrix Reloaded' or 'where is the line \"I'll be back\" in The Terminator'. Searches that title's dialogue and returns timestamps (hh:mm:ss) with the matching line. It finds what is said; a scene nobody talks in has no timestamp.",
+        "Find when something is said or happens in a movie, series or episode the user names, e.g. 'when does Neo meet the Architect in The Matrix Reloaded' or 'where is the line \"I'll be back\" in The Terminator'. Searches that title's dialogue and its plot notes, scene by scene, and returns timestamps (hh:mm:ss) with the matching line. It works from what is said: a scene nobody talks in is not found.",
       inputSchema: z.object({
         title: z.string().describe("Movie or series name"),
         description: z.string().describe("The line, or what happens"),
@@ -1339,7 +1339,7 @@ export function createChatTools(
           }),
           message:
             moments.length > 0
-              ? "Times are when the matching dialogue is said, best first. Precision 'window' means only the two-minute stretch is known."
+              ? "Times are when the matching dialogue is said, best first. Precision 'window' means only the stretch (two minutes of dialogue, or a scene of a few minutes) is known."
               : `No dialogue in "${title}" matches "${description}". Only titles with a transcript can be searched this way.`,
         };
       },

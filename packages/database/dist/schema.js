@@ -407,10 +407,11 @@ exports.itemTexts = (0, pg_core_1.pgTable)("item_texts", {
     itemId: (0, pg_core_1.text)("item_id")
         .notNull()
         .references(() => exports.items.id, { onDelete: "cascade" }),
-    kind: (0, pg_core_1.text)("kind").notNull(), // "transcript" | "synopsis"
+    kind: (0, pg_core_1.text)("kind").notNull(), // "transcript" | "scenes" | "synopsis"
     status: (0, pg_core_1.text)("status").notNull(), // "ready" | "missing"
-    // transcript: the subtitle stream it was read from; synopsis: the
-    // transcript hash it was written from. A change means rebuild.
+    // transcript: the subtitle stream it was read from; scenes (the plot part
+    // by part, each under its times) and synopsis: the transcript hash they
+    // were written from. A change means rebuild.
     source: (0, pg_core_1.text)("source"),
     content: (0, pg_core_1.text)("content").notNull().default(""),
     contentHash: (0, pg_core_1.text)("content_hash"),
@@ -426,9 +427,10 @@ exports.itemTexts = (0, pg_core_1.pgTable)("item_texts", {
 // Searchable windows of an item's texts, each with an embedding (HNSW index
 // created per dimension at runtime, as for items.embedding) and a generated
 // tsvector for exact-wording search. Transcript windows are up to two
-// minutes of dialogue with their timestamps; synopsis windows are the whole
-// synopsis and each of its paragraphs, so a single plot point can match on
-// its own, and have no timestamps.
+// minutes of dialogue with their timestamps; synopsis windows are the plot:
+// the whole synopsis and each of its paragraphs (no timestamps) and each
+// part of the scene notes (with its timestamps), so a single plot point can
+// match on its own.
 exports.itemTextChunks = (0, pg_core_1.pgTable)("item_text_chunks", {
     id: (0, pg_core_1.serial)("id").primaryKey(),
     itemTextId: (0, pg_core_1.integer)("item_text_id")
