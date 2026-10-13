@@ -133,7 +133,10 @@ function contentWords(text: string): Set<string> {
  * query as a phrase first, then the most of its words. A remembered line is
  * often split over two subtitle lines, so each line is also tried together
  * with the next; the time is when the first of them starts. Null when no
- * line shares a word with the query (a paraphrase of a scene, not a quote).
+ * line shares at least a third of the query's words: a description of a
+ * scene shares a word or two with many lines by chance ("when does he say
+ * goodbye to his wife" and "Wouldn't you say?"), and then the window's start
+ * is the better answer.
  */
 export function bestLine(
   lines: { ms: number; text: string }[],
@@ -161,7 +164,7 @@ export function bestLine(
       if (score > (best?.score ?? 0) || ownsPair) best = { i, span, score };
     }
   }
-  if (!best) return null;
+  if (!best || best.score < wanted.size / 3) return null;
   return {
     ms: lines[best.i].ms,
     text: lines

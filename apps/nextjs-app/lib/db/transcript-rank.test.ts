@@ -118,6 +118,13 @@ describe("bestLine", () => {
     expect(bestLine(lines, "studies show it works")?.ms).toBe(1000);
   });
 
+  test("no line for a description that shares a word with one by chance", () => {
+    const scene = [...lines, { ms: 5000, text: "Wouldn't you say?" }];
+    expect(
+      bestLine(scene, "when does Allen say goodbye to his wife"),
+    ).toBeNull();
+  });
+
   test("no line for a paraphrase that shares no words", () => {
     expect(bestLine(lines, "a cologne made of panther")).toBeNull();
   });
