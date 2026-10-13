@@ -89,12 +89,13 @@ export function KnowledgeIndexManager({
           Reads the full subtitle track of every selected movie and episode
           (external subtitle files, such as those from your subtitle downloader,
           or embedded text tracks) and embeds the dialogue, so the AI chat can
-          find titles from a remembered line or scene. With a chat model
-          configured, it also writes the plot from each transcript, scene by
-          scene with times, and a synopsis that is added to the item&apos;s
-          embedding, which sharpens plot search and recommendations, lets the
-          chat answer how an episode or series ends, and finds when something
-          happens. Forced and image-based subtitles are skipped.
+          find titles from a remembered line or scene. With a knowledge index
+          model configured in AI Models (or, without one, the chat model), it
+          also writes the plot from each transcript, scene by scene with times,
+          and a synopsis that is added to the item&apos;s embedding, which
+          sharpens plot search and recommendations, lets the chat answer how an
+          episode or series ends, and finds when something happens. Forced and
+          image-based subtitles are skipped.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -123,8 +124,8 @@ export function KnowledgeIndexManager({
         )}
         {status.embeddingsConfigured && !status.chatConfigured && (
           <p className="text-sm text-muted-foreground">
-            No chat or knowledge index model is set up in AI Models, so only
-            transcripts are indexed.
+            No knowledge index model (or chat model) is set up in AI Models, so
+            only transcripts are indexed.
           </p>
         )}
 
