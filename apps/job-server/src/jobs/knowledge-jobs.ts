@@ -26,14 +26,15 @@ import {
 } from "../knowledge/subtitles";
 import {
   type ChatSettings,
+  characterNames,
   formatScenes,
   getChatSettings,
   parseScenes,
   sceneWindows,
   synopsisWindows,
   transcriptParts,
-  writeScenes,
-  writeSynopsis,
+  writePlot,
+  writesWholeTitles,
 } from "../knowledge/synopsis";
 import type { PgBossJob, ServerIdJobData } from "../types/job-status";
 import { logJobResult } from "./job-logger";
@@ -45,6 +46,8 @@ const RUN_BUDGET_MS = 90 * 60_000;
 const ITEMS_PER_QUERY = 25;
 const EMBED_BATCH = 32;
 const MAX_TRACKS_TRIED = 3;
+/** Titles written at once with a hosted model; a local one gets one at a time. */
+const HOSTED_CONCURRENCY = 4;
 
 type Outcome = "indexed" | "unchanged" | "missing";
 
@@ -69,7 +72,15 @@ const ensuredIndexes = new Set<string>();
  * space, and one shared graph searched with a kind filter missed the best
  * synopsis windows entirely. Replaces the earlier shared index.
  */
-async function ensureChunkIndex(dimensions: number, kind: WindowKind): Promise<void> {
+function ensureChunkIndex(dimensions: number, kind: WindowKind): Promise<void> {
+  // One at a time: titles are indexed concurrently with a hosted model.
+  const run = indexing.then(() => createChunkIndex(dimensions, kind));
+  indexing = run.catch(() => {});
+  return run;
+}
+let indexing = Promise.resolve();
+
+async function createChunkIndex(dimensions: number, kind: WindowKind): Promise<void> {
   const key = `${kind}:${dimensions}`;
   if (ensuredIndexes.has(key)) return;
   const n = sql.raw(String(dimensions));
@@ -317,6 +328,19 @@ async function indexPlotWindows(
 }
 
 /**
+ * Character names from the title's own cast. Not the series' for an episode:
+ * a model told of a regular who is not in the episode puts them in it.
+ */
+async function charactersOf(item: DueItem): Promise<string[]> {
+  const rows = await db.execute<{ role: string }>(sql`
+    SELECT role FROM item_people
+    WHERE type = 'Actor' AND role <> '' AND item_id = ${item.id}
+    ORDER BY sort_order NULLS LAST
+  `);
+  return characterNames(Array.from(rows, (r) => r.role));
+}
+
+/**
  * Write the scene notes and the synopsis summarised from them, and re-queue
  * the item for embedding, so the plot becomes part of the item vector that
  * search and recommendations already use; then index both as search windows
@@ -336,9 +360,11 @@ async function indexSynopsis(
   const title = titleOf(item);
   const saved: PlotText[] = [];
   try {
-    const parts = transcriptParts(transcript.content.split("\n"), transcript.cueStartsMs);
-    const scenes = await writeScenes(chat, title, item.overview, parts);
-    const synopsis = await writeSynopsis(chat, title, item.overview, scenes);
+    const { scenes, synopsis } = await writePlot(
+      chat,
+      { title, overview: item.overview, characters: await charactersOf(item) },
+      transcriptParts(transcript.content.split("\n"), transcript.cueStartsMs)
+    );
     for (const [kind, content] of [
       ["scenes", formatScenes(scenes)],
       ["synopsis", synopsis],
@@ -438,10 +464,11 @@ export async function knowledgeIndexJob(job: PgBossJob<ServerIdJobData>) {
       }
     }
 
+    const concurrency = chat && writesWholeTitles(chat) ? HOSTED_CONCURRENCY : 1;
     while (Date.now() - startTime < RUN_BUDGET_MS) {
       const batch = await dueItems(serverId, server.knowledgeItemTypes, chat !== null);
       if (batch.length === 0) break;
-      for (const item of batch) {
+      const indexItem = async (item: DueItem) => {
         try {
           counts[await indexTranscript(serverId, client, embedding, languages, item)]++;
           if (chat && (await indexSynopsis(serverId, chat, embedding, item))) counts.synopses++;
@@ -454,7 +481,13 @@ export async function knowledgeIndexJob(job: PgBossJob<ServerIdJobData>) {
           const transcript = await getText(item.id, "transcript");
           await saveText(serverId, item.id, "transcript", { status: transcript?.status ?? "error" });
         }
-      }
+      };
+      // `concurrency` workers taking titles off the batch.
+      await Promise.all(
+        Array.from({ length: concurrency }, async () => {
+          for (let item = batch.shift(); item; item = batch.shift()) await indexItem(item);
+        })
+      );
       await logJobResult(job.id, KNOWLEDGE_INDEX_JOB_NAME, "processing", { serverId, ...counts, lastError }, Date.now() - startTime);
     }
     await logJobResult(job.id, KNOWLEDGE_INDEX_JOB_NAME, "completed", { serverId, ...counts, lastError }, Date.now() - startTime);

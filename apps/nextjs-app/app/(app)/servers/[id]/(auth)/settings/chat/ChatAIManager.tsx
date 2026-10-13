@@ -154,7 +154,7 @@ const TEXT: Record<
   synopsis: {
     title: "Knowledge Index Model (optional)",
     description:
-      "The model the knowledge index writes plot synopses with. It makes one request per movie and episode, so a smaller or cheaper model than the chat one often makes sense. Leave it unconfigured to use the chat model.",
+      "The model the knowledge index writes the plot with: scene notes with their times, and a synopsis, for every movie and episode. Anthropic and Gemini models get a whole title in one request, four titles at a time; OpenAI-compatible and Ollama models, usually local, get a few minutes of dialogue at a time, which keeps a smaller model faithful. Leave it unconfigured to use the chat model.",
     name: "knowledge index model",
   },
 };
