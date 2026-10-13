@@ -4,6 +4,7 @@ import { db, items, libraries } from "@streamystats/database";
 import { and, asc, eq, inArray, isNull, type SQL, sql } from "drizzle-orm";
 import { getItemEmbeddingComparison } from "./embedding-comparison";
 import { getStatisticsExclusions } from "./exclusions";
+import { locateMoment } from "./moments";
 import type { SearchResult } from "./search";
 import {
   type ItemResultRow,
@@ -25,6 +26,11 @@ const POOL = 50;
  * and the transcript windows (what was said), each title by its best rank in
  * any of them: a title one ranking puts first is not buried under titles
  * several rankings put halfway down. Only items the viewer may see.
+ *
+ * A title found through its dialogue carries the moment in `metadata`:
+ * `momentMs` (when the matching line, or its window, starts) and
+ * `momentPrecision` ("line" or "window"), so a client can start playback
+ * there.
  */
 export async function searchByPlot({
   serverId,
@@ -103,10 +109,30 @@ export async function searchByPlot({
     )}
   `);
   const byId = new Map([...rows].map((row) => [row.id, row]));
-  return fused
+  const results = fused
     .flatMap(({ id, score }) => {
       const row = byId.get(id);
       return row ? [toItemResult(row, score)] : [];
     })
     .slice(0, limit);
+
+  const spoken = new Map(byDialogue.map((m) => [m.itemId, m.moments[0]]));
+  return Promise.all(
+    results.map(async (result) => {
+      const window = spoken.get(result.id);
+      if (!window || window.startMs === null) return result;
+      const moment = await locateMoment(
+        { itemId: result.id, startMs: window.startMs, endMs: window.endMs },
+        query,
+      );
+      return {
+        ...result,
+        metadata: {
+          ...result.metadata,
+          momentMs: String(moment.startMs),
+          momentPrecision: moment.precision,
+        },
+      };
+    }),
+  );
 }

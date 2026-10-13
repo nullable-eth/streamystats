@@ -295,6 +295,13 @@ nothing. Results are limited to the libraries the user can see, and only
 titles are returned, never synopsis text, so the response is spoiler-free.
 The response formats are the same as title search.
 
+A title found through its dialogue also says where: in the `full` format its
+`metadata` has `momentMs` (milliseconds into the title where the matching
+line, or the two-minute window it is in, starts) and `momentPrecision`
+(`line` or `window`). A client can start playback there; Jellyfin starts an
+item at a position with `POST /Sessions/{sessionId}/Playing?playCommand=PlayNow&itemIds={id}&startPositionTicks={momentMs * 10000}`.
+To find moments in one title, use [GET /api/moments](#get-apimoments).
+
 #### Errors
 
 | Status | Response |
@@ -304,6 +311,68 @@ The response formats are the same as title search.
 | 400 | Plot search without an embedding model: `{"error": "Embeddings are not configured...", "data": {...}}` |
 | 401 | `{"error": "Unauthorized", "message": "Valid authentication required..."}` |
 | 502 | Plot search could not reach the embedding model |
+
+---
+
+## Moments
+
+### GET /api/moments
+
+Where in a title something is said or happens: "60% of the time it works
+every time" in *Anchorman*, or when Neo meets the Architect. For starting
+playback at that point.
+
+#### Query Parameters
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `itemId` | string | **Yes** | - | Jellyfin ID of a movie or episode, or of a series to search all its episodes |
+| `q` | string | **Yes** | - | The line, or what happens |
+| `limit` | integer | No | 3 | Moments to return, best first (1-10) |
+
+Moments come from the title's transcript (the knowledge index reads it from
+the library's subtitles), ranked by exact wording and by meaning, and each is
+located to the line of dialogue that matches. They cover what is said: a
+scene nobody talks in has no moment, and titles without a transcript return
+none. Lines are timed for transcripts indexed since line timings were kept;
+older ones give the start of the two-minute window until their next check.
+
+#### Response
+
+```json
+{
+  "data": {
+    "itemId": "abc123",
+    "moments": [
+      {
+        "itemId": "abc123",
+        "startMs": 1592000,
+        "endMs": 1650000,
+        "precision": "line",
+        "line": "60% of the time, it works every time."
+      }
+    ]
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `itemId` | string | The movie or episode (for a series, the episode it is in) |
+| `startMs` | integer | When the matching line starts, in milliseconds; the window's start when `precision` is `window` |
+| `endMs` | integer | When the dialogue window ends |
+| `precision` | string | `line` or `window` |
+| `line` | string | The matching dialogue (two subtitle lines when it runs over a break); null for `window` |
+
+`line` is dialogue from the title and may give away what happens.
+
+#### Errors
+
+| Status | Response |
+|--------|----------|
+| 400 | `{"error": "itemId and q are required"}` |
+| 401 | `{"error": "Unauthorized", ...}` |
+| 404 | `{"error": "Item not found"}` (no such item, or not in the user's libraries) |
 
 ---
 
