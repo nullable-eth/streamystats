@@ -146,7 +146,7 @@ const TEXT: Record<
   { title: string; description: string; name: string }
 > = {
   chat: {
-    title: "AI Chat",
+    title: "Chat Model",
     description:
       "Configure an AI provider to enable the chat assistant. Use Cmd+K to ask questions about your watch history and get recommendations.",
     name: "AI Chat",
@@ -154,7 +154,7 @@ const TEXT: Record<
   synopsis: {
     title: "Knowledge Index Model (optional)",
     description:
-      "The model the knowledge index writes plot synopses with. It makes one request per movie and episode, so a smaller or cheaper model than the chat one often makes sense. Leave it unconfigured to use the AI Chat model.",
+      "The model the knowledge index writes plot synopses with. It makes one request per movie and episode, so a smaller or cheaper model than the chat one often makes sense. Leave it unconfigured to use the chat model.",
     name: "knowledge index model",
   },
 };
@@ -464,7 +464,7 @@ export function ChatAIManager({
             </AlertDialogTitle>
             <AlertDialogDescription>
               {purpose === "synopsis"
-                ? "Synopses will be written with the AI Chat model again."
+                ? "Synopses will be written with the chat model again."
                 : "This will remove the AI Chat configuration. The chat feature will be disabled until you configure a new provider."}
             </AlertDialogDescription>
           </AlertDialogHeader>

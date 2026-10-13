@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { toast } from "sonner";
@@ -109,12 +110,19 @@ export function KnowledgeIndexManager({
         </div>
         {!status.embeddingsConfigured && (
           <p className="text-sm text-muted-foreground">
-            Configure embeddings above first.
+            Set up an embedding model in{" "}
+            <Link
+              href={`/servers/${serverId}/settings/models`}
+              className="underline underline-offset-4"
+            >
+              AI Models
+            </Link>{" "}
+            first.
           </p>
         )}
         {status.embeddingsConfigured && !status.chatConfigured && (
           <p className="text-sm text-muted-foreground">
-            No AI Chat or knowledge index model is configured, so only
+            No chat or knowledge index model is set up in AI Models, so only
             transcripts are indexed.
           </p>
         )}

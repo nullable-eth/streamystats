@@ -173,7 +173,7 @@ export function RecommendationsSection({
           {!server.embeddingBaseUrl || !server.embeddingModel ? (
             <div className="flex flex-col gap-2 px-4 pb-4">
               <Link
-                href={`/servers/${server.id}/settings/ai`}
+                href={`/servers/${server.id}/settings/models`}
                 className="w-full sm:w-auto"
               >
                 <Button className="w-full sm:w-auto text-sm" size="sm">

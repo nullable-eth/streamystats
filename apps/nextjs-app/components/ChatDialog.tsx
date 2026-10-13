@@ -350,8 +350,8 @@ export function ChatDialog({
             <AlertCircle className="h-12 w-12 mx-auto text-muted-foreground" />
             <h3 className="font-semibold">AI Chat Not Configured</h3>
             <p className="text-sm text-muted-foreground max-w-sm">
-              To use the AI assistant, configure a chat provider in Settings
-              &gt; AI Chat.
+              To use the AI assistant, configure a chat model in Settings &gt;
+              AI Models.
             </p>
           </div>
         </div>
