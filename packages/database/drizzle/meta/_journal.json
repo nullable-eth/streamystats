@@ -351,6 +351,13 @@
       "when": 1791900210902,
       "tag": "0049_synopsis_model",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1791910409693,
+      "tag": "0050_synopsis_windows",
+      "breakpoints": true
     }
   ]
 }

@@ -1,5 +1,21 @@
 import { describe, expect, test } from "bun:test";
-import { extractSynopsis, fitTranscript, synopsisPrompt } from "./synopsis";
+import { extractSynopsis, fitTranscript, synopsisPrompt, synopsisWindows } from "./synopsis";
+
+describe("synopsisWindows", () => {
+  test("the whole synopsis, then each paragraph, all titled", () => {
+    expect(synopsisWindows("Moon (2009)", "Sam works alone.\n\nHe finds a clone.\n \nHe escapes.")).toEqual([
+      "Moon (2009): Sam works alone.\n\nHe finds a clone.\n \nHe escapes.",
+      "Moon (2009): Sam works alone.",
+      "Moon (2009): He finds a clone.",
+      "Moon (2009): He escapes.",
+    ]);
+  });
+
+  test("one paragraph is one window; nothing is none", () => {
+    expect(synopsisWindows("T", " One paragraph. ")).toEqual(["T: One paragraph."]);
+    expect(synopsisWindows("T", "  ")).toEqual([]);
+  });
+});
 
 describe("synopsis helpers", () => {
   test("keeps the opening and the ending of a long transcript", () => {

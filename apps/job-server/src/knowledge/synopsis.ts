@@ -53,6 +53,23 @@ export async function getChatSettings(serverId: number): Promise<ChatSettings | 
 /** Endpoints that rejected the thinking-off hint; not sent to them again. */
 const noThinkingHint = new Set<string>();
 
+/**
+ * The synopsis as search windows: the whole of it, for the story as a whole,
+ * and each paragraph on its own, so a single plot point (a twist in the last
+ * scene) is not drowned out by the rest. Each starts with the title, which a
+ * paragraph on its own rarely names.
+ */
+export function synopsisWindows(title: string, synopsis: string): string[] {
+  const whole = synopsis.trim();
+  if (!whole) return [];
+  const paragraphs = whole
+    .split(/\n\s*\n/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  const windows = paragraphs.length > 1 ? [whole, ...paragraphs] : [whole];
+  return windows.map((w) => `${title}: ${w}`);
+}
+
 /** Keep the opening and the ending, which carry the setup and the payoff. */
 export function fitTranscript(transcript: string, maxChars: number): string {
   if (transcript.length <= maxChars) return transcript;

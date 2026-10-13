@@ -20,17 +20,21 @@ export { formatTimestamp } from "./transcript-rank";
 const POOL = 50;
 
 /**
- * Hybrid search over transcript windows: full-text for exact wording (quotes,
- * names) and vectors for paraphrased memories, fused by rank. Only libraries
- * the user may see, and only items still in the library.
+ * Hybrid search over an item's text windows: full-text for exact wording
+ * (quotes, names) and vectors for paraphrased memories, fused by rank. Only
+ * libraries the user may see, and only items still in the library.
+ * Transcript windows are dialogue, with when it is said; synopsis windows are
+ * the plot, whole and paragraph by paragraph, with no timestamps.
  */
-export async function searchTranscripts({
+export async function searchTextWindows({
+  kind,
   serverId,
   userId,
   query,
   embedding,
   limit,
 }: {
+  kind: "transcript" | "synopsis";
   serverId: number;
   /** The viewer; omitted for admins, who see every library. */
   userId?: string;
@@ -44,6 +48,7 @@ export async function searchTranscripts({
   );
   const visible: SQL[] = [
     eq(itemTextChunks.serverId, serverId),
+    eq(itemTextChunks.kind, kind),
     isNull(items.deletedAt),
   ];
   if (itemLibraryExclusion) visible.push(itemLibraryExclusion);
@@ -81,6 +86,13 @@ export async function searchTranscripts({
 
   const rankings = await Promise.all([textRanking, vectorRanking()]);
   return fuseChunkRankings(rankings, limit);
+}
+
+/** What was said: the dialogue windows, with when. */
+export function searchTranscripts(
+  args: Omit<Parameters<typeof searchTextWindows>[0], "kind">,
+): Promise<TranscriptMatch[]> {
+  return searchTextWindows({ ...args, kind: "transcript" });
 }
 
 /** Item rows for matches, in match order. */

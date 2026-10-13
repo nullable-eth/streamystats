@@ -556,6 +556,9 @@ export const itemTexts = pgTable(
     source: text("source"),
     content: text("content").notNull().default(""),
     contentHash: text("content_hash"),
+    // transcript: when each line of `content` starts, so a matched line can
+    // be located to the moment it is said.
+    cueStartsMs: integer("cue_starts_ms").array(),
     checkedAt: timestamp("checked_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
@@ -565,9 +568,12 @@ export const itemTexts = pgTable(
   ]
 );
 
-// Searchable windows of a transcript: ~1 minute of dialogue each, with
-// timestamps, an embedding (HNSW index created per dimension at runtime, as
-// for items.embedding) and a generated tsvector for exact-quote search.
+// Searchable windows of an item's texts, each with an embedding (HNSW index
+// created per dimension at runtime, as for items.embedding) and a generated
+// tsvector for exact-wording search. Transcript windows are up to two
+// minutes of dialogue with their timestamps; synopsis windows are the whole
+// synopsis and each of its paragraphs, so a single plot point can match on
+// its own, and have no timestamps.
 export const itemTextChunks = pgTable(
   "item_text_chunks",
   {
@@ -581,8 +587,9 @@ export const itemTextChunks = pgTable(
     itemId: text("item_id")
       .notNull()
       .references(() => items.id, { onDelete: "cascade" }),
-    startMs: integer("start_ms").notNull(),
-    endMs: integer("end_ms").notNull(),
+    kind: text("kind").notNull().default("transcript"), // "transcript" | "synopsis"
+    startMs: integer("start_ms"),
+    endMs: integer("end_ms"),
     text: text("text").notNull(),
     embedding: vector("embedding"),
     searchVector: tsvector("search_vector").generatedAlwaysAs(
@@ -591,6 +598,8 @@ export const itemTextChunks = pgTable(
   },
   (table) => [
     index("item_text_chunks_item_idx").on(table.itemId),
+    // Windows are replaced per text: keeps those deletes (and cascades) cheap.
+    index("item_text_chunks_text_idx").on(table.itemTextId),
     index("item_text_chunks_server_idx").on(table.serverId),
     index("item_text_chunks_search_idx").using("gin", table.searchVector),
   ]

@@ -414,15 +414,21 @@ exports.itemTexts = (0, pg_core_1.pgTable)("item_texts", {
     source: (0, pg_core_1.text)("source"),
     content: (0, pg_core_1.text)("content").notNull().default(""),
     contentHash: (0, pg_core_1.text)("content_hash"),
+    // transcript: when each line of `content` starts, so a matched line can
+    // be located to the moment it is said.
+    cueStartsMs: (0, pg_core_1.integer)("cue_starts_ms").array(),
     checkedAt: (0, pg_core_1.timestamp)("checked_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: (0, pg_core_1.timestamp)("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
     (0, pg_core_1.unique)("item_texts_item_kind_unique").on(table.itemId, table.kind),
     (0, pg_core_1.index)("item_texts_server_kind_idx").on(table.serverId, table.kind),
 ]);
-// Searchable windows of a transcript: ~1 minute of dialogue each, with
-// timestamps, an embedding (HNSW index created per dimension at runtime, as
-// for items.embedding) and a generated tsvector for exact-quote search.
+// Searchable windows of an item's texts, each with an embedding (HNSW index
+// created per dimension at runtime, as for items.embedding) and a generated
+// tsvector for exact-wording search. Transcript windows are up to two
+// minutes of dialogue with their timestamps; synopsis windows are the whole
+// synopsis and each of its paragraphs, so a single plot point can match on
+// its own, and have no timestamps.
 exports.itemTextChunks = (0, pg_core_1.pgTable)("item_text_chunks", {
     id: (0, pg_core_1.serial)("id").primaryKey(),
     itemTextId: (0, pg_core_1.integer)("item_text_id")
@@ -434,13 +440,16 @@ exports.itemTextChunks = (0, pg_core_1.pgTable)("item_text_chunks", {
     itemId: (0, pg_core_1.text)("item_id")
         .notNull()
         .references(() => exports.items.id, { onDelete: "cascade" }),
-    startMs: (0, pg_core_1.integer)("start_ms").notNull(),
-    endMs: (0, pg_core_1.integer)("end_ms").notNull(),
+    kind: (0, pg_core_1.text)("kind").notNull().default("transcript"), // "transcript" | "synopsis"
+    startMs: (0, pg_core_1.integer)("start_ms"),
+    endMs: (0, pg_core_1.integer)("end_ms"),
     text: (0, pg_core_1.text)("text").notNull(),
     embedding: vector("embedding"),
     searchVector: tsvector("search_vector").generatedAlwaysAs((0, drizzle_orm_1.sql) `to_tsvector('english', text)`),
 }, (table) => [
     (0, pg_core_1.index)("item_text_chunks_item_idx").on(table.itemId),
+    // Windows are replaced per text: keeps those deletes (and cascades) cheap.
+    (0, pg_core_1.index)("item_text_chunks_text_idx").on(table.itemTextId),
     (0, pg_core_1.index)("item_text_chunks_server_idx").on(table.serverId),
     (0, pg_core_1.index)("item_text_chunks_search_idx").using("gin", table.searchVector),
 ]);

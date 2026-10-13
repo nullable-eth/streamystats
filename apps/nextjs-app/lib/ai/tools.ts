@@ -22,6 +22,7 @@ import {
   findItemsByCharacter,
   findItemsByPerson,
 } from "@/lib/db/item-people-search";
+import { searchByPlot } from "@/lib/db/plot-search";
 import { getRatedItems } from "@/lib/db/rated-items";
 import { alternate } from "@/lib/db/rating-signals-pick";
 import { getSimilarSeries } from "@/lib/db/similar-series-statistics";
@@ -1094,7 +1095,7 @@ export function createChatTools(
 
     searchLibraryBySemanticQuery: tool({
       description:
-        "Semantic search across the user's library using embeddings. Use this for theme-based queries like 'Christmas movie I have', 'cozy winter movie', or 'something like a heist thriller', and for identifying a title from a vague description of its plot. Where a plot synopsis has been indexed it is part of each item's embedding, so describe the story in plain words. Use type 'all' when it is unclear whether it was a movie, a series or a single episode. Returns items from the library ranked by semantic similarity.",
+        "Semantic search across the user's library using embeddings. Use this for theme-based queries like 'Christmas movie I have', 'cozy winter movie', or 'something like a heist thriller'. To identify a title from what happens in it, use findTitleByPlot instead. Use type 'all' when it is unclear whether it was a movie, a series or a single episode. Returns items from the library ranked by semantic similarity.",
       inputSchema: z.object({
         query: z
           .string()
@@ -1227,6 +1228,51 @@ export function createChatTools(
       },
     }),
 
+    findTitleByPlot: tool({
+      description:
+        "Find a movie, series or episode in the library from a description of what happens in it: a scene, a twist, a character's fate, how it ends, or a half-remembered line. It searches the plot synopses (whole and paragraph by paragraph) and the dialogue as well as the overviews, so it finds titles from details their official description leaves out. Describe the events in plain words, as the user remembers them. Use type 'all' unless the user is sure whether it was a movie or an episode. Returns titles best first.",
+      inputSchema: z.object({
+        description: z.string().describe("What happens, in the user's words"),
+        type: z
+          .enum(["Movie", "Series", "Episode", "all"])
+          .optional()
+          .default("all")
+          .describe("Filter by item type"),
+        limit: z.number().optional().default(8).describe("Number of titles"),
+      }),
+      execute: async ({
+        description,
+        type,
+        limit,
+      }: {
+        description: string;
+        type: "Movie" | "Series" | "Episode" | "all";
+        limit: number;
+      }) => {
+        const embed = await embedTextForServer({ serverId, text: description });
+        if (!embed.ok) return { items: [], message: embed.error };
+        const found = await searchByPlot({
+          serverId,
+          viewerUserId: userId,
+          query: description,
+          embedding: embed.embedding,
+          types: type === "all" ? ["Movie", "Series", "Episode"] : [type],
+          limit,
+        });
+        const matched = await getMatchedItems(found.map((r) => r.id));
+        return {
+          items: matched.map((item) => ({
+            ...formatItem(item),
+            ...episodeOf(item),
+          })),
+          message:
+            matched.length > 0
+              ? `Found ${matched.length} titles whose story matches "${description}", best first. Confirm the best one with its overview, or with getPlotSynopsis when the detail is not in the overview.`
+              : `No title in the library matches "${description}".`,
+        };
+      },
+    }),
+
     getPlotSynopsis: tool({
       description:
         "Get the full plot synopsis (spoilers included) of a movie, or of one episode of a series in the library. For a series, it defaults to the series' last episode; pass season to get that season's last episode, or season and episode for a specific one, or position 'first'. Use it to answer how something ends, whether a series or season ends on a cliffhanger, or to recap an episode before the user resumes a show. Only reveal endings when the user asked about them.",
@@ -1301,7 +1347,7 @@ export function createChatTools(
             ...formatItem(item),
             ...episodeOf(item),
             moments: (moments.get(item.id) ?? []).map((m) => ({
-              at: formatTimestamp(m.startMs),
+              at: m.startMs === null ? undefined : formatTimestamp(m.startMs),
               dialogue: m.text,
             })),
           })),

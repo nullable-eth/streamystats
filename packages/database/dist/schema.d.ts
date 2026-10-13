@@ -3771,6 +3771,49 @@ export declare const itemTexts: import("drizzle-orm/pg-core").PgTableWithColumns
             identity: undefined;
             generated: undefined;
         }, {}, {}>;
+        cueStartsMs: import("drizzle-orm/pg-core").PgColumn<{
+            name: "cue_starts_ms";
+            tableName: "item_texts";
+            dataType: "array";
+            columnType: "PgArray";
+            data: number[];
+            driverParam: string | (string | number)[];
+            notNull: false;
+            hasDefault: false;
+            isPrimaryKey: false;
+            isAutoincrement: false;
+            hasRuntimeDefault: false;
+            enumValues: undefined;
+            baseColumn: import("drizzle-orm").Column<{
+                name: "cue_starts_ms";
+                tableName: "item_texts";
+                dataType: "number";
+                columnType: "PgInteger";
+                data: number;
+                driverParam: string | number;
+                notNull: false;
+                hasDefault: false;
+                isPrimaryKey: false;
+                isAutoincrement: false;
+                hasRuntimeDefault: false;
+                enumValues: undefined;
+                baseColumn: never;
+                identity: undefined;
+                generated: undefined;
+            }, {}, {}>;
+            identity: undefined;
+            generated: undefined;
+        }, {}, {
+            baseBuilder: import("drizzle-orm/pg-core").PgColumnBuilder<{
+                name: "cue_starts_ms";
+                dataType: "number";
+                columnType: "PgInteger";
+                data: number;
+                driverParam: number | string;
+                enumValues: undefined;
+            }, {}, {}, import("drizzle-orm").ColumnBuilderExtraConfig>;
+            size: undefined;
+        }>;
         checkedAt: import("drizzle-orm/pg-core").PgColumn<{
             name: "checked_at";
             tableName: "item_texts";
@@ -3880,6 +3923,23 @@ export declare const itemTextChunks: import("drizzle-orm/pg-core").PgTableWithCo
             identity: undefined;
             generated: undefined;
         }, {}, {}>;
+        kind: import("drizzle-orm/pg-core").PgColumn<{
+            name: "kind";
+            tableName: "item_text_chunks";
+            dataType: "string";
+            columnType: "PgText";
+            data: string;
+            driverParam: string;
+            notNull: true;
+            hasDefault: true;
+            isPrimaryKey: false;
+            isAutoincrement: false;
+            hasRuntimeDefault: false;
+            enumValues: [string, ...string[]];
+            baseColumn: never;
+            identity: undefined;
+            generated: undefined;
+        }, {}, {}>;
         startMs: import("drizzle-orm/pg-core").PgColumn<{
             name: "start_ms";
             tableName: "item_text_chunks";
@@ -3887,7 +3947,7 @@ export declare const itemTextChunks: import("drizzle-orm/pg-core").PgTableWithCo
             columnType: "PgInteger";
             data: number;
             driverParam: string | number;
-            notNull: true;
+            notNull: false;
             hasDefault: false;
             isPrimaryKey: false;
             isAutoincrement: false;
@@ -3904,7 +3964,7 @@ export declare const itemTextChunks: import("drizzle-orm/pg-core").PgTableWithCo
             columnType: "PgInteger";
             data: number;
             driverParam: string | number;
-            notNull: true;
+            notNull: false;
             hasDefault: false;
             isPrimaryKey: false;
             isAutoincrement: false;
