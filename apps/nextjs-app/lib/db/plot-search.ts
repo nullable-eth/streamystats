@@ -10,7 +10,7 @@ import {
   itemResultColumns,
   toItemResult,
 } from "./search-result";
-import { fuseItemRankings } from "./transcript-rank";
+import { fuseByBestRank } from "./transcript-rank";
 import { searchTextWindows } from "./transcript-search";
 
 export type PlotSearchType = "Movie" | "Series" | "Episode";
@@ -22,7 +22,9 @@ const POOL = 50;
  * are fused: the item vectors (overview, details and, once the knowledge
  * index has written one, the plot synopsis), the synopsis windows (the plot
  * on its own, whole and paragraph by paragraph, so one plot point can match)
- * and the transcript windows (what was said). Only items the viewer may see.
+ * and the transcript windows (what was said), each title by its best rank in
+ * any of them: a title one ranking puts first is not buried under titles
+ * several rankings put halfway down. Only items the viewer may see.
  */
 export async function searchByPlot({
   serverId,
@@ -77,7 +79,7 @@ export async function searchByPlot({
     windows("transcript"),
   ]);
 
-  const fused = fuseItemRankings(
+  const fused = fuseByBestRank(
     [
       byStory.map((r) => r.id),
       byPlot.map((m) => m.itemId),

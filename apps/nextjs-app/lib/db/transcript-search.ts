@@ -48,7 +48,9 @@ export async function searchTextWindows({
   );
   const visible: SQL[] = [
     eq(itemTextChunks.serverId, serverId),
-    eq(itemTextChunks.kind, kind),
+    // A literal, not a parameter, so the planner can use that kind's own
+    // partial HNSW index (one per kind and dimension).
+    sql`${itemTextChunks.kind} = ${sql.raw(kind === "synopsis" ? "'synopsis'" : "'transcript'")}`,
     isNull(items.deletedAt),
   ];
   if (itemLibraryExclusion) visible.push(itemLibraryExclusion);
