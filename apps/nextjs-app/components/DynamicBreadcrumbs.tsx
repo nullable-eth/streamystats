@@ -30,6 +30,7 @@ const _map: Record<string, string> = {
   clients: "Clients",
   chat: "AI Chat",
   ai: "AI Recommendations",
+  models: "AI Models",
   general: "General",
   security: "Security",
   anomalies: "Anomalies",

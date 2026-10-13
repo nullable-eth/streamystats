@@ -126,7 +126,7 @@ export async function POST(req: Request) {
       return new Response(
         JSON.stringify({
           error:
-            "AI Chat not configured. Please configure it in Settings > AI Chat.",
+            "AI Chat not configured. Please configure it in Settings > AI Models.",
         }),
         { status: 400, headers: { "Content-Type": "application/json" } },
       );
