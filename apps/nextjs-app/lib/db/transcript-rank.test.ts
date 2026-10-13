@@ -70,13 +70,9 @@ describe("fuseByBestRank", () => {
       ["y", "c", "b"],
     ];
     expect(fuseItemRankings(rankings, 3).map((r) => r.id)[0]).toBe("b");
-    expect(fuseByBestRank(rankings, 6).map((r) => r.id)).toEqual([
-      "a",
-      "x",
-      "y",
-      "b",
-      "c",
-    ]);
+    const fused = fuseByBestRank(rankings, 6);
+    expect(fused.map((r) => r.id)).toEqual(["a", "x", "y", "b", "c"]);
+    expect(fused.map((r) => r.rank)).toEqual([0, 0, 0, 1, 1]);
   });
 
   test("ties at the same best rank go to the one more rankings agree on", () => {

@@ -136,21 +136,27 @@ export async function findMoments({
     lists.map((list) => list.map((w) => String(w.id))),
     limit * 2,
   );
-  const moments = await Promise.all(
-    ranked.flatMap(({ id }) => {
+  const located = await Promise.all(
+    ranked.flatMap(({ id, rank }) => {
       const w = windows.get(Number(id));
       return w && w.startMs !== null
         ? [
             locateMoment(
               { itemId: w.itemId, startMs: w.startMs, endMs: w.endMs },
               query,
-            ),
+            ).then((moment) => ({ moment, rank })),
           ]
         : [];
     }),
   );
+  // Of windows ranked alike, one with a line saying what the query asks
+  // beats one that only reads like it: a stretch of "Oh! EVE. Whoa!" is near
+  // any query naming EVE by meaning.
+  const vague = (m: Moment) => Number(m.precision === "window");
   const seen = new Set<string>();
-  return moments
+  return located
+    .sort((a, b) => a.rank - b.rank || vague(a.moment) - vague(b.moment))
+    .map(({ moment }) => moment)
     .filter((m) => {
       const key = `${m.itemId}:${m.startMs}`;
       if (seen.has(key)) return false;
