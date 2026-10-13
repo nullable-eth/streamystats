@@ -56,6 +56,22 @@ describe("rankTranscriptStreams", () => {
     expect(rankTranscriptStreams(streams, "ms1").map((c) => c.index)).toEqual([7, 6, 4]);
   });
 
+  test("a dubbed release: the metadata language beats the default audio's", () => {
+    // An Italian release with English audio as the second track.
+    const dubbed = [
+      { Type: "Subtitle", Index: 0, Language: "eng", IsTextSubtitleStream: true, IsExternal: true, Path: "/m/c.en.srt" },
+      { Type: "Audio", Index: 2, Language: "ita", IsDefault: true },
+      { Type: "Audio", Index: 3, Language: "eng" },
+      { Type: "Subtitle", Index: 4, Language: "ita", IsTextSubtitleStream: true, IsForced: true },
+      { Type: "Subtitle", Index: 5, Language: "eng", IsTextSubtitleStream: true, Title: "English Forced" },
+      { Type: "Subtitle", Index: 6, Language: "ita", IsTextSubtitleStream: true },
+      { Type: "Subtitle", Index: 7, Language: "eng", IsTextSubtitleStream: true },
+    ];
+    expect(rankTranscriptStreams(dubbed, "ms1", ["en", "eng"]).map((c) => c.index)).toEqual([0, 7, 6]);
+    // An Italian-language server keeps the Italian track.
+    expect(rankTranscriptStreams(dubbed, "ms1", ["it", "ita"]).map((c) => c.index)).toEqual([6, 0, 7]);
+  });
+
   test("ref changes when the file changes", () => {
     expect(rankTranscriptStreams(streams, "ms1")[0].ref).toBe("ms1:7:/m/a.en.srt");
   });

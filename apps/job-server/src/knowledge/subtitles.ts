@@ -39,15 +39,22 @@ function field(stream: unknown, key: string): unknown {
 }
 
 /**
- * Full-dialogue text subtitle tracks, best first. The spoken language (the
- * default audio track's) wins, then English; external files (a subtitle downloader's
- * sidecars) beat embedded tracks; forced, signs and commentary tracks are
- * never a transcript.
+ * Full-dialogue text subtitle tracks, best first. The server's metadata
+ * language wins (people search in it and synopses are written in it), then
+ * the spoken language (the default audio track's, which on a dubbed release
+ * is not the original); external files (a subtitle downloader's sidecars)
+ * beat embedded tracks; forced, signs and commentary tracks are never a
+ * transcript.
+ *
+ * `preferred` holds every code the metadata language may appear under
+ * ("en", "eng"; "de", "deu", "ger").
  */
 export function rankTranscriptStreams(
   streams: unknown[],
-  mediaSourceId: string
+  mediaSourceId: string,
+  preferred: string[] = ["eng"]
 ): SubtitleCandidate[] {
+  const wanted = new Set(preferred.map(lang));
   const audio =
     streams.find((s) => field(s, "Type") === "Audio" && field(s, "IsDefault")) ??
     streams.find((s) => field(s, "Type") === "Audio");
@@ -67,8 +74,8 @@ export function rankTranscriptStreams(
     .map((s) => {
       const language = lang(field(s, "Language"));
       const score =
-        (spoken && language === spoken ? 100 : 0) +
-        (language === "eng" ? 50 : 0) +
+        (language && wanted.has(language) ? 100 : 0) +
+        (spoken && language === spoken ? 50 : 0) +
         (field(s, "IsExternal") === true ? 10 : 0) +
         (field(s, "IsHearingImpaired") === true ? 0 : 5);
       const index = Number(field(s, "Index"));

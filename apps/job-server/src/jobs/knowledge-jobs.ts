@@ -144,11 +144,12 @@ async function saveText(
 async function readTranscript(
   client: JellyfinClient,
   itemId: string,
-  previous: ItemText | undefined
+  previous: ItemText | undefined,
+  languages: string[]
 ): Promise<{ ref: string; cues: Cue[] } | "unchanged" | null> {
   const media = await client.getPrimaryMediaSource(itemId);
   if (!media) return null;
-  const candidates = rankTranscriptStreams(media.streams, media.id);
+  const candidates = rankTranscriptStreams(media.streams, media.id, languages);
   if (previous?.status === "ready" && previous.source === candidates[0]?.ref) {
     return "unchanged";
   }
@@ -163,10 +164,11 @@ async function indexTranscript(
   serverId: number,
   client: JellyfinClient,
   embedding: EmbeddingSettings,
+  languages: string[],
   item: DueItem
 ): Promise<Outcome> {
   const previous = await getText(item.id, "transcript");
-  const read = await readTranscript(client, item.id, previous);
+  const read = await readTranscript(client, item.id, previous, languages);
 
   if (read === "unchanged") {
     await saveText(serverId, item.id, "transcript", { status: "ready" });
@@ -278,15 +280,20 @@ export async function knowledgeIndexJob(job: PgBossJob<ServerIdJobData>) {
   }
   const chat = await getChatSettings(serverId);
   const client = JellyfinClient.fromServer(server);
+  // Transcripts in the language people search in. A transcript picked
+  // under an earlier choice is replaced at its weekly re-check.
+  const languages = await client.getMetadataLanguageCodes().catch(() => ["en", "eng"]);
 
-  console.info(`[knowledge] serverId=${serverId} action=start synopses=${chat ? chat.model : "off"}`);
+  console.info(
+    `[knowledge] serverId=${serverId} action=start synopses=${chat ? chat.model : "off"} language=${languages.join("/")}`
+  );
   try {
     while (Date.now() - startTime < RUN_BUDGET_MS) {
       const batch = await dueItems(serverId, server.knowledgeItemTypes, chat !== null);
       if (batch.length === 0) break;
       for (const item of batch) {
         try {
-          counts[await indexTranscript(serverId, client, embedding, item)]++;
+          counts[await indexTranscript(serverId, client, embedding, languages, item)]++;
           if (chat && (await indexSynopsis(serverId, chat, item))) counts.synopses++;
         } catch (error) {
           counts.errors++;
