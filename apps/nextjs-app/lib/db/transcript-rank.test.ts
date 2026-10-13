@@ -107,6 +107,13 @@ describe("bestLine", () => {
     });
   });
 
+  test("a whole line starts at itself, not at the line before", () => {
+    expect(bestLine(lines, "That doesn't make sense.")).toEqual({
+      ms: 4000,
+      text: "That doesn't make sense.",
+    });
+  });
+
   test("the line sharing the most words when it is not verbatim", () => {
     expect(bestLine(lines, "studies show it works")?.ms).toBe(1000);
   });
