@@ -39,7 +39,7 @@ export async function embedTextForServer({
       ok: false,
       reason: "not_configured",
       error:
-        "Embeddings are not configured for this server. Configure them in Settings > Embeddings.",
+        "Embeddings are not configured for this server. Configure them in Settings > AI Models.",
     };
   }
 

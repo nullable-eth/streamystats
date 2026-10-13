@@ -32,7 +32,8 @@ export async function searchTranscripts({
   limit,
 }: {
   serverId: number;
-  userId: string;
+  /** The viewer; omitted for admins, who see every library. */
+  userId?: string;
   query: string;
   embedding: number[] | null;
   limit: number;

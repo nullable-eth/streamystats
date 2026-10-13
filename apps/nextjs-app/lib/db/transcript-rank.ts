@@ -42,6 +42,26 @@ export function fuseChunkRankings(
   return [...byItem.values()].sort((a, b) => b.score - a.score).slice(0, limit);
 }
 
+/**
+ * Reciprocal rank fusion of ranked item id lists: an item near the top of
+ * several rankings beats one found by a single ranking.
+ */
+export function fuseItemRankings(
+  rankings: string[][],
+  limit: number,
+): { id: string; score: number }[] {
+  const scores = new Map<string, number>();
+  for (const ranking of rankings) {
+    ranking.forEach((id, rank) => {
+      scores.set(id, (scores.get(id) ?? 0) + 1 / (RRF_K + rank + 1));
+    });
+  }
+  return [...scores]
+    .map(([id, score]) => ({ id, score }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit);
+}
+
 export function formatTimestamp(ms: number): string {
   const s = Math.floor(ms / 1000);
   const pad = (n: number) => String(n).padStart(2, "0");

@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { formatTimestamp, fuseChunkRankings } from "./transcript-rank";
+import {
+  formatTimestamp,
+  fuseChunkRankings,
+  fuseItemRankings,
+} from "./transcript-rank";
 
 const chunk = (id: number, itemId: string) => ({
   id,
@@ -31,6 +35,26 @@ describe("fuseChunkRankings", () => {
     expect(fuseChunkRankings([[chunk(1, "a"), chunk(2, "b")]], 1)).toHaveLength(
       1,
     );
+  });
+});
+
+describe("fuseItemRankings", () => {
+  test("an item in both rankings beats the top of either alone", () => {
+    expect(
+      fuseItemRankings(
+        [
+          ["a", "b"],
+          ["c", "b"],
+        ],
+        3,
+      ).map((r) => r.id),
+    ).toEqual(["b", "a", "c"]);
+  });
+
+  test("respects the limit and scores in descending order", () => {
+    const fused = fuseItemRankings([["a", "b", "c"]], 2);
+    expect(fused.map((r) => r.id)).toEqual(["a", "b"]);
+    expect(fused[0].score).toBeGreaterThan(fused[1].score);
   });
 });
 
