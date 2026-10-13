@@ -4,6 +4,7 @@ import { redirect } from "next/navigation";
 import { Container } from "@/components/Container";
 import { getKnowledgeIndexStatus } from "@/lib/db/knowledge-index";
 import { getServer } from "@/lib/db/server";
+import { ChatAIManager } from "../chat/ChatAIManager";
 import { EmbeddingsManager } from "../EmbeddingsManager";
 import { KnowledgeIndexManager } from "../KnowledgeIndexManager";
 
@@ -26,6 +27,7 @@ export default async function AISettings(props: {
       <div className="space-y-8">
         <EmbeddingsManager server={server} />
         <KnowledgeIndexManager serverId={server.id} status={knowledge} />
+        <ChatAIManager server={server} purpose="synopsis" />
       </div>
     </Container>
   );

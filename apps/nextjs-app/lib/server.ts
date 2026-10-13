@@ -110,6 +110,7 @@ export async function createServer(
       apiKey: _apiKey,
       embeddingApiKey,
       chatApiKey,
+      synopsisApiKey,
       ...rest
     } = result.server;
 
@@ -118,9 +119,13 @@ export async function createServer(
       syncJobId: result.syncJobId,
       message: result.message,
       server: {
-        ...(rest as Omit<ServerPublic, "hasChatApiKey" | "hasEmbeddingApiKey">),
+        ...(rest as Omit<
+          ServerPublic,
+          "hasChatApiKey" | "hasEmbeddingApiKey" | "hasSynopsisApiKey"
+        >),
         hasEmbeddingApiKey: Boolean(embeddingApiKey),
         hasChatApiKey: Boolean(chatApiKey),
+        hasSynopsisApiKey: Boolean(synopsisApiKey),
       },
     };
   } catch (error) {

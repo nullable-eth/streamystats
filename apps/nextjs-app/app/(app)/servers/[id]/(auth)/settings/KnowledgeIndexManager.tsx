@@ -114,7 +114,8 @@ export function KnowledgeIndexManager({
         )}
         {status.embeddingsConfigured && !status.chatConfigured && (
           <p className="text-sm text-muted-foreground">
-            No chat model is configured, so only transcripts are indexed.
+            No AI Chat or knowledge index model is configured, so only
+            transcripts are indexed.
           </p>
         )}
 

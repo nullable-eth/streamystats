@@ -12,10 +12,11 @@ export type {
 
 export type ServerPublic = Omit<
   DatabaseServer,
-  "apiKey" | "embeddingApiKey" | "chatApiKey"
+  "apiKey" | "embeddingApiKey" | "chatApiKey" | "synopsisApiKey"
 > & {
   hasEmbeddingApiKey: boolean;
   hasChatApiKey: boolean;
+  hasSynopsisApiKey: boolean;
 };
 
 // Type definitions for library statistics

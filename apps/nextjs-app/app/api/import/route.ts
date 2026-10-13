@@ -142,6 +142,12 @@ interface ImportData {
     chatProvider?: string | null;
     chatBaseUrl?: string | null;
     chatModel?: string | null;
+    synopsisProvider?: string | null;
+    synopsisBaseUrl?: string | null;
+    synopsisModel?: string | null;
+    knowledgeIndexEnabled?: boolean;
+    embeddingItemTypes?: string[] | null;
+    knowledgeItemTypes?: string[] | null;
     disabledHolidays?: string[] | null;
     excludedUserIds?: string[] | null;
     excludedLibraryIds?: string[] | null;
@@ -302,6 +308,24 @@ export async function POST(req: NextRequest) {
       }
       if (importData.server.chatModel !== undefined) {
         update.chatModel = importData.server.chatModel ?? null;
+      }
+      if (importData.server.synopsisProvider !== undefined) {
+        update.synopsisProvider = importData.server.synopsisProvider ?? null;
+      }
+      if (importData.server.synopsisBaseUrl !== undefined) {
+        update.synopsisBaseUrl = importData.server.synopsisBaseUrl ?? null;
+      }
+      if (importData.server.synopsisModel !== undefined) {
+        update.synopsisModel = importData.server.synopsisModel ?? null;
+      }
+      if (typeof importData.server.knowledgeIndexEnabled === "boolean") {
+        update.knowledgeIndexEnabled = importData.server.knowledgeIndexEnabled;
+      }
+      if (Array.isArray(importData.server.embeddingItemTypes)) {
+        update.embeddingItemTypes = importData.server.embeddingItemTypes;
+      }
+      if (Array.isArray(importData.server.knowledgeItemTypes)) {
+        update.knowledgeItemTypes = importData.server.knowledgeItemTypes;
       }
 
       if (Array.isArray(importData.server.disabledHolidays)) {
