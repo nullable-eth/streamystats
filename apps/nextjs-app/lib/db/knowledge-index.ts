@@ -41,6 +41,7 @@ export async function getKnowledgeIndexStatus(
       types: servers.knowledgeItemTypes,
       embeddingModel: servers.embeddingModel,
       chatModel: servers.chatModel,
+      synopsisModel: servers.synopsisModel,
     })
     .from(servers)
     .where(eq(servers.id, serverId))
@@ -111,7 +112,7 @@ export async function getKnowledgeIndexStatus(
   return {
     enabled: server?.enabled ?? false,
     embeddingsConfigured: Boolean(server?.embeddingModel),
-    chatConfigured: Boolean(server?.chatModel),
+    chatConfigured: Boolean(server?.synopsisModel || server?.chatModel),
     byType: KNOWLEDGE_ITEM_TYPES.map((type) => ({
       type,
       enabled: enabledTypes.includes(type),

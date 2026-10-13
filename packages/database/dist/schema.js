@@ -72,6 +72,12 @@ exports.servers = (0, pg_core_1.pgTable)("servers", {
     chatBaseUrl: (0, pg_core_1.text)("chat_base_url"),
     chatApiKey: (0, pg_core_1.text)("chat_api_key"),
     chatModel: (0, pg_core_1.text)("chat_model"),
+    // Optional model for knowledge-index synopses (bulk, non-interactive).
+    // Unset: synopses use the AI Chat model above.
+    synopsisProvider: (0, pg_core_1.text)("synopsis_provider"),
+    synopsisBaseUrl: (0, pg_core_1.text)("synopsis_base_url"),
+    synopsisApiKey: (0, pg_core_1.text)("synopsis_api_key"),
+    synopsisModel: (0, pg_core_1.text)("synopsis_model"),
     // Sync status tracking
     syncStatus: (0, pg_core_1.text)("sync_status").notNull().default("pending"), // pending, syncing, completed, failed
     syncProgress: (0, pg_core_1.text)("sync_progress").notNull().default("not_started"), // not_started, users, libraries, items, activities, completed

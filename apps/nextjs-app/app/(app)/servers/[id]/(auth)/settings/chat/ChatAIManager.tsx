@@ -33,6 +33,7 @@ import {
 import { Separator } from "@/components/ui/separator";
 import type { ServerPublic } from "@/lib/types";
 import {
+  type ChatModelPurpose,
   type ChatProvider,
   clearChatConfigAction,
   saveChatConfigAction,
@@ -114,19 +115,63 @@ const PROVIDER_PRESETS = {
 
 type PresetKey = keyof typeof PROVIDER_PRESETS;
 
-function detectPreset(server: ServerPublic): PresetKey {
+interface SavedModel {
+  provider: string | null;
+  baseUrl: string | null;
+  model: string | null;
+  hasApiKey: boolean;
+}
+
+function savedModel(
+  server: ServerPublic,
+  purpose: ChatModelPurpose,
+): SavedModel {
+  return purpose === "synopsis"
+    ? {
+        provider: server.synopsisProvider,
+        baseUrl: server.synopsisBaseUrl,
+        model: server.synopsisModel,
+        hasApiKey: server.hasSynopsisApiKey,
+      }
+    : {
+        provider: server.chatProvider,
+        baseUrl: server.chatBaseUrl,
+        model: server.chatModel,
+        hasApiKey: server.hasChatApiKey,
+      };
+}
+
+const TEXT: Record<
+  ChatModelPurpose,
+  { title: string; description: string; name: string }
+> = {
+  chat: {
+    title: "AI Chat",
+    description:
+      "Configure an AI provider to enable the chat assistant. Use Cmd+K to ask questions about your watch history and get recommendations.",
+    name: "AI Chat",
+  },
+  synopsis: {
+    title: "Knowledge Index Model (optional)",
+    description:
+      "The model the knowledge index writes plot synopses with. It makes one request per movie and episode, so a smaller or cheaper model than the chat one often makes sense. Leave it unconfigured to use the AI Chat model.",
+    name: "knowledge index model",
+  },
+};
+
+function detectPreset(saved: SavedModel): PresetKey {
   // Not openai-compatible providers should be detected first regarless of url
-  if (server.chatProvider === "anthropic") {
+  if (saved.provider === "anthropic") {
     return "anthropic";
   }
-  if (server.chatProvider === "ollama") {
+  if (saved.provider === "ollama") {
     return "ollama";
   }
-  if (server.chatProvider === "gemini") {
+  if (saved.provider === "gemini") {
     return "gemini";
   }
 
-  const baseUrl = server.chatBaseUrl || "";
+  const baseUrl = saved.baseUrl || "";
   for (const [key, preset] of Object.entries(PROVIDER_PRESETS)) {
     if (key !== "custom" && baseUrl === preset.baseUrl) {
       return key as PresetKey;
@@ -135,22 +180,31 @@ function detectPreset(server: ServerPublic): PresetKey {
   return baseUrl ? "custom" : "openai";
 }
 
-export function ChatAIManager({ server }: { server: ServerPublic }) {
+export function ChatAIManager({
+  server,
+  purpose = "chat",
+}: {
+  server: ServerPublic;
+  purpose?: ChatModelPurpose;
+}) {
+  const saved = savedModel(server, purpose);
+  const text = TEXT[purpose];
+  const [isConfigured, setIsConfigured] = useState(Boolean(saved.provider));
   const [selectedPreset, setSelectedPreset] = useState<PresetKey>(
-    detectPreset(server),
+    detectPreset(saved),
   );
 
   const [baseUrl, setBaseUrl] = useState(
-    server.chatBaseUrl || PROVIDER_PRESETS.openai.baseUrl,
+    saved.baseUrl || PROVIDER_PRESETS.openai.baseUrl,
   );
   // Don't pre-fill API key for security - just track if one exists
   const [apiKey, setApiKey] = useState("");
-  const hasExistingApiKey = server.hasChatApiKey;
+  const hasExistingApiKey = saved.hasApiKey;
   const [model, setModel] = useState(
-    server.chatModel || PROVIDER_PRESETS.openai.defaultModel,
+    saved.model || PROVIDER_PRESETS.openai.defaultModel,
   );
   const [provider, setProvider] = useState<ChatProvider>(
-    (server.chatProvider as ChatProvider) || "openai-compatible",
+    (saved.provider as ChatProvider) || "openai-compatible",
   );
 
   const [isSaving, setIsSaving] = useState(false);
@@ -173,15 +227,20 @@ export function ChatAIManager({ server }: { server: ServerPublic }) {
   const handleSaveConfig = async () => {
     setIsSaving(true);
     try {
-      await saveChatConfigAction(server.id, {
-        provider,
-        baseUrl,
-        apiKey: apiKey || undefined,
-        model,
-      });
-      toast.success("AI Chat configuration saved");
+      await saveChatConfigAction(
+        server.id,
+        {
+          provider,
+          baseUrl,
+          apiKey: apiKey || undefined,
+          model,
+        },
+        purpose,
+      );
+      setIsConfigured(true);
+      toast.success(`${text.title} configuration saved`);
     } catch (_error) {
-      toast.error("Failed to save AI Chat configuration");
+      toast.error(`Failed to save ${text.name} configuration`);
     } finally {
       setIsSaving(false);
     }
@@ -190,12 +249,16 @@ export function ChatAIManager({ server }: { server: ServerPublic }) {
   const handleTestConnection = async () => {
     setIsTesting(true);
     try {
-      const result = await testChatConnectionAction(server.id, {
-        provider,
-        baseUrl,
-        apiKey: apiKey || undefined,
-        model,
-      });
+      const result = await testChatConnectionAction(
+        server.id,
+        {
+          provider,
+          baseUrl,
+          apiKey: apiKey || undefined,
+          model,
+        },
+        purpose,
+      );
       if (result.success) {
         toast.success(result.message);
       } else {
@@ -221,8 +284,9 @@ export function ChatAIManager({ server }: { server: ServerPublic }) {
   const handleClearConfig = async () => {
     setIsClearing(true);
     try {
-      await clearChatConfigAction(server.id);
-      toast.success("AI Chat configuration cleared");
+      await clearChatConfigAction(server.id, purpose);
+      setIsConfigured(false);
+      toast.success(`${text.title} configuration cleared`);
       setBaseUrl(PROVIDER_PRESETS.openai.baseUrl);
       setApiKey("");
       setModel(PROVIDER_PRESETS.openai.defaultModel);
@@ -242,21 +306,18 @@ export function ChatAIManager({ server }: { server: ServerPublic }) {
     <>
       <Card className="w-full mb-6">
         <CardHeader>
-          <CardTitle>AI Chat</CardTitle>
-          <CardDescription>
-            Configure an AI provider to enable the chat assistant. Use Cmd+K to
-            ask questions about your watch history and get recommendations.
-          </CardDescription>
+          <CardTitle>{text.title}</CardTitle>
+          <CardDescription>{text.description}</CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="preset-select">Provider</Label>
+              <Label htmlFor={`preset-select-${purpose}`}>Provider</Label>
               <Select
                 value={selectedPreset}
                 onValueChange={(value: PresetKey) => handlePresetChange(value)}
               >
-                <SelectTrigger id="preset-select">
+                <SelectTrigger id={`preset-select-${purpose}`}>
                   <SelectValue placeholder="Select provider" />
                 </SelectTrigger>
                 <SelectContent>
@@ -287,9 +348,9 @@ export function ChatAIManager({ server }: { server: ServerPublic }) {
 
             <div className="space-y-3">
               <div className="space-y-2">
-                <Label htmlFor="base-url">Base URL</Label>
+                <Label htmlFor={`base-url-${purpose}`}>Base URL</Label>
                 <Input
-                  id="base-url"
+                  id={`base-url-${purpose}`}
                   placeholder="https://api.openai.com/v1"
                   value={baseUrl}
                   onChange={(e) => setBaseUrl(e.target.value)}
@@ -297,13 +358,13 @@ export function ChatAIManager({ server }: { server: ServerPublic }) {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="api-key">
+                <Label htmlFor={`api-key-${purpose}`}>
                   API Key{" "}
                   {!PROVIDER_PRESETS[selectedPreset].requiresApiKey &&
                     "(Optional)"}
                 </Label>
                 <Input
-                  id="api-key"
+                  id={`api-key-${purpose}`}
                   type="password"
                   placeholder={
                     hasExistingApiKey
@@ -323,9 +384,9 @@ export function ChatAIManager({ server }: { server: ServerPublic }) {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="model">Model</Label>
+                <Label htmlFor={`model-${purpose}`}>Model</Label>
                 <Input
-                  id="model"
+                  id={`model-${purpose}`}
                   placeholder="gpt-4o-mini"
                   value={model}
                   onChange={(e) => setModel(e.target.value)}
@@ -381,13 +442,13 @@ export function ChatAIManager({ server }: { server: ServerPublic }) {
           <div className="space-y-4">
             <h3 className="text-sm font-medium">Clear Configuration</h3>
             <p className="text-sm text-gray-400">
-              Remove the AI Chat configuration from this server.
+              Remove the {text.name} configuration from this server.
             </p>
             <Button
               type="button"
               variant="destructive"
               onClick={() => setShowClearDialog(true)}
-              disabled={isClearing || !server.chatProvider}
+              disabled={isClearing || !isConfigured}
             >
               {isClearing ? "Clearing..." : "Clear Configuration"}
             </Button>
@@ -398,10 +459,13 @@ export function ChatAIManager({ server }: { server: ServerPublic }) {
       <AlertDialog open={showClearDialog} onOpenChange={setShowClearDialog}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Clear AI Chat Configuration?</AlertDialogTitle>
+            <AlertDialogTitle>
+              Clear {text.title} Configuration?
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              This will remove the AI Chat configuration. The chat feature will
-              be disabled until you configure a new provider.
+              {purpose === "synopsis"
+                ? "Synopses will be written with the AI Chat model again."
+                : "This will remove the AI Chat configuration. The chat feature will be disabled until you configure a new provider."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

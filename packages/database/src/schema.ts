@@ -140,6 +140,13 @@ export const servers = pgTable(
     chatApiKey: text("chat_api_key"),
     chatModel: text("chat_model"),
 
+    // Optional model for knowledge-index synopses (bulk, non-interactive).
+    // Unset: synopses use the AI Chat model above.
+    synopsisProvider: text("synopsis_provider"),
+    synopsisBaseUrl: text("synopsis_base_url"),
+    synopsisApiKey: text("synopsis_api_key"),
+    synopsisModel: text("synopsis_model"),
+
     // Sync status tracking
     syncStatus: text("sync_status").notNull().default("pending"), // pending, syncing, completed, failed
     syncProgress: text("sync_progress").notNull().default("not_started"), // not_started, users, libraries, items, activities, completed

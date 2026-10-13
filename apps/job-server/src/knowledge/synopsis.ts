@@ -3,9 +3,9 @@ import axios from "axios";
 import { eq } from "drizzle-orm";
 
 /**
- * Plot synopses written by the server's configured chat model from an item's
- * transcript. No outside source is involved: the transcript is the evidence,
- * and the model only condenses it.
+ * Plot synopses written from an item's transcript by the server's knowledge
+ * index model, or its AI Chat model when none is set. No outside source is
+ * involved: the transcript is the evidence, and the model only condenses it.
  */
 export interface ChatSettings {
   provider: string;
@@ -21,29 +21,37 @@ const SHORT_CHARS = 30_000;
 export async function getChatSettings(serverId: number): Promise<ChatSettings | null> {
   const [s] = await db
     .select({
-      provider: servers.chatProvider,
-      baseUrl: servers.chatBaseUrl,
-      apiKey: servers.chatApiKey,
-      model: servers.chatModel,
+      synopsisProvider: servers.synopsisProvider,
+      synopsisBaseUrl: servers.synopsisBaseUrl,
+      synopsisApiKey: servers.synopsisApiKey,
+      synopsisModel: servers.synopsisModel,
+      chatProvider: servers.chatProvider,
+      chatBaseUrl: servers.chatBaseUrl,
+      chatApiKey: servers.chatApiKey,
+      chatModel: servers.chatModel,
     })
     .from(servers)
     .where(eq(servers.id, serverId))
     .limit(1);
-  // Optional override for the synopsis model only, e.g. a plain
-  // OpenAI-compatible endpoint when the chat model sits behind an agent
-  // gateway that would narrate instead of answering. Defaults to AI Chat.
-  const { KNOWLEDGE_SYNOPSIS_BASE_URL: url, KNOWLEDGE_SYNOPSIS_MODEL: model } = process.env;
-  if (url) {
+  if (s?.synopsisProvider && s.synopsisModel) {
     return {
-      provider: "openai-compatible",
-      baseUrl: url,
-      apiKey: process.env.KNOWLEDGE_SYNOPSIS_API_KEY || s?.apiKey || null,
-      model: model || s?.model || "default",
+      provider: s.synopsisProvider,
+      baseUrl: s.synopsisBaseUrl,
+      apiKey: s.synopsisApiKey,
+      model: s.synopsisModel,
     };
   }
-  if (!s?.provider || !s.model) return null;
-  return { provider: s.provider, baseUrl: s.baseUrl, apiKey: s.apiKey, model: s.model };
+  if (!s?.chatProvider || !s.chatModel) return null;
+  return {
+    provider: s.chatProvider,
+    baseUrl: s.chatBaseUrl,
+    apiKey: s.chatApiKey,
+    model: s.chatModel,
+  };
 }
+
+/** Endpoints that rejected the thinking-off hint; not sent to them again. */
+const noThinkingHint = new Set<string>();
 
 /** Keep the opening and the ending, which carry the setup and the payoff. */
 export function fitTranscript(transcript: string, maxChars: number): string {
@@ -110,18 +118,27 @@ async function complete(chat: ChatSettings, prompt: string): Promise<string> {
     }
     default: {
       // "openai-compatible" and "ollama" (its OpenAI-compatible /v1 API).
-      // A synopsis needs no reasoning: ask templates that support it (Qwen3,
-      // llama.cpp, vLLM) to skip thinking, which otherwise costs thousands of
-      // tokens per item. Servers that reject the extra field get a plain retry.
+      // A plain chat completion. A synopsis needs no reasoning, so templates
+      // that support it (Qwen3/DeepSeek on llama.cpp, vLLM, SGLang, LM Studio)
+      // are asked to skip thinking, which otherwise costs thousands of tokens
+      // per item. An endpoint that rejects the field gets a plain retry and is
+      // never sent it again.
       const url = `${base || (chat.provider === "ollama" ? "http://localhost:11434/v1" : "https://api.openai.com/v1")}/chat/completions`;
       const headers = chat.apiKey ? { Authorization: `Bearer ${chat.apiKey}` } : {};
       const body = { model: chat.model, messages: [{ role: "user", content: prompt }] };
       const post = (extra: object) =>
         axios.post(url, { ...body, ...extra }, { headers, timeout: TIMEOUT_MS });
-      const res = await post({ chat_template_kwargs: { enable_thinking: false } }).catch(
+      const endpoint = `${url} ${chat.model}`;
+      const hint = noThinkingHint.has(endpoint)
+        ? {}
+        : { chat_template_kwargs: { enable_thinking: false } };
+      const res = await post(hint).catch(
         (error: unknown) => {
           const status = axios.isAxiosError(error) ? error.response?.status : undefined;
-          if (status === 400 || status === 422) return post({});
+          if ("chat_template_kwargs" in hint && (status === 400 || status === 422)) {
+            noThinkingHint.add(endpoint);
+            return post({});
+          }
           throw error;
         }
       );
