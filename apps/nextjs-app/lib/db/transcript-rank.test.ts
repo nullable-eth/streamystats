@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  bestLine,
   formatTimestamp,
   fuseByBestRank,
   fuseChunkRankings,
@@ -10,6 +11,7 @@ const chunk = (id: number, itemId: string) => ({
   id,
   itemId,
   startMs: id * 1000,
+  endMs: id * 1000 + 500,
   text: `c${id}`,
 });
 
@@ -87,6 +89,30 @@ describe("fuseByBestRank", () => {
       3,
     );
     expect(fused.map((r) => r.id)).toEqual(["a", "b", "c"]);
+  });
+});
+
+describe("bestLine", () => {
+  const lines = [
+    { ms: 1000, text: "They've done studies, you know." },
+    { ms: 2500, text: "60% of the time," },
+    { ms: 3200, text: "it works every time." },
+    { ms: 4000, text: "That doesn't make sense." },
+  ];
+
+  test("a quote split over two subtitle lines starts at the first", () => {
+    expect(bestLine(lines, "60% of the time it works every time")).toEqual({
+      ms: 2500,
+      text: "60% of the time, it works every time.",
+    });
+  });
+
+  test("the line sharing the most words when it is not verbatim", () => {
+    expect(bestLine(lines, "studies show it works")?.ms).toBe(1000);
+  });
+
+  test("no line for a paraphrase that shares no words", () => {
+    expect(bestLine(lines, "a cologne made of panther")).toBeNull();
   });
 });
 

@@ -4,8 +4,8 @@ const RRF_K = 60;
 export interface TranscriptMatch {
   itemId: string;
   score: number;
-  /** startMs is null for windows with no timestamp (synopsis windows). */
-  moments: { startMs: number | null; text: string }[];
+  /** Times are null for windows with no timestamp (synopsis windows). */
+  moments: { startMs: number | null; endMs: number | null; text: string }[];
 }
 
 /**
@@ -17,13 +17,20 @@ export function fuseChunkRankings(
     id: number;
     itemId: string;
     startMs: number | null;
+    endMs: number | null;
     text: string;
   }[][],
   limit: number,
 ): TranscriptMatch[] {
   const chunks = new Map<
     number,
-    { itemId: string; startMs: number | null; text: string; score: number }
+    {
+      itemId: string;
+      startMs: number | null;
+      endMs: number | null;
+      text: string;
+      score: number;
+    }
   >();
   for (const ranking of rankings) {
     ranking.forEach((c, rank) => {
@@ -41,7 +48,7 @@ export function fuseChunkRankings(
     };
     if (match.moments.length < 2) {
       match.score += c.score;
-      match.moments.push({ startMs: c.startMs, text: c.text });
+      match.moments.push({ startMs: c.startMs, endMs: c.endMs, text: c.text });
     }
     byItem.set(c.itemId, match);
   }
@@ -97,6 +104,62 @@ export function fuseByBestRank(
     )
     .slice(0, limit)
     .map(([id]) => ({ id, score: consensus.get(id) ?? 0 }));
+}
+
+const STOPWORDS = new Set(
+  "the and you that was for are with his her they this have from not but what all were when there can who will one just into out about then them she him does did has had its your our yeah well".split(
+    " ",
+  ),
+);
+
+/** Lower case, letters and digits only, single spaces. */
+function normalize(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}']+/gu, " ")
+    .trim();
+}
+
+function contentWords(text: string): Set<string> {
+  return new Set(
+    normalize(text)
+      .split(" ")
+      .filter((w) => w.length > 2 && !STOPWORDS.has(w)),
+  );
+}
+
+/**
+ * The line of dialogue a query points at, among one window's lines: the
+ * query as a phrase first, then the most of its words. A remembered line is
+ * often split over two subtitle lines, so each line is also tried together
+ * with the next; the time is when the first of them starts. Null when no
+ * line shares a word with the query (a paraphrase of a scene, not a quote).
+ */
+export function bestLine(
+  lines: { ms: number; text: string }[],
+  query: string,
+): { ms: number; text: string } | null {
+  const phrase = normalize(query);
+  const wanted = contentWords(query);
+  let best: { ms: number; text: string } | null = null;
+  let bestScore = 0;
+  for (let i = 0; i < lines.length; i++) {
+    for (const span of [1, 2]) {
+      if (i + span > lines.length) break;
+      const text = lines
+        .slice(i, i + span)
+        .map((l) => l.text)
+        .join(" ");
+      let score = [...contentWords(text)].filter((w) => wanted.has(w)).length;
+      if (phrase.length >= 8 && normalize(text).includes(phrase)) score += 100;
+      // A pair has to add something over its first line alone.
+      if (score > bestScore) {
+        best = { ms: lines[i].ms, text };
+        bestScore = score;
+      }
+    }
+  }
+  return best;
 }
 
 export function formatTimestamp(ms: number): string {

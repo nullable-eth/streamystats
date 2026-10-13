@@ -22,6 +22,7 @@ import {
   findItemsByCharacter,
   findItemsByPerson,
 } from "@/lib/db/item-people-search";
+import { findMoments, momentScope } from "@/lib/db/moments";
 import { searchByPlot } from "@/lib/db/plot-search";
 import { getRatedItems } from "@/lib/db/rated-items";
 import { alternate } from "@/lib/db/rating-signals-pick";
@@ -1269,6 +1270,77 @@ export function createChatTools(
             matched.length > 0
               ? `Found ${matched.length} titles whose story matches "${description}", best first. Confirm the best one with its overview, or with getPlotSynopsis when the detail is not in the overview.`
               : `No title in the library matches "${description}".`,
+        };
+      },
+    }),
+
+    findMoment: tool({
+      description:
+        "Find when something is said or happens in a movie, series or episode the user names, e.g. 'when does Neo meet the Architect in The Matrix Reloaded' or 'where is the line \"I'll be back\" in The Terminator'. Searches that title's dialogue and returns timestamps (hh:mm:ss) with the matching line. It finds what is said; a scene nobody talks in has no timestamp.",
+      inputSchema: z.object({
+        title: z.string().describe("Movie or series name"),
+        description: z.string().describe("The line, or what happens"),
+        season: z.number().optional().describe("Season number, for a series"),
+        episode: z
+          .number()
+          .optional()
+          .describe("Episode number within the season"),
+      }),
+      execute: async ({
+        title,
+        description,
+        season,
+        episode,
+      }: {
+        title: string;
+        description: string;
+        season?: number;
+        episode?: number;
+      }) => {
+        const scope = await momentScope({
+          serverId,
+          userId,
+          title,
+          season,
+          episode,
+        });
+        if (scope.length === 0) {
+          return {
+            moments: [],
+            message: `Nothing in the library matches "${title}".`,
+          };
+        }
+        const embed = await embedTextForServer({ serverId, text: description });
+        const moments = await findMoments({
+          serverId,
+          itemIds: scope.map((s) => s.id),
+          query: description,
+          embedding: embed.ok ? embed.embedding : null,
+          limit: 3,
+        });
+        const titles = await getMatchedItems([
+          ...new Set(moments.map((m) => m.itemId)),
+        ]);
+        const byId = new Map(titles.map((item) => [item.id, item]));
+        return {
+          moments: moments.flatMap((m) => {
+            const item = byId.get(m.itemId);
+            return item
+              ? [
+                  {
+                    ...formatItem(item),
+                    ...episodeOf(item),
+                    at: formatTimestamp(m.startMs),
+                    precision: m.precision,
+                    line: m.line,
+                  },
+                ]
+              : [];
+          }),
+          message:
+            moments.length > 0
+              ? "Times are when the matching dialogue is said, best first. Precision 'window' means only the two-minute stretch is known."
+              : `No dialogue in "${title}" matches "${description}". Only titles with a transcript can be searched this way.`,
         };
       },
     }),

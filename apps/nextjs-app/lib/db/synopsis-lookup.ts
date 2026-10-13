@@ -30,26 +30,22 @@ export interface SynopsisLookup {
 const pad = (n: number | null) => String(n ?? 0).padStart(2, "0");
 
 /**
- * The stored synopsis of a movie, or of one episode of a series: a given
- * season/episode, the last episode of a season, or (by default) the series'
- * last episode -- which is what "does it end on a cliffhanger?" needs.
- * Specials (season 0) are ignored. Only libraries the user may see.
+ * The movie or series a user means by a title: an exact name first, then the
+ * shortest name containing it. Only libraries the user may see; `visible` is
+ * that condition, for looking up the series' episodes.
  */
-export async function lookupSynopsis({
+export async function findTitle({
   serverId,
   userId,
   title,
-  season,
-  episode,
-  position,
 }: {
   serverId: number;
-  userId: string;
+  userId?: string;
   title: string;
-  season?: number;
-  episode?: number;
-  position: "first" | "last";
-}): Promise<SynopsisLookup | null> {
+}): Promise<{
+  match: { id: string; name: string; type: string } | undefined;
+  visible: SQL[];
+}> {
   const { itemLibraryExclusion } = await getStatisticsExclusions(
     serverId,
     userId,
@@ -75,6 +71,31 @@ export async function lookupSynopsis({
       asc(sql`length(${items.name})`),
     )
     .limit(1);
+  return { match, visible };
+}
+
+/**
+ * The stored synopsis of a movie, or of one episode of a series: a given
+ * season/episode, the last episode of a season, or (by default) the series'
+ * last episode -- which is what "does it end on a cliffhanger?" needs.
+ * Specials (season 0) are ignored. Only libraries the user may see.
+ */
+export async function lookupSynopsis({
+  serverId,
+  userId,
+  title,
+  season,
+  episode,
+  position,
+}: {
+  serverId: number;
+  userId: string;
+  title: string;
+  season?: number;
+  episode?: number;
+  position: "first" | "last";
+}): Promise<SynopsisLookup | null> {
+  const { match, visible } = await findTitle({ serverId, userId, title });
   if (!match) return null;
 
   let target: {

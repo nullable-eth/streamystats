@@ -59,6 +59,7 @@ export async function searchTextWindows({
     id: itemTextChunks.id,
     itemId: itemTextChunks.itemId,
     startMs: itemTextChunks.startMs,
+    endMs: itemTextChunks.endMs,
     text: itemTextChunks.text,
   };
   const tsQuery = sql`websearch_to_tsquery('english', ${query})`;
