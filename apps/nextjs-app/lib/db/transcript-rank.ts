@@ -141,8 +141,7 @@ export function bestLine(
 ): { ms: number; text: string } | null {
   const phrase = normalize(query);
   const wanted = contentWords(query);
-  let best: { ms: number; text: string } | null = null;
-  let bestScore = 0;
+  let best: { i: number; span: number; score: number } | null = null;
   for (let i = 0; i < lines.length; i++) {
     for (const span of [1, 2]) {
       if (i + span > lines.length) break;
@@ -152,14 +151,21 @@ export function bestLine(
         .join(" ");
       let score = [...contentWords(text)].filter((w) => wanted.has(w)).length;
       if (phrase.length >= 8 && normalize(text).includes(phrase)) score += 100;
-      // A pair has to add something over its first line alone.
-      if (score > bestScore) {
-        best = { ms: lines[i].ms, text };
-        bestScore = score;
-      }
+      // A pair has to add something over either of its lines alone, so a
+      // line is timed from itself, not from the line before it.
+      const ownsPair =
+        span === 1 && best?.span === 2 && best.i === i - 1 && score === best.score;
+      if (score > (best?.score ?? 0) || ownsPair) best = { i, span, score };
     }
   }
-  return best;
+  if (!best) return null;
+  return {
+    ms: lines[best.i].ms,
+    text: lines
+      .slice(best.i, best.i + best.span)
+      .map((l) => l.text)
+      .join(" "),
+  };
 }
 
 export function formatTimestamp(ms: number): string {

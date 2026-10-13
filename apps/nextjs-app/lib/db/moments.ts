@@ -83,9 +83,20 @@ export async function findMoments({
     endMs: itemTextChunks.endMs,
   };
   const tsQuery = sql`websearch_to_tsquery('english', ${query})`;
+  // The words in the order given: a quoted line, not just its words scattered
+  // over a window full of common ones.
+  const phraseQuery = sql`phraseto_tsquery('english', ${query})`;
   const pool = Math.max(limit * 5, 20);
 
-  const [byWords, byMeaning] = await Promise.all([
+  const [byPhrase, byWords, byMeaning] = await Promise.all([
+    db
+      .select(columns)
+      .from(itemTextChunks)
+      .where(and(...scope, sql`${itemTextChunks.searchVector} @@ ${phraseQuery}`))
+      .orderBy(
+        desc(sql`ts_rank_cd(${itemTextChunks.searchVector}, ${phraseQuery})`),
+      )
+      .limit(pool),
     db
       .select(columns)
       .from(itemTextChunks)
@@ -114,9 +125,11 @@ export async function findMoments({
       : Promise.resolve([]),
   ]);
 
-  const windows = new Map([...byWords, ...byMeaning].map((w) => [w.id, w]));
+  const windows = new Map(
+    [...byPhrase, ...byWords, ...byMeaning].map((w) => [w.id, w]),
+  );
   const ranked = fuseByBestRank(
-    [byWords.map((w) => String(w.id)), byMeaning.map((w) => String(w.id))],
+    [byPhrase, byWords, byMeaning].map((list) => list.map((w) => String(w.id))),
     limit,
   );
   return Promise.all(
