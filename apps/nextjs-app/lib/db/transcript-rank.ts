@@ -4,7 +4,7 @@ const RRF_K = 60;
 export interface TranscriptMatch {
   itemId: string;
   score: number;
-  /** Times are null for windows with no timestamp (synopsis windows). */
+  /** Times are null for windows with none (the synopsis, not its scenes). */
   moments: { startMs: number | null; endMs: number | null; text: string }[];
 }
 
@@ -154,7 +154,10 @@ export function bestLine(
       // A pair has to add something over either of its lines alone, so a
       // line is timed from itself, not from the line before it.
       const ownsPair =
-        span === 1 && best?.span === 2 && best.i === i - 1 && score === best.score;
+        span === 1 &&
+        best?.span === 2 &&
+        best.i === i - 1 &&
+        score === best.score;
       if (score > (best?.score ?? 0) || ownsPair) best = { i, span, score };
     }
   }

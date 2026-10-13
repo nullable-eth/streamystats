@@ -11,7 +11,7 @@ import {
   itemResultColumns,
   toItemResult,
 } from "./search-result";
-import { fuseByBestRank } from "./transcript-rank";
+import { fuseByBestRank, type TranscriptMatch } from "./transcript-rank";
 import { searchTextWindows } from "./transcript-search";
 
 export type PlotSearchType = "Movie" | "Series" | "Episode";
@@ -21,16 +21,17 @@ const POOL = 50;
 /**
  * Titles that match a description of their story, best first. Three rankings
  * are fused: the item vectors (overview, details and, once the knowledge
- * index has written one, the plot synopsis), the synopsis windows (the plot
- * on its own, whole and paragraph by paragraph, so one plot point can match)
- * and the transcript windows (what was said), each title by its best rank in
- * any of them: a title one ranking puts first is not buried under titles
- * several rankings put halfway down. Only items the viewer may see.
+ * index has written one, the plot synopsis), the plot windows (the synopsis
+ * whole and by paragraph, and the scene notes part by part, so one plot
+ * point can match) and the transcript windows (what was said), each title by
+ * its best rank in any of them: a title one ranking puts first is not buried
+ * under titles several rankings put halfway down. Only items the viewer may
+ * see.
  *
- * A title found through its dialogue carries the moment in `metadata`:
- * `momentMs` (when the matching line, or its window, starts) and
- * `momentPrecision` ("line" or "window"), so a client can start playback
- * there.
+ * A title found through its dialogue or its scene notes carries the moment
+ * in `metadata`, from whichever of the two ranked it higher: `momentMs`
+ * (when the matching line, or its window, starts) and `momentPrecision`
+ * ("line" or "window"), so a client can start playback there.
  */
 export async function searchByPlot({
   serverId,
@@ -116,10 +117,19 @@ export async function searchByPlot({
     })
     .slice(0, limit);
 
-  const spoken = new Map(byDialogue.map((m) => [m.itemId, m.moments[0]]));
+  // Each title's best timed window: a dialogue window, or a scene of its
+  // notes (synopsis windows have no times), from the higher of the two.
+  const timed = new Map<string, TranscriptMatch["moments"][number]>();
+  const byRank = [byDialogue, byPlot]
+    .flatMap((list) => list.map((match, rank) => ({ match, rank })))
+    .sort((a, b) => a.rank - b.rank);
+  for (const { match } of byRank) {
+    const window = match.moments.find((w) => w.startMs !== null);
+    if (window && !timed.has(match.itemId)) timed.set(match.itemId, window);
+  }
   return Promise.all(
     results.map(async (result) => {
-      const window = spoken.get(result.id);
+      const window = timed.get(result.id);
       if (!window || window.startMs === null) return result;
       const moment = await locateMoment(
         { itemId: result.id, startMs: window.startMs, endMs: window.endMs },

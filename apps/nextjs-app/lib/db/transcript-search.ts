@@ -24,7 +24,8 @@ const POOL = 50;
  * (quotes, names) and vectors for paraphrased memories, fused by rank. Only
  * libraries the user may see, and only items still in the library.
  * Transcript windows are dialogue, with when it is said; synopsis windows are
- * the plot, whole and paragraph by paragraph, with no timestamps.
+ * the plot: the synopsis whole and paragraph by paragraph (no times) and
+ * each part of the scene notes (with its times).
  */
 export async function searchTextWindows({
   kind,

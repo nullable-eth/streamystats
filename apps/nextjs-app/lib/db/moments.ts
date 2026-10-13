@@ -11,7 +11,7 @@ export interface Moment {
   itemId: string;
   /** When the matching line starts; the window's start if no line matched. */
   startMs: number;
-  /** The end of the dialogue window the moment is in. */
+  /** The end of the window (dialogue, or a scene) the moment is in. */
   endMs: number | null;
   /** "line": `startMs` is the matching line; "window": the window it is in. */
   precision: "line" | "window";
@@ -53,9 +53,11 @@ export async function locateMoment(
 
 /**
  * Where in some titles a query is said or happens, best first: their
- * dialogue windows ranked by exact wording and by meaning, each located to
- * the line. Searches every window of the titles exactly (no index), which is
- * cheap for one title or one series.
+ * dialogue windows ranked by exact wording and by meaning, and their scene
+ * notes (the plot part by part, with times) for what happens rather than
+ * what is said, each located to the line within it. Searches every window
+ * of the titles exactly (no index), which is cheap for one title or one
+ * series.
  */
 export async function findMoments({
   serverId,
@@ -73,9 +75,11 @@ export async function findMoments({
   if (itemIds.length === 0) return [];
   const scope: SQL[] = [
     eq(itemTextChunks.serverId, serverId),
-    sql`${itemTextChunks.kind} = 'transcript'`,
     inArray(itemTextChunks.itemId, itemIds),
   ];
+  const dialogue = sql`${itemTextChunks.kind} = 'transcript'`;
+  // Scene notes are the plot windows with times; the synopsis has none.
+  const scenes = sql`${itemTextChunks.kind} = 'synopsis' AND ${itemTextChunks.startMs} IS NOT NULL`;
   const columns = {
     id: itemTextChunks.id,
     itemId: itemTextChunks.itemId,
@@ -88,23 +92,16 @@ export async function findMoments({
   const phraseQuery = sql`phraseto_tsquery('english', ${query})`;
   const pool = Math.max(limit * 5, 20);
 
-  const [byPhrase, byWords, byMeaning] = await Promise.all([
+  const byText = (kind: SQL, match: SQL) =>
     db
       .select(columns)
       .from(itemTextChunks)
-      .where(and(...scope, sql`${itemTextChunks.searchVector} @@ ${phraseQuery}`))
-      .orderBy(
-        desc(sql`ts_rank_cd(${itemTextChunks.searchVector}, ${phraseQuery})`),
+      .where(
+        and(...scope, kind, sql`${itemTextChunks.searchVector} @@ ${match}`),
       )
-      .limit(pool),
-    db
-      .select(columns)
-      .from(itemTextChunks)
-      .where(and(...scope, sql`${itemTextChunks.searchVector} @@ ${tsQuery}`))
-      .orderBy(
-        desc(sql`ts_rank_cd(${itemTextChunks.searchVector}, ${tsQuery})`),
-      )
-      .limit(pool),
+      .orderBy(desc(sql`ts_rank_cd(${itemTextChunks.searchVector}, ${match})`))
+      .limit(pool);
+  const byMeaning = (kind: SQL) =>
     embedding
       ? db
           .select(columns)
@@ -112,6 +109,7 @@ export async function findMoments({
           .where(
             and(
               ...scope,
+              kind,
               sql`vector_dims(${itemTextChunks.embedding}) = ${embedding.length}`,
             ),
           )
@@ -122,17 +120,23 @@ export async function findMoments({
             ),
           )
           .limit(pool)
-      : Promise.resolve([]),
-  ]);
+      : Promise.resolve([]);
 
-  const windows = new Map(
-    [...byPhrase, ...byWords, ...byMeaning].map((w) => [w.id, w]),
-  );
+  const lists = await Promise.all([
+    byText(dialogue, phraseQuery),
+    byText(dialogue, tsQuery),
+    byMeaning(dialogue),
+    byText(scenes, tsQuery),
+    byMeaning(scenes),
+  ]);
+  const windows = new Map(lists.flat().map((w) => [w.id, w]));
+  // Twice as many as wanted: a scene and a dialogue window can lead to the
+  // same line.
   const ranked = fuseByBestRank(
-    [byPhrase, byWords, byMeaning].map((list) => list.map((w) => String(w.id))),
-    limit,
+    lists.map((list) => list.map((w) => String(w.id))),
+    limit * 2,
   );
-  return Promise.all(
+  const moments = await Promise.all(
     ranked.flatMap(({ id }) => {
       const w = windows.get(Number(id));
       return w && w.startMs !== null
@@ -145,6 +149,15 @@ export async function findMoments({
         : [];
     }),
   );
+  const seen = new Set<string>();
+  return moments
+    .filter((m) => {
+      const key = `${m.itemId}:${m.startMs}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, limit);
 }
 
 /**
