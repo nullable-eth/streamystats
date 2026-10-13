@@ -76,7 +76,7 @@ function titleOf(item: DueItem): string {
 
 /**
  * Selected movies/episodes that need work: never looked at; no usable subtitle a
- * day ago (Bazarr may have fetched one since); a weekly re-check for upgraded
+ * day ago (a subtitle downloader may have fetched one since); a weekly re-check for upgraded
  * subtitles; or, with a chat model, a synopsis missing or written from an
  * older transcript.
  */

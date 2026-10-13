@@ -86,13 +86,13 @@ export function KnowledgeIndexManager({
         <CardTitle>Knowledge Index</CardTitle>
         <CardDescription>
           Reads the full subtitle track of every selected movie and episode
-          (external files such as Bazarr&apos;s, or embedded text tracks) and
-          embeds the dialogue, so the AI chat can find titles from a remembered
-          line or scene. With a chat model configured, it also writes a plot
-          synopsis from each transcript and adds it to the item&apos;s
-          embedding, which sharpens plot search and recommendations, and lets
-          the chat answer how an episode or series ends. Forced and image-based
-          subtitles are skipped.
+          (external subtitle files, such as those from your subtitle downloader,
+          or embedded text tracks) and embeds the dialogue, so the AI chat can
+          find titles from a remembered line or scene. With a chat model
+          configured, it also writes a plot synopsis from each transcript and
+          adds it to the item&apos;s embedding, which sharpens plot search and
+          recommendations, and lets the chat answer how an episode or series
+          ends. Forced and image-based subtitles are skipped.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -162,23 +162,67 @@ export function KnowledgeIndexManager({
           ))}
         </div>
 
-        <div className="space-y-1 text-sm">
+        <div className="space-y-2 text-sm">
           <p>
             Checked {sum("checked").toLocaleString()} of{" "}
             {total.toLocaleString()} so far.
             {sum("missing") > 0 &&
               ` ${sum("missing").toLocaleString()} of them ${
                 sum("missing") === 1 ? "has" : "have"
-              } no full text subtitle yet; they are checked again daily, so a subtitle Bazarr adds later is picked up.`}
+              } no full text subtitle yet. They are checked again daily, so subtitles your subtitle downloader adds later are picked up.`}
           </p>
-          {sum("missing") > 0 && (
-            <p className="text-muted-foreground">
-              {status.missingExamples.join(" · ")}
-              {sum("missing") > status.missingExamples.length ? " …" : ""}
-            </p>
-          )}
+          {sum("missing") > 0 && <MissingList missing={status.missing} />}
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+function MissingList({
+  missing,
+}: {
+  missing: KnowledgeIndexStatus["missing"];
+}) {
+  const { series, movies } = missing;
+  const episodes = series.reduce((n, s) => n + s.count, 0);
+  const parts = [
+    series.length > 0 &&
+      `${episodes.toLocaleString()} episode${episodes === 1 ? "" : "s"} in ${series.length.toLocaleString()} series`,
+    movies.length > 0 &&
+      `${movies.length.toLocaleString()} movie${movies.length === 1 ? "" : "s"}`,
+  ].filter(Boolean);
+  return (
+    <details className="rounded-md border">
+      <summary className="cursor-pointer select-none px-3 py-2 text-muted-foreground">
+        Without a full text subtitle: {parts.join(" and ")}
+      </summary>
+      <div className="max-h-96 space-y-4 overflow-y-auto border-t px-3 py-3">
+        {series.length > 0 && (
+          <ul className="space-y-1.5">
+            {series.map((s) => (
+              <li key={s.name}>
+                <span className="font-medium">{s.name}</span>{" "}
+                <span className="text-muted-foreground">
+                  ({s.count.toLocaleString()}) {s.episodes}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {movies.length > 0 && (
+          <div className="space-y-1.5">
+            <p className="font-medium">Movies</p>
+            <ul className="space-y-1 text-muted-foreground">
+              {movies.map((m) => (
+                <li key={`${m.name}-${m.year ?? ""}`}>
+                  {m.name}
+                  {m.year ? ` (${m.year})` : ""}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    </details>
   );
 }

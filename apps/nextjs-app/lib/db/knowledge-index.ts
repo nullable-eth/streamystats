@@ -8,6 +8,7 @@ import {
   servers,
 } from "@streamystats/database";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { type MissingSummary, summarizeMissing } from "@/lib/knowledge-missing";
 
 export interface KnowledgeTypeStatus {
   type: (typeof KNOWLEDGE_ITEM_TYPES)[number];
@@ -18,7 +19,7 @@ export interface KnowledgeTypeStatus {
   checked: number;
   transcripts: number;
   synopses: number;
-  /** Checked, but no full text subtitle: Bazarr's to-do list. */
+  /** Checked, but no full text subtitle: the subtitle downloader's to-do list. */
   missing: number;
 }
 
@@ -27,8 +28,8 @@ export interface KnowledgeIndexStatus {
   embeddingsConfigured: boolean;
   chatConfigured: boolean;
   byType: KnowledgeTypeStatus[];
-  /** Up to 10 enabled items with no full text subtitle, for Bazarr. */
-  missingExamples: string[];
+  /** Enabled items with no full text subtitle, grouped by series and movie. */
+  missing: MissingSummary;
 }
 
 export async function getKnowledgeIndexStatus(
@@ -52,7 +53,7 @@ export async function getKnowledgeIndexStatus(
     inArray(items.type, [...KNOWLEDGE_ITEM_TYPES]),
   );
 
-  const [totals, counts, examples] = await Promise.all([
+  const [totals, counts, missingRows] = await Promise.all([
     db
       .select({ type: items.type, n: sql<number>`count(*)::int` })
       .from(items)
@@ -77,6 +78,7 @@ export async function getKnowledgeIndexStatus(
             seriesName: items.seriesName,
             season: items.parentIndexNumber,
             episode: items.indexNumber,
+            year: items.productionYear,
           })
           .from(itemTexts)
           .innerJoin(items, eq(items.id, itemTexts.itemId))
@@ -93,8 +95,7 @@ export async function getKnowledgeIndexStatus(
             items.parentIndexNumber,
             items.indexNumber,
             items.name,
-          )
-          .limit(10),
+          ),
   ]);
 
   const count = (type: string, kind: string, status?: string) =>
@@ -120,11 +121,7 @@ export async function getKnowledgeIndexStatus(
       synopses: count(type, "synopsis", "ready"),
       missing: count(type, "transcript", "missing"),
     })),
-    missingExamples: examples.map((e) =>
-      e.seriesName
-        ? `${e.seriesName} S${String(e.season ?? 0).padStart(2, "0")}E${String(e.episode ?? 0).padStart(2, "0")}`
-        : e.name,
-    ),
+    missing: summarizeMissing(missingRows),
   };
 }
 
