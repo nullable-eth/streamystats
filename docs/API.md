@@ -84,7 +84,9 @@ Several endpoints require identifying which Jellyfin server to query. Use one of
 
 ### GET /api/search
 
-Global search across media, people, users, watchlists, and more.
+Global search across media, people, users, watchlists, and more. With
+`mode=plot` it instead finds movies, series and episodes from a description
+of their story or a remembered line.
 
 #### Query Parameters
 
@@ -92,6 +94,7 @@ Global search across media, people, users, watchlists, and more.
 |-----------|------|----------|---------|-------------|
 | `q` | string | **Yes** | - | Search query |
 | `limit` | integer | No | 10 | Max results per category (1-100) |
+| `mode` | string | No | `title` | `title` matches names; `plot` searches stories and dialogue (see [Plot Search](#plot-search)) |
 | `format` | string | No | `full` | Response format: `full` or `ids` |
 | `type` | string | No | `all` | Filter by content type |
 
@@ -265,14 +268,42 @@ curl "https://streamystats.example.com/api/search?q=keanu&type=actors" \
 # IDs format for Jellyfin API integration
 curl "https://streamystats.example.com/api/search?q=star%20wars&format=ids&limit=50" \
   -H 'Authorization: MediaBrowser Token="your-token"'
+
+# Plot search: a title from a half-remembered story
+curl "https://streamystats.example.com/api/search?q=astronauts%20operate%20replica%20bodies%20back%20on%20earth&mode=plot&format=ids" \
+  -H 'Authorization: MediaBrowser Token="your-token"'
 ```
+
+#### Plot Search
+
+`mode=plot` finds titles from what happens in them rather than their names:
+"the one where two astronauts operate replica bodies back on Earth", or a
+line someone remembers. It ranks two things together and returns the best
+items:
+
+- **Item embeddings**: each movie, series and episode's overview and
+  details, plus its plot synopsis once the knowledge index has written one.
+- **Transcripts**: the dialogue of every movie and episode with a full text
+  subtitle, by meaning and by exact wording (quote a phrase for an exact
+  match).
+
+It needs an embedding model (Settings → AI Models). The knowledge index
+(Settings → AI Recommendations) adds the synopses and transcripts; without
+it, plot search still works on overviews. It only covers media: `type` can be
+`all`, `media`, `movies`, `series` or `episodes`, and any other type returns
+nothing. Results are limited to the libraries the user can see, and only
+titles are returned, never synopsis text, so the response is spoiler-free.
+The response formats are the same as title search.
 
 #### Errors
 
 | Status | Response |
 |--------|----------|
 | 400 | `{"error": "Search query is required", "data": {"movies": [], ...}}` |
+| 400 | `{"error": "Invalid 'mode'. Must be title or plot."}` |
+| 400 | Plot search without an embedding model: `{"error": "Embeddings are not configured...", "data": {...}}` |
 | 401 | `{"error": "Unauthorized", "message": "Valid authentication required..."}` |
+| 502 | Plot search could not reach the embedding model |
 
 ---
 
@@ -280,7 +311,8 @@ curl "https://streamystats.example.com/api/search?q=star%20wars&format=ids&limit
 
 ### GET /api/recommendations
 
-Get personalized recommendations for the authenticated user.
+Get personalized recommendations for the authenticated user, or with
+`itemId`, titles like one movie or series ("more like this").
 
 #### Query Parameters
 
@@ -294,6 +326,7 @@ Get personalized recommendations for the authenticated user.
 | `includeBasedOn` | boolean | No | true | Include source items |
 | `includeReasons` | boolean | No | true | Include recommendation reasons |
 | `targetUserId` | string | No | - | Admin only: get recommendations for another user |
+| `itemId` | string | No | - | Jellyfin ID of a movie or series: return titles of the same type with the closest embeddings (including the plot synopsis when indexed) instead of personal recommendations. `type` and `range` are ignored; results are limited to libraries the user can see, and are empty when the user cannot see the item |
 
 #### Response: Full Format (default)
 

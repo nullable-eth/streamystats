@@ -13,6 +13,11 @@ import {
 } from "@streamystats/database";
 import { and, desc, eq, ilike, or, type SQL, sql } from "drizzle-orm";
 import { getStatisticsExclusions } from "./exclusions";
+import {
+  type ItemResultRow,
+  itemResultColumns,
+  toItemResult,
+} from "./search-result";
 
 /**
  * Generic search result type that can represent any searchable entity
@@ -86,34 +91,9 @@ async function searchItems(
   // 1. Full-text search (uses GiST index on search_vector)
   // 2. ILIKE pattern match (uses GIN trigram index)
   // 3. word_similarity for fuzzy matching with typos (threshold 0.4)
-  const results = await db.execute<{
-    id: string;
-    name: string;
-    type: string;
-    series_name: string | null;
-    season_name: string | null;
-    index_number: number | null;
-    parent_index_number: number | null;
-    production_year: number | null;
-    primary_image_tag: string | null;
-    series_primary_image_tag: string | null;
-    series_id: string | null;
-    library_name: string | null;
-    rank: number;
-  }>(sql`
+  const results = await db.execute<ItemResultRow & { rank: number }>(sql`
     SELECT
-      ${items.id} as id,
-      ${items.name} as name,
-      ${items.type} as type,
-      ${items.seriesName} as series_name,
-      ${items.seasonName} as season_name,
-      ${items.indexNumber} as index_number,
-      ${items.parentIndexNumber} as parent_index_number,
-      ${items.productionYear} as production_year,
-      ${items.primaryImageTag} as primary_image_tag,
-      ${items.seriesPrimaryImageTag} as series_primary_image_tag,
-      ${items.seriesId} as series_id,
-      ${libraries.name} as library_name,
+      ${itemResultColumns},
       GREATEST(
         CASE
           WHEN search_vector IS NOT NULL
@@ -145,42 +125,7 @@ async function searchItems(
     LIMIT ${limit}
   `);
 
-  return [...results].map((item) => {
-    let subtitle = "";
-    if (item.type === "Episode" && item.series_name) {
-      subtitle = item.series_name;
-      if (item.parent_index_number !== null && item.index_number !== null) {
-        subtitle += ` - S${item.parent_index_number}E${item.index_number}`;
-      }
-    } else if (item.type === "Season" && item.series_name) {
-      subtitle = item.series_name;
-    } else if (item.production_year) {
-      subtitle = String(item.production_year);
-    }
-
-    // Use series image for episodes if available
-    const imageId =
-      item.type === "Episode" && item.series_id ? item.series_id : item.id;
-    const imageTag =
-      item.type === "Episode" && item.series_primary_image_tag
-        ? item.series_primary_image_tag
-        : item.primary_image_tag;
-
-    return {
-      id: item.id,
-      type: "item" as const,
-      subtype: item.type,
-      title: item.name,
-      subtitle,
-      imageId,
-      imageTag: imageTag ?? undefined,
-      href: `/library/${item.id}`,
-      metadata: {
-        ...(item.library_name ? { libraryName: item.library_name } : {}),
-      },
-      rank: item.rank,
-    };
-  });
+  return [...results].map((item) => toItemResult(item, item.rank));
 }
 
 /**

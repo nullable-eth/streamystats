@@ -48,6 +48,9 @@ describe("backup export/import routes", () => {
 
     bunMock.module("@/lib/api-auth", () => ({
       requireAdmin: async () => ({ error: null }),
+      // Module mocks are process-wide under `bun test`, so the mock keeps the
+      // exports other route tests import (search-plot.test.ts: requireAuth).
+      requireAuth: async () => ({ error: null, session: null }),
     }));
 
     bunMock.module("@/lib/db/server", () => ({
@@ -159,6 +162,9 @@ describe("backup export/import routes", () => {
 
     bunMock.module("@/lib/api-auth", () => ({
       requireAdmin: async () => ({ error: null }),
+      // Module mocks are process-wide under `bun test`, so the mock keeps the
+      // exports other route tests import (search-plot.test.ts: requireAuth).
+      requireAuth: async () => ({ error: null, session: null }),
     }));
 
     bunMock.module("@/lib/db/server", () => ({
