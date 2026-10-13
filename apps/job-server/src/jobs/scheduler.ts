@@ -21,11 +21,17 @@ interface ServerJobConfig {
   enabled: boolean;
 }
 
+// Workers send a heartbeat every 30 s, so a job whose worker died (a restart
+// or a deploy mid-run) fails within a minute and is retried. Without one it
+// stays active until it expires, and holds its singleton key all that time:
+// up to four hours with no scheduled run of that job.
+const HEARTBEAT_SECONDS = 60;
+
 const SEND_OPTIONS = {
-  STANDARD: { expireInSeconds: 1800, retryLimit: 1, retryDelay: 60 },
-  MEDIUM: { expireInSeconds: 3600, retryLimit: 1, retryDelay: 60 },
-  LONG: { expireInSeconds: 7200, retryLimit: 1, retryDelay: 300 },
-  EXTENDED: { expireInSeconds: 14400, retryLimit: 1, retryDelay: 300 },
+  STANDARD: { expireInSeconds: 1800, retryLimit: 1, retryDelay: 60, heartbeatSeconds: HEARTBEAT_SECONDS },
+  MEDIUM: { expireInSeconds: 3600, retryLimit: 1, retryDelay: 60, heartbeatSeconds: HEARTBEAT_SECONDS },
+  LONG: { expireInSeconds: 7200, retryLimit: 1, retryDelay: 300, heartbeatSeconds: HEARTBEAT_SECONDS },
+  EXTENDED: { expireInSeconds: 14400, retryLimit: 1, retryDelay: 300, heartbeatSeconds: HEARTBEAT_SECONDS },
 } as const;
 
 /**
