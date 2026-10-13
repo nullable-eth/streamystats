@@ -68,6 +68,37 @@ export function fuseItemRankings(
     .slice(0, limit);
 }
 
+/**
+ * Fuse ranked item id lists by each item's best rank in any of them, so a
+ * title that one ranking puts first is not buried under titles several
+ * rankings put halfway down. Ties go to the item the rankings agree on more
+ * (reciprocal rank fusion), which is also its score.
+ */
+export function fuseByBestRank(
+  rankings: string[][],
+  limit: number,
+): { id: string; score: number }[] {
+  const consensus = new Map(
+    fuseItemRankings(rankings, Number.POSITIVE_INFINITY).map((r) => [
+      r.id,
+      r.score,
+    ]),
+  );
+  const best = new Map<string, number>();
+  for (const ranking of rankings) {
+    ranking.forEach((id, rank) => {
+      best.set(id, Math.min(best.get(id) ?? rank, rank));
+    });
+  }
+  return [...best]
+    .sort(
+      (a, b) =>
+        a[1] - b[1] || (consensus.get(b[0]) ?? 0) - (consensus.get(a[0]) ?? 0),
+    )
+    .slice(0, limit)
+    .map(([id]) => ({ id, score: consensus.get(id) ?? 0 }));
+}
+
 export function formatTimestamp(ms: number): string {
   const s = Math.floor(ms / 1000);
   const pad = (n: number) => String(n).padStart(2, "0");

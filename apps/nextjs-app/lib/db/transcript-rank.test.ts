@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   formatTimestamp,
+  fuseByBestRank,
   fuseChunkRankings,
   fuseItemRankings,
 } from "./transcript-rank";
@@ -55,6 +56,37 @@ describe("fuseItemRankings", () => {
     const fused = fuseItemRankings([["a", "b", "c"]], 2);
     expect(fused.map((r) => r.id)).toEqual(["a", "b"]);
     expect(fused[0].score).toBeGreaterThan(fused[1].score);
+  });
+});
+
+describe("fuseByBestRank", () => {
+  test("a title one ranking puts first beats titles several put lower", () => {
+    // RRF would put b and c (in two rankings each) above a.
+    const rankings = [
+      ["a", "b", "c"],
+      ["x", "b", "c"],
+      ["y", "c", "b"],
+    ];
+    expect(fuseItemRankings(rankings, 3).map((r) => r.id)[0]).toBe("b");
+    expect(fuseByBestRank(rankings, 6).map((r) => r.id)).toEqual([
+      "a",
+      "x",
+      "y",
+      "b",
+      "c",
+    ]);
+  });
+
+  test("ties at the same best rank go to the one more rankings agree on", () => {
+    const fused = fuseByBestRank(
+      [
+        ["a", "b"],
+        ["b", "a"],
+        ["c", "a"],
+      ],
+      3,
+    );
+    expect(fused.map((r) => r.id)).toEqual(["a", "b", "c"]);
   });
 });
 

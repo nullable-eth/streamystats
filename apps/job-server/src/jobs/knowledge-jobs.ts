@@ -54,29 +54,46 @@ type DueItem = {
   overview: string | null;
 };
 
-const ensuredDimensions = new Set<number>();
+type WindowKind = "transcript" | "synopsis";
 
-/** Partial HNSW index per dimension, the same scheme as items.embedding. */
-async function ensureChunkIndex(dimensions: number): Promise<void> {
-  if (ensuredDimensions.has(dimensions)) return;
+const ensuredIndexes = new Set<string>();
+
+/**
+ * Partial HNSW index per dimension, as for items.embedding, and per kind of
+ * window: dialogue and plot summaries sit in different parts of the vector
+ * space, and one shared graph searched with a kind filter missed the best
+ * synopsis windows entirely. Replaces the earlier shared index.
+ */
+async function ensureChunkIndex(dimensions: number, kind: WindowKind): Promise<void> {
+  const key = `${kind}:${dimensions}`;
+  if (ensuredIndexes.has(key)) return;
   const n = sql.raw(String(dimensions));
   await db.execute(sql`
-    CREATE INDEX CONCURRENTLY IF NOT EXISTS ${sql.raw(`item_text_chunks_embedding_${dimensions}_idx`)}
+    CREATE INDEX CONCURRENTLY IF NOT EXISTS ${sql.raw(`item_text_chunks_${kind}_embedding_${dimensions}_idx`)}
     ON item_text_chunks USING hnsw ((embedding::vector(${n})) vector_cosine_ops)
-    WHERE vector_dims(embedding) = ${n}
+    WHERE vector_dims(embedding) = ${n} AND kind = ${sql.raw(`'${kind}'`)}
   `);
-  ensuredDimensions.add(dimensions);
+  ensuredIndexes.add(key);
+  if (ensuredIndexes.has(`transcript:${dimensions}`) && ensuredIndexes.has(`synopsis:${dimensions}`)) {
+    await db.execute(
+      sql`DROP INDEX CONCURRENTLY IF EXISTS ${sql.raw(`item_text_chunks_embedding_${dimensions}_idx`)}`
+    );
+  }
 }
 
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 
-/** Embed in batches; the chunk index for the dimension exists afterwards. */
-async function embedAll(embedding: EmbeddingSettings, texts: string[]): Promise<number[][]> {
+/** Embed in batches; the window index for the dimension exists afterwards. */
+async function embedAll(
+  embedding: EmbeddingSettings,
+  texts: string[],
+  kind: WindowKind
+): Promise<number[][]> {
   const vectors: number[][] = [];
   for (let i = 0; i < texts.length; i += EMBED_BATCH) {
     vectors.push(...(await embedTexts(embedding, texts.slice(i, i + EMBED_BATCH))));
   }
-  for (const d of new Set(vectors.map((v) => v.length))) await ensureChunkIndex(d);
+  for (const d of new Set(vectors.map((v) => v.length))) await ensureChunkIndex(d, kind);
   return vectors;
 }
 
@@ -218,7 +235,7 @@ async function indexTranscript(
   }
 
   const chunks = chunkCues(read.cues);
-  const vectors = await embedAll(embedding, chunks.map((c) => c.text));
+  const vectors = await embedAll(embedding, chunks.map((c) => c.text), "transcript");
 
   await db.transaction(async (tx) => {
     const now = new Date();
@@ -265,7 +282,7 @@ async function indexSynopsisWindows(
   title: string
 ): Promise<void> {
   const windows = synopsisWindows(title, synopsis.content);
-  const vectors = await embedAll(embedding, windows);
+  const vectors = await embedAll(embedding, windows, "synopsis");
   await db.transaction(async (tx) => {
     await tx.delete(itemTextChunks).where(eq(itemTextChunks.itemTextId, synopsis.id));
     if (windows.length === 0) return;
