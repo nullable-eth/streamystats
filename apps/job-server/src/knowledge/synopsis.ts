@@ -243,11 +243,25 @@ export function wholeTitlePrompt(info: TitleInfo, parts: Scene[]): string {
     .join("\n");
 }
 
-/** Scene notes and synopsis out of a whole-title answer, on the parts' times. */
+/**
+ * Scene notes and synopsis out of a whole-title answer, on the parts' times.
+ * A part's notes run from its opening tag to the next part or the synopsis:
+ * models sometimes close them with the input's </part>, or not at all, or
+ * open a later part with <part n="2"> instead of <notes n="2">.
+ */
 export function parseWholeTitle(answer: string, parts: Scene[]): { scenes: Scene[]; synopsis: string } {
   const text = answer.replace(/<think>[\s\S]*?<\/think>/gi, "");
+  const synopsisAt = text.search(/<synopsis>/i);
+  const body = synopsisAt >= 0 ? text.slice(0, synopsisAt) : text;
+  const opens = [...body.matchAll(/<(?:notes|part)\s+n=["']?(\d+)["']?[^>]*>/gi)];
   const notes = new Map(
-    [...text.matchAll(/<notes\s+n=["']?(\d+)["']?\s*>([\s\S]*?)<\/notes>/g)].map((m) => [Number(m[1]), m[2].trim()])
+    opens.map((m, i) => [
+      Number(m[1]),
+      body
+        .slice((m.index ?? 0) + m[0].length, opens[i + 1]?.index ?? body.length)
+        .replace(/<\/(?:notes|part)>/gi, "")
+        .trim(),
+    ])
   );
   const scenes = parts.flatMap((p, i) => {
     const notesText = notes.get(i + 1);

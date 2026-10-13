@@ -110,6 +110,15 @@ describe("whole title in one request", () => {
     expect(prompt).toContain('<part n="2" time="00:08:00-00:15:50">\nKeep Summer safe.\n</part>');
   });
 
+  test("notes closed with </part>, or not closed, or opened as <part>", () => {
+    const answer =
+      '<notes n="1">\nWho are you?\n</part>\n<part n="2">\nRick tells the car to keep Summer safe.\n<synopsis>Rick and Morty leave.</synopsis>';
+    expect(parseWholeTitle(answer, parts).scenes.map((s) => s.text)).toEqual([
+      "Who are you?",
+      "Rick tells the car to keep Summer safe.",
+    ]);
+  });
+
   test("notes land on their parts' times; a part with none is left out", () => {
     const answer =
       'Sure.\n<notes n="2">Rick tells the car to keep Summer safe.</notes>\n<synopsis>Rick and Morty leave.</synopsis>';
