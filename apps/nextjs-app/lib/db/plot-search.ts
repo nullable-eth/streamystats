@@ -11,17 +11,18 @@ import {
   toItemResult,
 } from "./search-result";
 import { fuseItemRankings } from "./transcript-rank";
-import { searchTranscripts } from "./transcript-search";
+import { searchTextWindows } from "./transcript-search";
 
 export type PlotSearchType = "Movie" | "Series" | "Episode";
 
 const POOL = 50;
 
 /**
- * Titles that match a description of their story, best first. Two rankings
+ * Titles that match a description of their story, best first. Three rankings
  * are fused: the item vectors (overview, details and, once the knowledge
- * index has written one, the plot synopsis) and the transcript windows (what
- * was said). Only items the viewer may see.
+ * index has written one, the plot synopsis), the synopsis windows (the plot
+ * on its own, whole and paragraph by paragraph, so one plot point can match)
+ * and the transcript windows (what was said). Only items the viewer may see.
  */
 export async function searchByPlot({
   serverId,
@@ -52,32 +53,41 @@ export async function searchByPlot({
   if (itemLibraryExclusion) visible.push(itemLibraryExclusion);
 
   const { distance, dimensionFilter } = getItemEmbeddingComparison(embedding);
-  const [byStory, byDialogue] = await Promise.all([
-    db
-      .select({ id: items.id })
-      .from(items)
-      .where(and(...visible, dimensionFilter))
-      .orderBy(asc(distance))
-      .limit(POOL),
-    // Only movies and episodes have transcripts.
-    types.some((t) => t !== "Series")
-      ? searchTranscripts({
+  // Only movies and episodes have transcripts and synopses.
+  const hasTexts = types.some((t) => t !== "Series");
+  const windows = (kind: "synopsis" | "transcript") =>
+    hasTexts
+      ? searchTextWindows({
+          kind,
           serverId,
           userId: viewerUserId,
           query,
           embedding,
           limit: POOL,
         })
-      : [],
+      : Promise.resolve([]);
+  const [byStory, byPlot, byDialogue] = await Promise.all([
+    db
+      .select({ id: items.id })
+      .from(items)
+      .where(and(...visible, dimensionFilter))
+      .orderBy(asc(distance))
+      .limit(POOL),
+    windows("synopsis"),
+    windows("transcript"),
   ]);
 
   const fused = fuseItemRankings(
-    [byStory.map((r) => r.id), byDialogue.map((m) => m.itemId)],
-    POOL * 2,
+    [
+      byStory.map((r) => r.id),
+      byPlot.map((m) => m.itemId),
+      byDialogue.map((m) => m.itemId),
+    ],
+    POOL * 3,
   );
   if (fused.length === 0) return [];
 
-  // The visibility filter again: transcript matches are not filtered by type.
+  // The visibility filter again: window matches are not filtered by type.
   const rows = await db.execute<ItemResultRow>(sql`
     SELECT ${itemResultColumns}
     FROM ${items}

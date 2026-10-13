@@ -4,7 +4,8 @@ const RRF_K = 60;
 export interface TranscriptMatch {
   itemId: string;
   score: number;
-  moments: { startMs: number; text: string }[];
+  /** startMs is null for windows with no timestamp (synopsis windows). */
+  moments: { startMs: number | null; text: string }[];
 }
 
 /**
@@ -12,12 +13,17 @@ export interface TranscriptMatch {
  * scores by its best chunks, and keeps its two best moments as evidence.
  */
 export function fuseChunkRankings(
-  rankings: { id: number; itemId: string; startMs: number; text: string }[][],
+  rankings: {
+    id: number;
+    itemId: string;
+    startMs: number | null;
+    text: string;
+  }[][],
   limit: number,
 ): TranscriptMatch[] {
   const chunks = new Map<
     number,
-    { itemId: string; startMs: number; text: string; score: number }
+    { itemId: string; startMs: number | null; text: string; score: number }
   >();
   for (const ranking of rankings) {
     ranking.forEach((c, rank) => {
