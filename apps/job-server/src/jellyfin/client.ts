@@ -780,7 +780,7 @@ export class JellyfinClient {
 
   /**
    * The media source an item plays by default (its first), with its streams.
-   * External subtitle files (e.g. Bazarr's sidecars) appear here alongside
+   * External subtitle files (e.g. a subtitle downloader's sidecars) appear here alongside
    * embedded tracks.
    */
   async getPrimaryMediaSource(

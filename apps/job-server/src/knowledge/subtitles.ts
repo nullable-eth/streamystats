@@ -40,7 +40,7 @@ function field(stream: unknown, key: string): unknown {
 
 /**
  * Full-dialogue text subtitle tracks, best first. The spoken language (the
- * default audio track's) wins, then English; external files (Bazarr's
+ * default audio track's) wins, then English; external files (a subtitle downloader's
  * sidecars) beat embedded tracks; forced, signs and commentary tracks are
  * never a transcript.
  */
