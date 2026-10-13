@@ -84,7 +84,7 @@ export function fuseItemRankings(
 export function fuseByBestRank(
   rankings: string[][],
   limit: number,
-): { id: string; score: number }[] {
+): { id: string; rank: number; score: number }[] {
   const consensus = new Map(
     fuseItemRankings(rankings, Number.POSITIVE_INFINITY).map((r) => [
       r.id,
@@ -103,7 +103,7 @@ export function fuseByBestRank(
         a[1] - b[1] || (consensus.get(b[0]) ?? 0) - (consensus.get(a[0]) ?? 0),
     )
     .slice(0, limit)
-    .map(([id]) => ({ id, score: consensus.get(id) ?? 0 }));
+    .map(([id, rank]) => ({ id, rank, score: consensus.get(id) ?? 0 }));
 }
 
 const STOPWORDS = new Set(
