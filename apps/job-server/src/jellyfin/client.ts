@@ -801,6 +801,27 @@ export class JellyfinClient {
     };
   }
 
+  /**
+   * The server's metadata language under every code a stream may carry it
+   * ("en" -> ["en", "eng"], "de" -> ["de", "deu", "ger"]). English when none
+   * is set.
+   */
+  async getMetadataLanguageCodes(): Promise<string[]> {
+    const config = await this.request<{ PreferredMetadataLanguage?: string }>(
+      "get",
+      "/System/Configuration"
+    );
+    const language = config.PreferredMetadataLanguage?.toLowerCase().split("-")[0];
+    if (!language) return ["en", "eng"];
+    const cultures = await this.request<
+      Array<{ TwoLetterISOLanguageName?: string; ThreeLetterISOLanguageNames?: string[] }>
+    >("get", "/Localization/Cultures");
+    const culture = cultures.find(
+      (c) => c.TwoLetterISOLanguageName?.toLowerCase() === language
+    );
+    return [language, ...(culture?.ThreeLetterISOLanguageNames ?? []).map((c) => c.toLowerCase())];
+  }
+
   /** A text subtitle stream converted to SRT by Jellyfin. */
   async getSubtitleSrt(
     itemId: string,

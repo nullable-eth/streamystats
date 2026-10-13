@@ -42,6 +42,11 @@ export const getClient = (): Client => {
         // nearest neighbours are of another type returns almost nothing.
         // pgvector >= 0.8; older versions drop the unknown setting.
         "hnsw.iterative_scan": "strict_order",
+        // pgvector's default candidate list (40) misses true nearest
+        // neighbours on a library-sized index: a title whose plot matches a
+        // query exactly was absent from the top 50. 100 finds it, still in
+        // milliseconds.
+        "hnsw.ef_search": "100",
       },
     });
   }
