@@ -1,6 +1,7 @@
 /**
  * Turning a library subtitle track into a searchable transcript: choose the
- * track, parse SRT, strip what is not dialogue, and cut it into windows.
+ * track, parse SRT, strip what is neither dialogue nor a sound description,
+ * and cut it into windows.
  * Pure functions; the job does the I/O.
  */
 import { isRecord } from "../jellyfin/ratings-parse";
@@ -17,6 +18,12 @@ export interface SubtitleCandidate {
   ref: string;
 }
 
+/**
+ * Part of every track's ref: bumped when cleaning changes what a transcript
+ * keeps, so each one is read again once.
+ */
+const TRANSCRIPT_FORMAT = "v2";
+
 /** A transcript shorter than this is a forced/signs track or a broken file. */
 export const MIN_TRANSCRIPT_WORDS = 150;
 
@@ -25,6 +32,7 @@ const CHUNK_MAX_CHARS = 1_500;
 const CHUNK_OVERLAP_MS = 15_000;
 
 const NOT_DIALOGUE_TITLE = /forced|foreign|signs?\b|songs?\b|commentary/i;
+const SDH_TITLE = /\bsdh\b|hearing|\bcc\b/i;
 const ADVERT =
   /opensubtitles|subtitles? (by|downloaded)|sync(ed)? (and|&) correct|addic7ed|subscene|www\.|https?:/i;
 
@@ -43,8 +51,10 @@ function field(stream: unknown, key: string): unknown {
  * language wins (people search in it and synopses are written in it), then
  * the spoken language (the default audio track's, which on a dubbed release
  * is not the original); external files (a subtitle downloader's sidecars)
- * beat embedded tracks; forced, signs and commentary tracks are never a
- * transcript.
+ * beat embedded tracks, and tracks for the deaf and hard of hearing (SDH)
+ * beat plain ones: they name speakers and describe sounds, which tells the
+ * synopsis what happens without words. Forced, signs and commentary tracks
+ * are never a transcript.
  *
  * `preferred` holds every code the metadata language may appear under
  * ("en", "eng"; "de", "deu", "ger").
@@ -77,14 +87,14 @@ export function rankTranscriptStreams(
         (language && wanted.has(language) ? 100 : 0) +
         (spoken && language === spoken ? 50 : 0) +
         (field(s, "IsExternal") === true ? 10 : 0) +
-        (field(s, "IsHearingImpaired") === true ? 0 : 5);
+        (field(s, "IsHearingImpaired") === true || SDH_TITLE.test(`${field(s, "Title") ?? ""}`) ? 5 : 0);
       const index = Number(field(s, "Index"));
       const path = field(s, "Path");
       return {
         score,
         candidate: {
           index,
-          ref: `${mediaSourceId}:${index}:${typeof path === "string" ? path : "embedded"}`,
+          ref: `${TRANSCRIPT_FORMAT}:${mediaSourceId}:${index}:${typeof path === "string" ? path : "embedded"}`,
         },
       };
     })
@@ -116,7 +126,10 @@ export function parseSrt(srt: string): Cue[] {
   return cues;
 }
 
-/** Keep only spoken words: no markup, sound effects, lyrics or adverts. */
+/**
+ * Keep what is said and what is heard: no markup, lyrics or adverts, but
+ * speaker names and sound descriptions ("[door slams]", "(sighs)") stay.
+ */
 export function cleanCues(cues: Cue[]): Cue[] {
   const out: Cue[] = [];
   for (const cue of cues) {
@@ -124,12 +137,7 @@ export function cleanCues(cues: Cue[]): Cue[] {
       .replace(/<[^>]*>|\{[^}]*\}/g, "")
       .split("\n")
       .filter((line) => !line.includes("♪") && !ADVERT.test(line))
-      .map((line) =>
-        line
-          .replace(/\[[^\]]*\]|\([^)]*\)/g, "")
-          .replace(/^\s*-\s*/, "")
-          .trim()
-      )
+      .map((line) => line.replace(/^\s*-\s*/, "").trim())
       .filter(Boolean)
       .join(" ")
       .replace(/\s+/g, " ")

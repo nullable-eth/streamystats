@@ -28,9 +28,13 @@ Subtitles by OpenSubtitles.org
 `;
 
 describe("parseSrt + cleanCues", () => {
-  test("parses times and keeps only spoken dialogue", () => {
+  test("parses times and keeps dialogue and sound descriptions, not lyrics or adverts", () => {
     const cues = cleanCues(parseSrt(SRT));
-    expect(cues.map((c) => c.text)).toEqual(["Where are we? On the ship.", "Lana's at the farm."]);
+    expect(cues.map((c) => c.text)).toEqual([
+      "Where are we? [ENGINE HUMMING] On the ship.",
+      "(SIGHS)",
+      "Lana's at the farm.",
+    ]);
     expect(cues[0]).toMatchObject({ startMs: 1000, endMs: 3500 });
   });
 
@@ -56,6 +60,16 @@ describe("rankTranscriptStreams", () => {
     expect(rankTranscriptStreams(streams, "ms1").map((c) => c.index)).toEqual([7, 6, 4]);
   });
 
+  test("SDH tracks beat plain ones, flagged or titled", () => {
+    const sdh = [
+      { Type: "Subtitle", Index: 1, Language: "eng", IsTextSubtitleStream: true, IsExternal: true, Path: "/m/a.en.srt" },
+      { Type: "Subtitle", Index: 2, Language: "eng", IsTextSubtitleStream: true, IsExternal: true, Path: "/m/a.en.hi.srt", IsHearingImpaired: true },
+      { Type: "Subtitle", Index: 3, Language: "eng", IsTextSubtitleStream: true, Title: "English SDH" },
+      { Type: "Subtitle", Index: 4, Language: "eng", IsTextSubtitleStream: true },
+    ];
+    expect(rankTranscriptStreams(sdh, "ms1").map((c) => c.index)).toEqual([2, 1, 3, 4]);
+  });
+
   test("a dubbed release: the metadata language beats the default audio's", () => {
     // An Italian release with English audio as the second track.
     const dubbed = [
@@ -73,7 +87,7 @@ describe("rankTranscriptStreams", () => {
   });
 
   test("ref changes when the file changes", () => {
-    expect(rankTranscriptStreams(streams, "ms1")[0].ref).toBe("ms1:7:/m/a.en.srt");
+    expect(rankTranscriptStreams(streams, "ms1")[0].ref).toBe("v2:ms1:7:/m/a.en.srt");
   });
 });
 

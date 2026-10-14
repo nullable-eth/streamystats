@@ -180,8 +180,11 @@ function about(info: TitleInfo): (string | null)[] {
 
 const WRITE_NOTES = [
   "Name who does what to whom. State any reveal, death, twist or hidden identity plainly.",
-  "Only what the dialogue shows; when it is unclear who speaks or what happens, leave it out rather than guess.",
+  "Only what the transcript shows: its dialogue, and any speaker names and sound descriptions the subtitles give. When it is unclear who speaks or what happens, leave it out rather than guess.",
 ];
+
+/** How the transcript is introduced; SDH subtitles name speakers and describe sounds, plain ones do not. */
+const FROM_SUBTITLES = "(from subtitles; some name the speaker or describe sounds in brackets)";
 
 const SUMMARY =
   "for each part, at most three sentences on what matters to the story (who does what, any reveal, death or twist), and for the last part, how it ends.";
@@ -196,7 +199,7 @@ export function scenePrompt(
   return [
     ...about(info),
     storySoFar.length ? `\nThe story so far (your notes on the earlier parts):\n${formatScenes(storySoFar)}` : null,
-    `\nDialogue from ${clock(part.startMs)} to ${clock(part.endMs)}, part ${partNumber} of ${parts} (from subtitles, no speaker names):`,
+    `\nDialogue from ${clock(part.startMs)} to ${clock(part.endMs)}, part ${partNumber} of ${parts} ${FROM_SUBTITLES}:`,
     part.text,
     "",
     "Write what happens in this part, in order, as short factual sentences, one per line.",
@@ -228,7 +231,7 @@ export function wholeTitlePrompt(info: TitleInfo, parts: Scene[]): string {
   return [
     ...about(info),
     "",
-    `Dialogue transcript (from subtitles, often without speaker names), in ${parts.length} parts with their times:`,
+    `Dialogue transcript ${FROM_SUBTITLES}, in ${parts.length} parts with their times:`,
     ...parts.map(
       (p, i) => `<part n="${i + 1}" time="${clock(p.startMs)}-${clock(p.endMs)}">\n${p.text}\n</part>`
     ),
