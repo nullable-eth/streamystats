@@ -140,13 +140,6 @@ export const servers = pgTable(
     chatApiKey: text("chat_api_key"),
     chatModel: text("chat_model"),
 
-    // Optional model for knowledge-index synopses (bulk, non-interactive).
-    // Unset: synopses use the AI Chat model above.
-    synopsisProvider: text("synopsis_provider"),
-    synopsisBaseUrl: text("synopsis_base_url"),
-    synopsisApiKey: text("synopsis_api_key"),
-    synopsisModel: text("synopsis_model"),
-
     // Sync status tracking
     syncStatus: text("sync_status").notNull().default("pending"), // pending, syncing, completed, failed
     syncProgress: text("sync_progress").notNull().default("not_started"), // not_started, users, libraries, items, activities, completed
@@ -563,6 +556,9 @@ export const itemTexts = pgTable(
     source: text("source"),
     content: text("content").notNull().default(""),
     contentHash: text("content_hash"),
+    // scenes and synopsis: the model that wrote them ("provider:model"), so
+    // notes from a fallback model are rewritten once a better one has budget.
+    writtenBy: text("written_by"),
     // transcript: when each line of `content` starts, so a matched line can
     // be located to the moment it is said.
     cueStartsMs: integer("cue_starts_ms").array(),
@@ -573,6 +569,41 @@ export const itemTexts = pgTable(
     unique("item_texts_item_kind_unique").on(table.itemId, table.kind),
     index("item_texts_server_kind_idx").on(table.serverId, table.kind),
   ]
+);
+
+// The models the knowledge index writes scene notes and synopses with, tried
+// in order: a title goes to the first one that is usable (has budget left this
+// month and is not resting after a failure of its own), and on to the next if
+// it fails. None: the AI Chat model.
+export const knowledgeModels = pgTable(
+  "knowledge_models",
+  {
+    id: serial("id").primaryKey(),
+    serverId: integer("server_id")
+      .notNull()
+      .references(() => servers.id, { onDelete: "cascade" }),
+    position: integer("position").notNull(),
+    provider: text("provider").notNull(), // as chatProvider
+    baseUrl: text("base_url"),
+    apiKey: text("api_key"),
+    model: text("model").notNull(),
+    // USD per million tokens; 0 for a local model.
+    inputPrice: doublePrecision("input_price").notNull().default(0),
+    outputPrice: doublePrecision("output_price").notNull().default(0),
+    // USD per calendar month (UTC); null: no limit.
+    monthlyBudget: doublePrecision("monthly_budget"),
+    // What it has cost in spentMonth ("YYYY-MM"), and titles written; a new
+    // month starts from zero.
+    spentMonth: text("spent_month"),
+    spent: doublePrecision("spent").notNull().default(0),
+    titles: integer("titles").notNull().default(0),
+    // Out of credit, rate limited, or down: not tried again until then.
+    unavailableUntil: timestamp("unavailable_until", { withTimezone: true }),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index("knowledge_models_server_idx").on(table.serverId, table.position)]
 );
 
 // Searchable windows of an item's texts, each with an embedding (HNSW index
@@ -1324,6 +1355,7 @@ export type Item = typeof items.$inferSelect;
 export type NewItem = typeof items.$inferInsert;
 
 export type ItemText = typeof itemTexts.$inferSelect;
+export type KnowledgeModel = typeof knowledgeModels.$inferSelect;
 export type ItemTextChunk = typeof itemTextChunks.$inferSelect;
 
 export type MediaSource = typeof mediaSources.$inferSelect;

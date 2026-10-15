@@ -18,11 +18,10 @@ import type { ServerPublic } from "@/lib/types";
 
 type ServerPublicSelectRow = Omit<
   ServerPublic,
-  "hasChatApiKey" | "hasEmbeddingApiKey" | "hasSynopsisApiKey"
+  "hasChatApiKey" | "hasEmbeddingApiKey"
 > & {
   embeddingApiKey: string | null;
   chatApiKey: string | null;
-  synopsisApiKey: string | null;
 };
 
 const SERVER_PUBLIC_SELECT = {
@@ -46,9 +45,6 @@ const SERVER_PUBLIC_SELECT = {
   chatProvider: servers.chatProvider,
   chatBaseUrl: servers.chatBaseUrl,
   chatModel: servers.chatModel,
-  synopsisProvider: servers.synopsisProvider,
-  synopsisBaseUrl: servers.synopsisBaseUrl,
-  synopsisModel: servers.synopsisModel,
   syncStatus: servers.syncStatus,
   syncProgress: servers.syncProgress,
   syncError: servers.syncError,
@@ -64,19 +60,14 @@ const SERVER_PUBLIC_SELECT = {
   // Select secrets only to compute boolean flags; never return them to callers
   embeddingApiKey: servers.embeddingApiKey,
   chatApiKey: servers.chatApiKey,
-  synopsisApiKey: servers.synopsisApiKey,
 } satisfies Record<string, unknown>;
 
 function toServerPublic(row: ServerPublicSelectRow): ServerPublic {
-  const { embeddingApiKey, chatApiKey, synopsisApiKey, ...rest } = row;
+  const { embeddingApiKey, chatApiKey, ...rest } = row;
   return {
-    ...(rest as Omit<
-      ServerPublic,
-      "hasChatApiKey" | "hasEmbeddingApiKey" | "hasSynopsisApiKey"
-    >),
+    ...(rest as Omit<ServerPublic, "hasChatApiKey" | "hasEmbeddingApiKey">),
     hasEmbeddingApiKey: Boolean(embeddingApiKey),
     hasChatApiKey: Boolean(chatApiKey),
-    hasSynopsisApiKey: Boolean(synopsisApiKey),
   };
 }
 
@@ -923,37 +914,13 @@ export interface ChatAIConfig {
   model: string;
 }
 
-/**
- * "chat" is the AI Chat model; "synopsis" is the optional model the knowledge
- * index writes plot synopses with (falls back to the chat model when unset).
- */
-export type ChatModelPurpose = "chat" | "synopsis";
-
-const CHAT_COLUMNS = {
-  chat: {
-    provider: "chatProvider",
-    baseUrl: "chatBaseUrl",
-    apiKey: "chatApiKey",
-    model: "chatModel",
-  },
-  synopsis: {
-    provider: "synopsisProvider",
-    baseUrl: "synopsisBaseUrl",
-    apiKey: "synopsisApiKey",
-    model: "synopsisModel",
-  },
-} as const;
-
 export const saveChatConfig = async ({
   serverId,
   config,
-  purpose = "chat",
 }: {
   serverId: number;
   config: ChatAIConfig;
-  purpose?: ChatModelPurpose;
 }) => {
-  const cols = CHAT_COLUMNS[purpose];
   try {
     // Build update object - only include apiKey if explicitly provided
     // This prevents accidentally wiping existing keys when other fields are updated
@@ -961,15 +928,15 @@ export const saveChatConfig = async ({
     const normalizedBaseUrl = config.baseUrl?.replace(/\/+$/, "");
 
     const updateData: Partial<typeof servers.$inferInsert> = {
-      [cols.provider]: config.provider,
-      [cols.baseUrl]: normalizedBaseUrl,
-      [cols.model]: config.model,
+      chatProvider: config.provider,
+      chatBaseUrl: normalizedBaseUrl,
+      chatModel: config.model,
     };
 
     // Only update API key if a non-empty value is provided
     // Empty string or undefined means "keep existing key"
     if (config.apiKey && config.apiKey.trim().length > 0) {
-      updateData[cols.apiKey] = config.apiKey;
+      updateData.chatApiKey = config.apiKey;
     }
 
     await db.update(servers).set(updateData).where(eq(servers.id, serverId));
@@ -981,24 +948,19 @@ export const saveChatConfig = async ({
 
 export const getChatConfig = async ({
   serverId,
-  purpose = "chat",
 }: {
   serverId: number;
-  purpose?: ChatModelPurpose;
 }): Promise<ChatAIConfig | null> => {
-  const cols = CHAT_COLUMNS[purpose];
   try {
     const server = await getServerWithSecrets({ serverId });
-    const provider = server?.[cols.provider];
-    const model = server?.[cols.model];
-    if (!server || !provider || !model) {
+    if (!server?.chatProvider || !server.chatModel) {
       return null;
     }
     return {
-      provider: provider as ChatProvider,
-      baseUrl: server[cols.baseUrl] || "",
-      apiKey: server[cols.apiKey] || undefined,
-      model,
+      provider: server.chatProvider as ChatProvider,
+      baseUrl: server.chatBaseUrl || "",
+      apiKey: server.chatApiKey || undefined,
+      model: server.chatModel,
     };
   } catch (error) {
     console.error(`Error getting chat config for server ${serverId}:`, error);
@@ -1006,22 +968,15 @@ export const getChatConfig = async ({
   }
 };
 
-export const clearChatConfig = async ({
-  serverId,
-  purpose = "chat",
-}: {
-  serverId: number;
-  purpose?: ChatModelPurpose;
-}) => {
-  const cols = CHAT_COLUMNS[purpose];
+export const clearChatConfig = async ({ serverId }: { serverId: number }) => {
   try {
     await db
       .update(servers)
       .set({
-        [cols.provider]: null,
-        [cols.baseUrl]: null,
-        [cols.apiKey]: null,
-        [cols.model]: null,
+        chatProvider: null,
+        chatBaseUrl: null,
+        chatApiKey: null,
+        chatModel: null,
       })
       .where(eq(servers.id, serverId));
   } catch (error) {

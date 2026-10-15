@@ -2,9 +2,11 @@
 
 import { redirect } from "next/navigation";
 import { Container } from "@/components/Container";
+import { listKnowledgeModels } from "@/lib/db/knowledge-models";
 import { getServer } from "@/lib/db/server";
 import { ChatAIManager } from "../chat/ChatAIManager";
 import { EmbeddingProviderManager } from "../EmbeddingProviderManager";
+import { KnowledgeModelsManager } from "./KnowledgeModelsManager";
 
 /** Every model Streamystats talks to, in one place. */
 export default async function AIModelsSettings(props: {
@@ -24,7 +26,10 @@ export default async function AIModelsSettings(props: {
       <div className="space-y-8">
         <EmbeddingProviderManager server={server} />
         <ChatAIManager server={server} />
-        <ChatAIManager server={server} purpose="synopsis" />
+        <KnowledgeModelsManager
+          serverId={server.id}
+          models={await listKnowledgeModels(server.id)}
+        />
       </div>
     </Container>
   );

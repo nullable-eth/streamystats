@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.itemPeopleRelations = exports.peopleRelations = exports.watchlistItemsRelations = exports.watchlistsRelations = exports.hiddenRecommendationsRelations = exports.anomalyEventsRelations = exports.userFingerprintsRelations = exports.activityLocationsRelations = exports.sessionsRelations = exports.itemsRelations = exports.activitiesRelations = exports.usersRelations = exports.librariesRelations = exports.serverJobConfigurationsRelations = exports.serversRelations = exports.watchlistItems = exports.watchlists = exports.itemPeople = exports.people = exports.anomalyEvents = exports.userFingerprints = exports.activityLocations = exports.userItemRatings = exports.userRecommendationProfiles = exports.hiddenRecommendations = exports.activityLogCursors = exports.activeSessions = exports.sessions = exports.itemTextChunks = exports.itemTexts = exports.mediaSources = exports.items = exports.serverJobConfigurations = exports.jobResults = exports.activities = exports.users = exports.libraries = exports.servers = void 0;
+exports.itemPeopleRelations = exports.peopleRelations = exports.watchlistItemsRelations = exports.watchlistsRelations = exports.hiddenRecommendationsRelations = exports.anomalyEventsRelations = exports.userFingerprintsRelations = exports.activityLocationsRelations = exports.sessionsRelations = exports.itemsRelations = exports.activitiesRelations = exports.usersRelations = exports.librariesRelations = exports.serverJobConfigurationsRelations = exports.serversRelations = exports.watchlistItems = exports.watchlists = exports.itemPeople = exports.people = exports.anomalyEvents = exports.userFingerprints = exports.activityLocations = exports.userItemRatings = exports.userRecommendationProfiles = exports.hiddenRecommendations = exports.activityLogCursors = exports.activeSessions = exports.sessions = exports.itemTextChunks = exports.knowledgeModels = exports.itemTexts = exports.mediaSources = exports.items = exports.serverJobConfigurations = exports.jobResults = exports.activities = exports.users = exports.libraries = exports.servers = void 0;
 const pg_core_1 = require("drizzle-orm/pg-core");
 const drizzle_orm_1 = require("drizzle-orm");
 // Custom vector type that supports variable dimensions
@@ -72,12 +72,6 @@ exports.servers = (0, pg_core_1.pgTable)("servers", {
     chatBaseUrl: (0, pg_core_1.text)("chat_base_url"),
     chatApiKey: (0, pg_core_1.text)("chat_api_key"),
     chatModel: (0, pg_core_1.text)("chat_model"),
-    // Optional model for knowledge-index synopses (bulk, non-interactive).
-    // Unset: synopses use the AI Chat model above.
-    synopsisProvider: (0, pg_core_1.text)("synopsis_provider"),
-    synopsisBaseUrl: (0, pg_core_1.text)("synopsis_base_url"),
-    synopsisApiKey: (0, pg_core_1.text)("synopsis_api_key"),
-    synopsisModel: (0, pg_core_1.text)("synopsis_model"),
     // Sync status tracking
     syncStatus: (0, pg_core_1.text)("sync_status").notNull().default("pending"), // pending, syncing, completed, failed
     syncProgress: (0, pg_core_1.text)("sync_progress").notNull().default("not_started"), // not_started, users, libraries, items, activities, completed
@@ -421,6 +415,9 @@ exports.itemTexts = (0, pg_core_1.pgTable)("item_texts", {
     source: (0, pg_core_1.text)("source"),
     content: (0, pg_core_1.text)("content").notNull().default(""),
     contentHash: (0, pg_core_1.text)("content_hash"),
+    // scenes and synopsis: the model that wrote them ("provider:model"), so
+    // notes from a fallback model are rewritten once a better one has budget.
+    writtenBy: (0, pg_core_1.text)("written_by"),
     // transcript: when each line of `content` starts, so a matched line can
     // be located to the moment it is said.
     cueStartsMs: (0, pg_core_1.integer)("cue_starts_ms").array(),
@@ -430,6 +427,36 @@ exports.itemTexts = (0, pg_core_1.pgTable)("item_texts", {
     (0, pg_core_1.unique)("item_texts_item_kind_unique").on(table.itemId, table.kind),
     (0, pg_core_1.index)("item_texts_server_kind_idx").on(table.serverId, table.kind),
 ]);
+// The models the knowledge index writes scene notes and synopses with, tried
+// in order: a title goes to the first one that is usable (has budget left this
+// month and is not resting after a failure of its own), and on to the next if
+// it fails. None: the AI Chat model.
+exports.knowledgeModels = (0, pg_core_1.pgTable)("knowledge_models", {
+    id: (0, pg_core_1.serial)("id").primaryKey(),
+    serverId: (0, pg_core_1.integer)("server_id")
+        .notNull()
+        .references(() => exports.servers.id, { onDelete: "cascade" }),
+    position: (0, pg_core_1.integer)("position").notNull(),
+    provider: (0, pg_core_1.text)("provider").notNull(), // as chatProvider
+    baseUrl: (0, pg_core_1.text)("base_url"),
+    apiKey: (0, pg_core_1.text)("api_key"),
+    model: (0, pg_core_1.text)("model").notNull(),
+    // USD per million tokens; 0 for a local model.
+    inputPrice: (0, pg_core_1.doublePrecision)("input_price").notNull().default(0),
+    outputPrice: (0, pg_core_1.doublePrecision)("output_price").notNull().default(0),
+    // USD per calendar month (UTC); null: no limit.
+    monthlyBudget: (0, pg_core_1.doublePrecision)("monthly_budget"),
+    // What it has cost in spentMonth ("YYYY-MM"), and titles written; a new
+    // month starts from zero.
+    spentMonth: (0, pg_core_1.text)("spent_month"),
+    spent: (0, pg_core_1.doublePrecision)("spent").notNull().default(0),
+    titles: (0, pg_core_1.integer)("titles").notNull().default(0),
+    // Out of credit, rate limited, or down: not tried again until then.
+    unavailableUntil: (0, pg_core_1.timestamp)("unavailable_until", { withTimezone: true }),
+    lastError: (0, pg_core_1.text)("last_error"),
+    createdAt: (0, pg_core_1.timestamp)("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: (0, pg_core_1.timestamp)("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [(0, pg_core_1.index)("knowledge_models_server_idx").on(table.serverId, table.position)]);
 // Searchable windows of an item's texts, each with an embedding (HNSW index
 // created per dimension at runtime, as for items.embedding) and a generated
 // tsvector for exact-wording search. Transcript windows are up to two

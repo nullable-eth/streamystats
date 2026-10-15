@@ -1,10 +1,8 @@
-import { db, servers } from "@streamystats/database";
 import axios from "axios";
-import { eq } from "drizzle-orm";
 
 /**
- * The plot, written from an item's transcript by the server's knowledge index
- * model, or its AI Chat model when none is set. The transcript is the
+ * The plot, written from an item's transcript by a knowledge index model (see
+ * models.ts for which). The transcript is the
  * evidence; a reference plot (Wikipedia's, when the server fetches them)
  * says who people are and what happens where the dialogue does not. The
  * whole transcript, cut into parts of a few minutes with their times, goes to
@@ -50,36 +48,10 @@ export interface Scene {
   text: string;
 }
 
-export async function getChatSettings(serverId: number): Promise<ChatSettings | null> {
-  const [s] = await db
-    .select({
-      synopsisProvider: servers.synopsisProvider,
-      synopsisBaseUrl: servers.synopsisBaseUrl,
-      synopsisApiKey: servers.synopsisApiKey,
-      synopsisModel: servers.synopsisModel,
-      chatProvider: servers.chatProvider,
-      chatBaseUrl: servers.chatBaseUrl,
-      chatApiKey: servers.chatApiKey,
-      chatModel: servers.chatModel,
-    })
-    .from(servers)
-    .where(eq(servers.id, serverId))
-    .limit(1);
-  if (s?.synopsisProvider && s.synopsisModel) {
-    return {
-      provider: s.synopsisProvider,
-      baseUrl: s.synopsisBaseUrl,
-      apiKey: s.synopsisApiKey,
-      model: s.synopsisModel,
-    };
-  }
-  if (!s?.chatProvider || !s.chatModel) return null;
-  return {
-    provider: s.chatProvider,
-    baseUrl: s.chatBaseUrl,
-    apiKey: s.chatApiKey,
-    model: s.chatModel,
-  };
+/** Tokens a request took, as the provider reports them. */
+export interface Usage {
+  inputTokens: number;
+  outputTokens: number;
 }
 
 /** Endpoints that rejected the sampling hints (see complete); not sent to them again. */
@@ -258,12 +230,21 @@ export async function withRetries<T>(call: () => Promise<T>): Promise<T> {
   }
 }
 
-/** The fields of Anthropic's and Gemini's stream events that carry text. */
+/** The fields of Anthropic's and Gemini's stream events that carry text and token counts. */
 type StreamEvent = {
   type?: string;
   error?: { message?: string };
   delta?: { text?: unknown };
   candidates?: { content?: { parts?: { text?: unknown }[] } }[];
+  message?: { usage?: AnthropicUsage };
+  usage?: AnthropicUsage;
+  usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number };
+};
+type AnthropicUsage = {
+  input_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+  output_tokens?: number;
 };
 
 /** The text of a server-sent event stream, each event's `data` read by `text`. */
@@ -298,7 +279,7 @@ export async function readEvents(
  * rejects these hints (current Claude models and some reasoning models take no
  * temperature) gets a plain retry and is never sent them again.
  */
-async function complete(chat: ChatSettings, prompt: string): Promise<string> {
+async function complete(chat: ChatSettings, prompt: string): Promise<{ text: string; usage: Usage }> {
   const endpoint = `${chat.provider} ${chat.baseUrl ?? ""} ${chat.model}`;
   const hinted = !plainEndpoints.has(endpoint);
   try {
@@ -311,9 +292,10 @@ async function complete(chat: ChatSettings, prompt: string): Promise<string> {
   }
 }
 
-async function send(chat: ChatSettings, prompt: string, hinted: boolean): Promise<string> {
+async function send(chat: ChatSettings, prompt: string, hinted: boolean): Promise<{ text: string; usage: Usage }> {
   const base = chat.baseUrl?.replace(/\/+$/, "");
   const temperature = hinted ? { temperature: TEMPERATURE } : {};
+  const usage: Usage = { inputTokens: 0, outputTokens: 0 };
   switch (chat.provider) {
     // Hosted models stream: a whole title's notes take minutes to write, and
     // networks drop a connection that stays silent that long.
@@ -333,12 +315,20 @@ async function send(chat: ChatSettings, prompt: string, hinted: boolean): Promis
           timeout: TIMEOUT_MS,
         }
       );
-      return readEvents(res.data, (event) => {
+      const text = await readEvents(res.data, (event) => {
         if (event.type === "error") throw new Error(event.error?.message ?? "Stream error");
+        // The prompt's count comes first, the answer's (running total) after.
+        const counted = event.message?.usage ?? event.usage;
+        if (counted?.input_tokens !== undefined) {
+          usage.inputTokens =
+            counted.input_tokens + (counted.cache_creation_input_tokens ?? 0) + (counted.cache_read_input_tokens ?? 0);
+        }
+        if (counted?.output_tokens !== undefined) usage.outputTokens = counted.output_tokens;
         return event.type === "content_block_delta" && typeof event.delta?.text === "string"
           ? event.delta.text
           : "";
       });
+      return { text, usage };
     }
     case "gemini": {
       const name = chat.model.startsWith("models/") ? chat.model : `models/${chat.model}`;
@@ -350,10 +340,17 @@ async function send(chat: ChatSettings, prompt: string, hinted: boolean): Promis
         },
         { headers: { "x-goog-api-key": chat.apiKey ?? "" }, responseType: "stream", timeout: TIMEOUT_MS }
       );
-      return readEvents(res.data, (event) => {
+      const text = await readEvents(res.data, (event) => {
+        // Running totals; the last event's are the request's.
+        const counted = event.usageMetadata;
+        if (counted) {
+          usage.inputTokens = counted.promptTokenCount ?? 0;
+          usage.outputTokens = (counted.candidatesTokenCount ?? 0) + (counted.thoughtsTokenCount ?? 0);
+        }
         const parts = event.candidates?.[0]?.content?.parts ?? [];
         return parts.map((p) => (typeof p.text === "string" ? p.text : "")).join("");
       });
+      return { text, usage };
     }
     default: {
       // "openai-compatible" and "ollama" (its OpenAI-compatible /v1 API).
@@ -368,18 +365,26 @@ async function send(chat: ChatSettings, prompt: string, hinted: boolean): Promis
         { headers: chat.apiKey ? { Authorization: `Bearer ${chat.apiKey}` } : {}, timeout: TIMEOUT_MS }
       );
       const content: unknown = res.data?.choices?.[0]?.message?.content;
-      return typeof content === "string" ? content : "";
+      usage.inputTokens = res.data?.usage?.prompt_tokens ?? 0;
+      usage.outputTokens = res.data?.usage?.completion_tokens ?? 0;
+      return { text: typeof content === "string" ? content : "", usage };
     }
   }
 }
 
-/** Scene notes and the synopsis for a transcript's parts, in one request. */
+/**
+ * Scene notes and the synopsis for a transcript's parts, in one request.
+ * `used` hears what the request took as soon as it is answered, whether or
+ * not the answer is usable.
+ */
 export async function writePlot(
   chat: ChatSettings,
   info: TitleInfo,
-  parts: Scene[]
+  parts: Scene[],
+  used: (usage: Usage) => Promise<void> | void = () => {}
 ): Promise<{ scenes: Scene[]; synopsis: string }> {
-  const answer = await complete(chat, wholeTitlePrompt(info, parts));
+  const { text: answer, usage } = await complete(chat, wholeTitlePrompt(info, parts));
+  await used(usage);
   const plot = parseWholeTitle(answer, parts);
   if (plot.scenes.length === 0) throw new Error(`Chat model returned no scene notes: ${answer.slice(0, 300)}`);
   if (plot.synopsis.split(/\s+/).length < 20) throw new Error("Chat model returned an empty or too-short synopsis");
