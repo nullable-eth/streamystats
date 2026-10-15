@@ -37,7 +37,8 @@ export async function getKnowledgeModels(serverId: number): Promise<KnowledgeMod
     .from(knowledgeModels)
     .where(eq(knowledgeModels.serverId, serverId))
     .orderBy(asc(knowledgeModels.position), asc(knowledgeModels.id));
-  if (rows.length > 0) return rows;
+  // Listed ones turned off are not tried; the chat model stands in only for an empty list.
+  if (rows.length > 0) return rows.filter((r) => r.enabled);
   const [s] = await db
     .select({ provider: servers.chatProvider, baseUrl: servers.chatBaseUrl, apiKey: servers.chatApiKey, model: servers.chatModel })
     .from(servers)

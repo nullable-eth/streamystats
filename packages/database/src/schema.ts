@@ -139,6 +139,9 @@ export const servers = pgTable(
     chatBaseUrl: text("chat_base_url"),
     chatApiKey: text("chat_api_key"),
     chatModel: text("chat_model"),
+    // What the settings show the chat and embedding models as.
+    chatName: text("chat_name"),
+    embeddingName: text("embedding_name"),
 
     // Sync status tracking
     syncStatus: text("sync_status").notNull().default("pending"), // pending, syncing, completed, failed
@@ -583,6 +586,10 @@ export const knowledgeModels = pgTable(
       .notNull()
       .references(() => servers.id, { onDelete: "cascade" }),
     position: integer("position").notNull(),
+    // What the settings show it as; the provider and model when unset.
+    name: text("name"),
+    // Off: kept, but not tried.
+    enabled: boolean("enabled").notNull().default(true),
     provider: text("provider").notNull(), // as chatProvider
     baseUrl: text("base_url"),
     apiKey: text("api_key"),

@@ -23,6 +23,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Separator } from "@/components/ui/separator";
 import {
   type ChatProvider,
   saveChatConfigAction,
@@ -86,6 +87,7 @@ export interface Editing {
   outputPrice?: number;
   monthlyBudget?: number | null;
   dimensions?: number | null;
+  name?: string | null;
 }
 
 export function ModelDialog({
@@ -119,6 +121,7 @@ export function ModelDialog({
       EMBEDDING_PRESETS[settings.preset]?.defaultDimensions ??
       1536,
   );
+  const [name, setName] = useState(editing.name ?? "");
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
 
@@ -140,6 +143,7 @@ export function ModelDialog({
     baseUrl: settings.baseUrl,
     apiKey: settings.apiKey || undefined,
     model: settings.model,
+    name: name.trim() || null,
   });
 
   const save = async () => {
@@ -308,6 +312,17 @@ export function ModelDialog({
                 )}
             </div>
           )}
+
+          <Separator />
+          <div className="space-y-2">
+            <Label htmlFor="model-name">Name (optional)</Label>
+            <Input
+              id="model-name"
+              placeholder="How the list shows it, e.g. Claude (API) or Qwen (local)"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </div>
         </div>
 
         <DialogFooter className="gap-2">

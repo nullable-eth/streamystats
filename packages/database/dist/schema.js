@@ -72,6 +72,9 @@ exports.servers = (0, pg_core_1.pgTable)("servers", {
     chatBaseUrl: (0, pg_core_1.text)("chat_base_url"),
     chatApiKey: (0, pg_core_1.text)("chat_api_key"),
     chatModel: (0, pg_core_1.text)("chat_model"),
+    // What the settings show the chat and embedding models as.
+    chatName: (0, pg_core_1.text)("chat_name"),
+    embeddingName: (0, pg_core_1.text)("embedding_name"),
     // Sync status tracking
     syncStatus: (0, pg_core_1.text)("sync_status").notNull().default("pending"), // pending, syncing, completed, failed
     syncProgress: (0, pg_core_1.text)("sync_progress").notNull().default("not_started"), // not_started, users, libraries, items, activities, completed
@@ -437,6 +440,10 @@ exports.knowledgeModels = (0, pg_core_1.pgTable)("knowledge_models", {
         .notNull()
         .references(() => exports.servers.id, { onDelete: "cascade" }),
     position: (0, pg_core_1.integer)("position").notNull(),
+    // What the settings show it as; the provider and model when unset.
+    name: (0, pg_core_1.text)("name"),
+    // Off: kept, but not tried.
+    enabled: (0, pg_core_1.boolean)("enabled").notNull().default(true),
     provider: (0, pg_core_1.text)("provider").notNull(), // as chatProvider
     baseUrl: (0, pg_core_1.text)("base_url"),
     apiKey: (0, pg_core_1.text)("api_key"),

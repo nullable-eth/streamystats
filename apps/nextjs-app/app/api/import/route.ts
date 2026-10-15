@@ -143,6 +143,8 @@ interface ImportData {
     chatProvider?: string | null;
     chatBaseUrl?: string | null;
     chatModel?: string | null;
+    chatName?: string | null;
+    embeddingName?: string | null;
     knowledgeModels?: Parameters<typeof replaceKnowledgeModels>[1];
     /** Older backups: the one knowledge index model. */
     synopsisProvider?: string | null;
@@ -311,6 +313,12 @@ export async function POST(req: NextRequest) {
       }
       if (importData.server.chatModel !== undefined) {
         update.chatModel = importData.server.chatModel ?? null;
+      }
+      if (importData.server.chatName !== undefined) {
+        update.chatName = importData.server.chatName ?? null;
+      }
+      if (importData.server.embeddingName !== undefined) {
+        update.embeddingName = importData.server.embeddingName ?? null;
       }
       const { synopsisProvider, synopsisBaseUrl, synopsisModel } =
         importData.server;
