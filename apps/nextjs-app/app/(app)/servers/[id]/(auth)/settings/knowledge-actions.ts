@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import {
   setKnowledgeIndexEnabled,
   setKnowledgeItemTypes,
+  setKnowledgeWikipedia,
 } from "@/lib/db/knowledge-index";
 import { isUserAdmin } from "@/lib/db/users";
 
@@ -26,5 +27,16 @@ export async function setKnowledgeItemTypesAction(
     throw new Error("Admin privileges required");
   }
   await setKnowledgeItemTypes(serverId, types);
+  revalidatePath(`/servers/${serverId}/settings/ai`);
+}
+
+export async function setKnowledgeWikipediaAction(
+  serverId: number,
+  enabled: boolean,
+) {
+  if (!(await isUserAdmin(serverId))) {
+    throw new Error("Admin privileges required");
+  }
+  await setKnowledgeWikipedia(serverId, enabled);
   revalidatePath(`/servers/${serverId}/settings/ai`);
 }

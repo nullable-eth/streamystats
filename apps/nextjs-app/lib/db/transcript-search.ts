@@ -18,6 +18,11 @@ import { fuseChunkRankings, type TranscriptMatch } from "./transcript-rank";
 export { formatTimestamp } from "./transcript-rank";
 
 const POOL = 50;
+const KIND_LITERALS = {
+  transcript: "'transcript'",
+  synopsis: "'synopsis'",
+  reference: "'reference'",
+} as const;
 
 /**
  * Hybrid search over an item's text windows: full-text for exact wording
@@ -25,7 +30,8 @@ const POOL = 50;
  * libraries the user may see, and only items still in the library.
  * Transcript windows are dialogue, with when it is said; synopsis windows are
  * the plot: the synopsis whole and paragraph by paragraph (no times) and
- * each part of the scene notes (with its times).
+ * each part of the scene notes (with its times); reference windows are the
+ * plot from Wikipedia, whole and by paragraph.
  */
 export async function searchTextWindows({
   kind,
@@ -35,7 +41,7 @@ export async function searchTextWindows({
   embedding,
   limit,
 }: {
-  kind: "transcript" | "synopsis";
+  kind: "transcript" | "synopsis" | "reference";
   serverId: number;
   /** The viewer; omitted for admins, who see every library. */
   userId?: string;
@@ -51,7 +57,7 @@ export async function searchTextWindows({
     eq(itemTextChunks.serverId, serverId),
     // A literal, not a parameter, so the planner can use that kind's own
     // partial HNSW index (one per kind and dimension).
-    sql`${itemTextChunks.kind} = ${sql.raw(kind === "synopsis" ? "'synopsis'" : "'transcript'")}`,
+    sql`${itemTextChunks.kind} = ${sql.raw(KIND_LITERALS[kind])}`,
     isNull(items.deletedAt),
   ];
   if (itemLibraryExclusion) visible.push(itemLibraryExclusion);

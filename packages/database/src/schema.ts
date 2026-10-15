@@ -183,6 +183,10 @@ export const servers = pgTable(
       .array()
       .notNull()
       .default(["Movie", "Episode"]),
+    // Fetch each title's plot from Wikipedia (by its IMDb id, through
+    // Wikidata): a reference the synopsis is written with, and searched on
+    // its own. Off by default: it calls out to Wikimedia.
+    knowledgeWikipedia: boolean("knowledge_wikipedia").notNull().default(false),
 
     // Display timezone for this server (IANA timezone identifier)
     // All data is stored in UTC; this controls display formatting only
@@ -535,10 +539,11 @@ export const mediaSources = pgTable(
 );
 
 // Full texts behind the knowledge index, one row per item and kind:
-// "transcript" (cleaned dialogue from a library subtitle track) or
-// "synopsis" (written by the chat model from the transcript). status
-// "missing" records that no usable subtitle existed when last checked, so the
-// item is retried later instead of on every run.
+// "transcript" (cleaned dialogue from a library subtitle track), "scenes" and
+// "synopsis" (written by the chat model from the transcript) or "reference"
+// (the plot from Wikipedia). status "missing" records that no usable subtitle
+// (or Wikipedia plot) existed when last checked, so the item is retried later
+// instead of on every run.
 export const itemTexts = pgTable(
   "item_texts",
   {
@@ -549,11 +554,12 @@ export const itemTexts = pgTable(
     itemId: text("item_id")
       .notNull()
       .references(() => items.id, { onDelete: "cascade" }),
-    kind: text("kind").notNull(), // "transcript" | "scenes" | "synopsis"
+    kind: text("kind").notNull(), // "transcript" | "scenes" | "synopsis" | "reference"
     status: text("status").notNull(), // "ready" | "missing"
     // transcript: the subtitle stream it was read from; scenes (the plot part
     // by part, each under its times) and synopsis: the transcript hash they
-    // were written from. A change means rebuild.
+    // were written from, and the reference's when there was one (a change
+    // means rebuild); reference: the Wikipedia revision's permanent link.
     source: text("source"),
     content: text("content").notNull().default(""),
     contentHash: text("content_hash"),
@@ -589,7 +595,7 @@ export const itemTextChunks = pgTable(
     itemId: text("item_id")
       .notNull()
       .references(() => items.id, { onDelete: "cascade" }),
-    kind: text("kind").notNull().default("transcript"), // "transcript" | "synopsis"
+    kind: text("kind").notNull().default("transcript"), // "transcript" | "synopsis" | "reference"
     startMs: integer("start_ms"),
     endMs: integer("end_ms"),
     text: text("text").notNull(),

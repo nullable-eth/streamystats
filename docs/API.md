@@ -278,7 +278,7 @@ curl "https://streamystats.example.com/api/search?q=astronauts%20operate%20repli
 
 `mode=plot` finds titles from what happens in them rather than their names:
 "the one where two astronauts operate replica bodies back on Earth", or a
-line someone remembers. It ranks three things together and returns the
+line someone remembers. It ranks four things together and returns the
 best items:
 
 - **Item embeddings**: each movie, series and episode's overview and
@@ -286,13 +286,16 @@ best items:
 - **Plot**: the synopsis, whole and by paragraph, and the scene notes (the
   plot part by part, as the knowledge index writes it from the transcript),
   so a single plot point can match.
+- **Wikipedia plots**: when the knowledge index fetches them, each title's
+  plot as written on Wikipedia, whole and by paragraph, so a plot point the
+  synopsis left out still matches.
 - **Transcripts**: the dialogue of every movie and episode with a full text
   subtitle, by meaning and by exact wording (quote a phrase for an exact
   match).
 
 It needs an embedding model (Settings → AI Models). The knowledge index
-(Settings → AI Recommendations) adds the synopses and transcripts; without
-it, plot search still works on overviews. It only covers media: `type` can be
+(Settings → AI Recommendations) adds the synopses, Wikipedia plots and
+transcripts; without it, plot search still works on overviews. It only covers media: `type` can be
 `all`, `media`, `movies`, `series` or `episodes`, and any other type returns
 nothing. Results are limited to the libraries the user can see, and only
 titles are returned, never synopsis text, so the response is spoiler-free.

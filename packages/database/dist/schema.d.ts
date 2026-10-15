@@ -830,6 +830,23 @@ export declare const servers: import("drizzle-orm/pg-core").PgTableWithColumns<{
             }, {}, {}, import("drizzle-orm").ColumnBuilderExtraConfig>;
             size: undefined;
         }>;
+        knowledgeWikipedia: import("drizzle-orm/pg-core").PgColumn<{
+            name: "knowledge_wikipedia";
+            tableName: "servers";
+            dataType: "boolean";
+            columnType: "PgBoolean";
+            data: boolean;
+            driverParam: boolean;
+            notNull: true;
+            hasDefault: true;
+            isPrimaryKey: false;
+            isAutoincrement: false;
+            hasRuntimeDefault: false;
+            enumValues: undefined;
+            baseColumn: never;
+            identity: undefined;
+            generated: undefined;
+        }, {}, {}>;
         timezone: import("drizzle-orm/pg-core").PgColumn<{
             name: "timezone";
             tableName: "servers";

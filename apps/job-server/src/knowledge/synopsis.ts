@@ -4,15 +4,16 @@ import { eq } from "drizzle-orm";
 
 /**
  * The plot, written from an item's transcript by the server's knowledge index
- * model, or its AI Chat model when none is set. No outside source is
- * involved: the transcript is the evidence. Asked to condense a whole film at
- * once, a mid-size model drops plot points and invents others (a wrong
- * killer, an ending that never happens); put a few minutes of dialogue at a
- * time into plot language, it stays faithful. So the story is written up
- * part by part, as scene notes with their times, and the synopsis is
- * summarised from the notes. A hosted model with a long context window gets
- * the whole transcript, already cut into those parts, in one request: seeing
- * the whole story helps it tell who is who.
+ * model, or its AI Chat model when none is set. The transcript is the
+ * evidence; a reference plot (Wikipedia's, when the server fetches them)
+ * says who people are and what happens where the dialogue does not. The
+ * whole transcript, cut into parts of a few minutes with their times, goes to
+ * the model in one request, which writes notes on each part and then the
+ * synopsis: seeing the whole story is how a model tells who is speaking.
+ * Given one part at a time, a 27B local model made three times as many
+ * errors, most of them lines put in the wrong mouth. A feature film's
+ * transcript runs to some 30k tokens, so this needs a model with a long
+ * context window; small models do not write usable notes.
  */
 export interface ChatSettings {
   provider: string;
@@ -25,13 +26,10 @@ const TIMEOUT_MS = 15 * 60_000;
 /** A part of the story: a few minutes of dialogue, a scene or two. */
 const PART_MS = 8 * 60_000;
 const PART_CHARS = 12_000;
-/** The notes on earlier parts each part is written with; the latest kept. */
-const STORY_SO_FAR_CHARS = 16_000;
 /** Faithful rather than creative; server defaults are often 0.8-1.0. */
 const TEMPERATURE = 0.3;
-const MAX_TOKENS = 4096;
 /** Notes on every part of a long film, and the synopsis. */
-const WHOLE_TITLE_MAX_TOKENS = 32_000;
+const MAX_TOKENS = 32_000;
 const MAX_CHARACTERS = 40;
 
 /** What the model is told about a title besides its dialogue. */
@@ -40,6 +38,8 @@ export interface TitleInfo {
   overview: string | null;
   /** Character names from the cast, so speakers can be told apart. */
   characters: string[];
+  /** The plot as written by people who watched it (Wikipedia's). */
+  reference?: string | null;
 }
 
 /** Scene notes on one part of the story, or that part's dialogue. */
@@ -121,11 +121,6 @@ export function characterNames(roles: string[]): string[] {
   return [...new Set(names)].slice(0, MAX_CHARACTERS);
 }
 
-/** Hosted models with long context windows write a whole title in one request. */
-export function writesWholeTitles(chat: ChatSettings): boolean {
-  return chat.provider === "anthropic" || chat.provider === "gemini";
-}
-
 /** A transcript's lines (one per subtitle cue) in parts of a few minutes. */
 export function transcriptParts(lines: string[], startsMs: number[]): Scene[] {
   const parts: Scene[] = [];
@@ -178,10 +173,13 @@ function about(info: TitleInfo): (string | null)[] {
   ];
 }
 
-const WRITE_NOTES = [
-  "Name who does what to whom. State any reveal, death, twist or hidden identity plainly.",
-  "Only what the transcript shows: its dialogue, and any speaker names and sound descriptions the subtitles give. When it is unclear who speaks or what happens, leave it out rather than guess.",
-];
+const WHO_DOES_WHAT = "Name who does what to whom. State any reveal, death, twist or hidden identity plainly.";
+
+/** What the notes may say: only what the transcript shows, or, with a reference plot, what either shows. */
+const ONLY_TRANSCRIPT =
+  "Only what the transcript shows: its dialogue, and any speaker names and sound descriptions the subtitles give. When it is unclear who speaks or what happens, leave it out rather than guess.";
+const WITH_REFERENCE =
+  "Use the reference plot to know who people are and what happens, including what the dialogue does not show, and the transcript for when it happens: put each event in the part where the transcript shows it, or, if it shows no sign of it, in the part where it most likely happens. Say nothing that neither the reference plot nor the transcript supports, and when it is unclear who speaks or what happens, leave it out rather than guess.";
 
 /** How the transcript is introduced; SDH subtitles name speakers and describe sounds, plain ones do not. */
 const FROM_SUBTITLES = "(from subtitles; some name the speaker or describe sounds in brackets)";
@@ -189,47 +187,13 @@ const FROM_SUBTITLES = "(from subtitles; some name the speaker or describe sound
 const SUMMARY =
   "for each part, at most three sentences on what matters to the story (who does what, any reveal, death or twist), and for the last part, how it ends.";
 
-export function scenePrompt(
-  info: TitleInfo,
-  storySoFar: Scene[],
-  part: Scene,
-  partNumber: number,
-  parts: number
-): string {
-  return [
-    ...about(info),
-    storySoFar.length ? `\nThe story so far (your notes on the earlier parts):\n${formatScenes(storySoFar)}` : null,
-    `\nDialogue from ${clock(part.startMs)} to ${clock(part.endMs)}, part ${partNumber} of ${parts} ${FROM_SUBTITLES}:`,
-    part.text,
-    "",
-    "Write what happens in this part, in order, as short factual sentences, one per line.",
-    ...WRITE_NOTES,
-    "Reply with the lines between <notes> and </notes>, nothing else.",
-  ]
-    .filter((line) => line !== null)
-    .join("\n");
-}
-
-export function synopsisPrompt(info: TitleInfo, scenes: Scene[]): string {
-  return [
-    ...about(info),
-    "",
-    "Scene notes, in story order, each part under its time:",
-    formatScenes(scenes),
-    "",
-    // A word limit alone is ignored: the model copies the notes out whole.
-    `Summarise the story from these notes: ${SUMMARY}`,
-    "Write it as plain prose paragraphs, one per part, without the times. Add nothing the notes do not say.",
-    "Reply with the synopsis between <synopsis> and </synopsis>, nothing else.",
-  ]
-    .filter((line) => line !== null)
-    .join("\n");
-}
-
 /** The whole title in one request: notes on each part, then the synopsis. */
 export function wholeTitlePrompt(info: TitleInfo, parts: Scene[]): string {
   return [
     ...about(info),
+    ...(info.reference
+      ? ["", "Reference plot (from Wikipedia, written by people who watched it):", "<reference>", info.reference, "</reference>"]
+      : []),
     "",
     `Dialogue transcript ${FROM_SUBTITLES}, in ${parts.length} parts with their times:`,
     ...parts.map(
@@ -237,7 +201,8 @@ export function wholeTitlePrompt(info: TitleInfo, parts: Scene[]): string {
     ),
     "",
     "For each part, write what happens in it, in order, as short factual sentences, one per line, each event in the part where it happens.",
-    ...WRITE_NOTES,
+    WHO_DOES_WHAT,
+    info.reference ? WITH_REFERENCE : ONLY_TRANSCRIPT,
     "Use the whole transcript to work out who is speaking and who people are.",
     `Then summarise the story from your notes: ${SUMMARY} Write it as plain prose paragraphs, without the times.`,
     'Reply with <notes n="1">...</notes> for every part, in order, then <synopsis>...</synopsis>, nothing else.',
@@ -275,20 +240,10 @@ export function parseWholeTitle(answer: string, parts: Scene[]): { scenes: Scene
 }
 
 /**
- * The answer inside <tag>: drops a reasoning model's thinking block and any
- * chatter around the tags (agent gateways like to narrate).
- */
-export function extractTagged(text: string, tag: string): string {
-  const answer = text.replace(/<think>[\s\S]*?<\/think>/gi, "");
-  const tagged = new RegExp(`<${tag}>([\\s\\S]*?)(?:</${tag}>|$)`, "i").exec(answer);
-  return (tagged ? tagged[1] : answer).trim();
-}
-
-/**
  * Rate limits and overload (429, 503, 529) and dropped connections: wait as
  * asked, or back off, and try again. A timeout is not retried.
  */
-async function withRetries<T>(call: () => Promise<T>): Promise<T> {
+export async function withRetries<T>(call: () => Promise<T>): Promise<T> {
   for (let attempt = 1; ; attempt++) {
     try {
       return await call();
@@ -338,25 +293,25 @@ export async function readEvents(
 /**
  * One completion. Sent at a low temperature, and to OpenAI-compatible
  * templates that support it (Qwen3/DeepSeek on llama.cpp, vLLM, SGLang, LM
- * Studio) with thinking off: plot notes need no reasoning, which otherwise
- * costs thousands of tokens per call. An endpoint that rejects these hints
- * (current Claude models and some reasoning models take no temperature) gets
- * a plain retry and is never sent them again.
+ * Studio) with thinking off: thinking through a whole film costs tens of
+ * thousands of tokens, ten times the time on a local server. An endpoint that
+ * rejects these hints (current Claude models and some reasoning models take no
+ * temperature) gets a plain retry and is never sent them again.
  */
-async function complete(chat: ChatSettings, prompt: string, maxTokens = MAX_TOKENS): Promise<string> {
+async function complete(chat: ChatSettings, prompt: string): Promise<string> {
   const endpoint = `${chat.provider} ${chat.baseUrl ?? ""} ${chat.model}`;
   const hinted = !plainEndpoints.has(endpoint);
   try {
-    return await withRetries(() => send(chat, prompt, maxTokens, hinted));
+    return await withRetries(() => send(chat, prompt, hinted));
   } catch (error) {
     const status = axios.isAxiosError(error) ? error.response?.status : undefined;
     if (!hinted || (status !== 400 && status !== 422)) throw error;
     plainEndpoints.add(endpoint);
-    return withRetries(() => send(chat, prompt, maxTokens, false));
+    return withRetries(() => send(chat, prompt, false));
   }
 }
 
-async function send(chat: ChatSettings, prompt: string, maxTokens: number, hinted: boolean): Promise<string> {
+async function send(chat: ChatSettings, prompt: string, hinted: boolean): Promise<string> {
   const base = chat.baseUrl?.replace(/\/+$/, "");
   const temperature = hinted ? { temperature: TEMPERATURE } : {};
   switch (chat.provider) {
@@ -367,7 +322,7 @@ async function send(chat: ChatSettings, prompt: string, maxTokens: number, hinte
         `${base || "https://api.anthropic.com"}/v1/messages`,
         {
           model: chat.model,
-          max_tokens: maxTokens,
+          max_tokens: MAX_TOKENS,
           ...temperature,
           stream: true,
           messages: [{ role: "user", content: prompt }],
@@ -391,7 +346,7 @@ async function send(chat: ChatSettings, prompt: string, maxTokens: number, hinte
         `${base || "https://generativelanguage.googleapis.com/v1beta"}/${name}:streamGenerateContent?alt=sse`,
         {
           contents: [{ role: "user", parts: [{ text: prompt }] }],
-          generationConfig: { ...temperature, maxOutputTokens: maxTokens },
+          generationConfig: { ...temperature, maxOutputTokens: MAX_TOKENS },
         },
         { headers: { "x-goog-api-key": chat.apiKey ?? "" }, responseType: "stream", timeout: TIMEOUT_MS }
       );
@@ -418,51 +373,15 @@ async function send(chat: ChatSettings, prompt: string, maxTokens: number, hinte
   }
 }
 
-/**
- * Scene notes for a transcript's parts, in order, each written with the notes
- * on the parts before it so names and threads carry over. A part with no
- * notes (music, credits) is left out.
- */
-export async function writeScenes(chat: ChatSettings, info: TitleInfo, parts: Scene[]): Promise<Scene[]> {
-  const scenes: Scene[] = [];
-  for (const [i, part] of parts.entries()) {
-    let storySoFar = scenes;
-    while (formatScenes(storySoFar).length > STORY_SO_FAR_CHARS) storySoFar = storySoFar.slice(1);
-    const text = extractTagged(
-      await complete(chat, scenePrompt(info, storySoFar, part, i + 1, parts.length)),
-      "notes"
-    );
-    if (text) scenes.push({ startMs: part.startMs, endMs: part.endMs, text });
-  }
-  return scenes;
-}
-
-/** The synopsis, summarised from the scene notes. */
-export async function writeSynopsis(chat: ChatSettings, info: TitleInfo, scenes: Scene[]): Promise<string> {
-  return extractTagged(await complete(chat, synopsisPrompt(info, scenes)), "synopsis");
-}
-
-/**
- * Scene notes and the synopsis for a transcript's parts: in one request for a
- * hosted model, part by part otherwise.
- */
+/** Scene notes and the synopsis for a transcript's parts, in one request. */
 export async function writePlot(
   chat: ChatSettings,
   info: TitleInfo,
   parts: Scene[]
 ): Promise<{ scenes: Scene[]; synopsis: string }> {
-  let plot: { scenes: Scene[]; synopsis: string };
-  let answer = "";
-  if (writesWholeTitles(chat)) {
-    answer = await complete(chat, wholeTitlePrompt(info, parts), WHOLE_TITLE_MAX_TOKENS);
-    plot = parseWholeTitle(answer, parts);
-  } else {
-    const scenes = await writeScenes(chat, info, parts);
-    plot = { scenes, synopsis: scenes.length ? await writeSynopsis(chat, info, scenes) : "" };
-  }
-  if (plot.scenes.length === 0) {
-    throw new Error(`Chat model returned no scene notes${answer ? `: ${answer.slice(0, 300)}` : ""}`);
-  }
+  const answer = await complete(chat, wholeTitlePrompt(info, parts));
+  const plot = parseWholeTitle(answer, parts);
+  if (plot.scenes.length === 0) throw new Error(`Chat model returned no scene notes: ${answer.slice(0, 300)}`);
   if (plot.synopsis.split(/\s+/).length < 20) throw new Error("Chat model returned an empty or too-short synopsis");
   return plot;
 }

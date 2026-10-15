@@ -1385,12 +1385,18 @@ export function createChatTools(
             message: `Nothing in the library matches "${title}"${season ? ` season ${season}` : ""}${episode ? ` episode ${episode}` : ""}.`,
           };
         }
-        return {
-          ...found,
-          message: found.synopsis
-            ? "Synopsis written from the episode's subtitles; it may simplify or get minor details wrong."
-            : "No synopsis has been indexed for this item yet (it needs a full subtitle); only the spoiler-free overview is available.",
-        };
+        const notes = [
+          found.synopsis
+            ? "Synopsis written by a model from the subtitles; it may simplify or get minor details wrong."
+            : "No synopsis has been indexed for this item yet (it needs a full subtitle).",
+          found.wikipediaPlot
+            ? "wikipediaPlot is the plot from Wikipedia, written by people who watched it: prefer it where the two differ, and link wikipediaSource when quoting it."
+            : null,
+          !found.synopsis && !found.wikipediaPlot
+            ? "Only the spoiler-free overview is available."
+            : null,
+        ];
+        return { ...found, message: notes.filter(Boolean).join(" ") };
       },
     }),
 

@@ -13,6 +13,7 @@ import {
   type SQL,
   sql,
 } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { getStatisticsExclusions } from "./exclusions";
 
 export interface SynopsisLookup {
@@ -24,6 +25,9 @@ export interface SynopsisLookup {
   isLastEpisodeOfSeries: boolean;
   /** The stored plot synopsis, or null if the knowledge index has none yet. */
   synopsis: string | null;
+  /** The plot from Wikipedia, when fetched, and the revision it is from. */
+  wikipediaPlot: string | null;
+  wikipediaSource: string | null;
   overview: string | null;
 }
 
@@ -150,8 +154,14 @@ export async function lookupSynopsis({
     };
   }
 
+  const reference = alias(itemTexts, "reference");
   const [row] = await db
-    .select({ overview: items.overview, synopsis: itemTexts.content })
+    .select({
+      overview: items.overview,
+      synopsis: itemTexts.content,
+      wikipediaPlot: reference.content,
+      wikipediaSource: reference.source,
+    })
     .from(items)
     .leftJoin(
       itemTexts,
@@ -159,6 +169,14 @@ export async function lookupSynopsis({
         eq(itemTexts.itemId, items.id),
         eq(itemTexts.kind, "synopsis"),
         eq(itemTexts.status, "ready"),
+      ),
+    )
+    .leftJoin(
+      reference,
+      and(
+        eq(reference.itemId, items.id),
+        eq(reference.kind, "reference"),
+        eq(reference.status, "ready"),
       ),
     )
     .where(eq(items.id, target.id))
@@ -172,6 +190,8 @@ export async function lookupSynopsis({
     isLastEpisodeOfSeason,
     isLastEpisodeOfSeries,
     synopsis: row?.synopsis || null,
+    wikipediaPlot: row?.wikipediaPlot || null,
+    wikipediaSource: row?.wikipediaSource ?? null,
     overview: row?.overview ?? null,
   };
 }
