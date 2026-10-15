@@ -1,35 +1,28 @@
 import { db, knowledgeModels, servers } from "@streamystats/database";
 import axios from "axios";
 import { asc, eq, sql } from "drizzle-orm";
-import { type ChatSettings, type Scene, type TitleInfo, type Usage, writePlot } from "./synopsis";
+import { MAX_WAIT_MS, waitAsked } from "./retry";
+import { type ChatSettings, type Scene, type TitleInfo, writePlot } from "./synopsis";
 
 /**
  * The models the knowledge index writes with, in the order the server lists
- * them: a title goes to the first usable one (budget left this month, not
- * resting after a failure of its own) and on to the next if it fails, so
- * several accounts, a free tier or a local model can share the work. With
- * none listed, the AI Chat model writes, without a budget.
+ * them: a title goes to the first one not resting after a failure of its own
+ * and on to the next if it fails, so several accounts, a free tier or a local
+ * model can share the work. With none listed, the AI Chat model writes.
  */
 export interface KnowledgeModel extends ChatSettings {
   /** null: the AI Chat model, standing in when none is listed. */
   id: number | null;
-  /** USD per million tokens. */
-  inputPrice: number;
-  outputPrice: number;
-  /** USD per calendar month (UTC); null: no limit. */
-  monthlyBudget: number | null;
-  spentMonth: string | null;
-  spent: number;
   unavailableUntil: Date | null;
 }
 
-/** How long a model that failed on its own account rests, unless it asks for longer. */
+/** How long a rejected key, unknown model or empty account rests. */
 const REST_MS = 60 * 60_000;
+/** How long a busy or unreachable model rests, and a rate-limited one that does not say. */
+const SHORT_REST_MS = 15 * 60_000;
 
 /** Who wrote a title's notes, as kept with them. */
 export const modelLabel = (m: ChatSettings) => `${m.provider}:${m.model}`;
-
-const monthOf = (now: Date) => now.toISOString().slice(0, 7);
 
 export async function getKnowledgeModels(serverId: number): Promise<KnowledgeModel[]> {
   const rows = await db
@@ -45,45 +38,26 @@ export async function getKnowledgeModels(serverId: number): Promise<KnowledgeMod
     .where(eq(servers.id, serverId))
     .limit(1);
   if (!s?.provider || !s.model) return [];
-  return [
-    {
-      ...s,
-      provider: s.provider,
-      model: s.model,
-      id: null,
-      inputPrice: 0,
-      outputPrice: 0,
-      monthlyBudget: null,
-      spentMonth: null,
-      spent: 0,
-      unavailableUntil: null,
-    },
-  ];
+  return [{ ...s, provider: s.provider, model: s.model, id: null, unavailableUntil: null }];
 }
 
-export const spentThisMonth = (m: KnowledgeModel, now = new Date()) => (m.spentMonth === monthOf(now) ? m.spent : 0);
-
-export const costOf = (m: KnowledgeModel, usage: Usage) =>
-  (usage.inputTokens * m.inputPrice + usage.outputTokens * m.outputPrice) / 1e6;
-
-/** Not resting after a failure of its own, and with budget left this month. */
-export function isUsable(m: KnowledgeModel, now = new Date()): boolean {
-  if (m.unavailableUntil && m.unavailableUntil > now) return false;
-  return m.monthlyBudget === null || spentThisMonth(m, now) < m.monthlyBudget;
-}
+/** Not resting after a failure of its own. */
+export const isUsable = (m: KnowledgeModel, now = new Date()) => !m.unavailableUntil || m.unavailableUntil <= now;
 
 /**
- * How long a failure benches the model, or null when it is the title's
- * (too long for the model, an answer that could not be read, a timeout):
- * a rejected key or unknown model, no credit or quota left, rate limits that
- * outlast the retries, a server error, or no answer at all.
+ * How long a failure benches the model, or null when it is the title's (too
+ * long for the model, an answer that could not be read, a timeout). A rate
+ * limit rests it until the provider says it resets, or SHORT_REST_MS when it
+ * does not say or the retries ran out; a server error or no answer, at least
+ * SHORT_REST_MS; a rejected key, unknown model or no credit, REST_MS.
  */
-export function restFor(failure: { status?: number; body: string; retryAfterSeconds?: number; timedOut?: boolean }) {
-  const rest = Math.max(REST_MS, (failure.retryAfterSeconds ?? 0) * 1000);
+export function restFor(failure: { status?: number; body: string; waitMs?: number | null; timedOut?: boolean }) {
   if (failure.timedOut) return null;
-  if (failure.status === undefined) return rest;
-  if ([401, 402, 403, 404, 429].includes(failure.status) || failure.status >= 500) return rest;
-  if (failure.status === 400 && /credit|billing|quota|balance/i.test(failure.body)) return rest;
+  const asked = failure.waitMs ?? 0;
+  if (failure.status === 429) return asked > MAX_WAIT_MS ? asked : SHORT_REST_MS;
+  if (failure.status === undefined || failure.status >= 500) return Math.max(SHORT_REST_MS, asked);
+  if ([401, 402, 403, 404].includes(failure.status)) return REST_MS;
+  if (failure.status === 400 && /credit|billing|quota|balance/i.test(failure.body)) return REST_MS;
   return null;
 }
 
@@ -102,12 +76,8 @@ async function failureOf(error: unknown) {
     }
     body = text;
   }
-  return {
-    status: response.status,
-    body: typeof body === "string" ? body : JSON.stringify(body ?? ""),
-    retryAfterSeconds: Number(response.headers?.["retry-after"]) || undefined,
-    timedOut,
-  };
+  const text = typeof body === "string" ? body : JSON.stringify(body ?? "");
+  return { status: response.status, body: text, waitMs: waitAsked(response.headers ?? {}, text), timedOut };
 }
 
 /** What an error body says, without the JSON around it (OpenRouter puts the provider's reason in metadata.raw). */
@@ -121,25 +91,6 @@ export function messageOf(body: string): string {
   return body;
 }
 
-/** A request's cost, added to its model's spend this month. */
-async function spend(model: KnowledgeModel, usage: Usage) {
-  const now = new Date();
-  const month = monthOf(now);
-  const cost = costOf(model, usage);
-  model.spent = spentThisMonth(model, now) + cost;
-  model.spentMonth = month;
-  if (model.id === null) return;
-  const sameMonth = sql`${knowledgeModels.spentMonth} = ${month}`;
-  await db
-    .update(knowledgeModels)
-    .set({
-      spent: sql`CASE WHEN ${sameMonth} THEN ${knowledgeModels.spent} ELSE 0 END + ${cost}`,
-      titles: sql`CASE WHEN ${sameMonth} THEN ${knowledgeModels.titles} ELSE 0 END`,
-      spentMonth: month,
-    })
-    .where(eq(knowledgeModels.id, model.id));
-}
-
 /**
  * A title's scene notes and synopsis from the first usable model that writes
  * them. A model that fails moves the title on to the next; one that failed on
@@ -150,11 +101,11 @@ export async function writePlotWithModels(
   info: TitleInfo,
   parts: Scene[]
 ): Promise<{ scenes: Scene[]; synopsis: string; model: KnowledgeModel }> {
-  let lastError: unknown = new Error("No knowledge index model is usable: all are over budget or resting");
+  let lastError: unknown = new Error("No knowledge index model is usable: all are resting");
   for (const model of models) {
     if (!isUsable(model)) continue;
     try {
-      const plot = await writePlot(model, info, parts, (usage) => spend(model, usage));
+      const plot = await writePlot(model, info, parts);
       if (model.id !== null) {
         await db
           .update(knowledgeModels)
