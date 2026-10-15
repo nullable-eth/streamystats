@@ -109,6 +109,17 @@ async function failureOf(error: unknown) {
   };
 }
 
+/** What an error body says, without the JSON around it (OpenRouter puts the provider's reason in metadata.raw). */
+export function messageOf(body: string): string {
+  try {
+    const parsed = JSON.parse(body);
+    const error = parsed?.error ?? parsed;
+    const said = [error?.message, error?.metadata?.raw].filter((s) => typeof s === "string" && s);
+    if (said.length > 0) return said.join(": ");
+  } catch {}
+  return body;
+}
+
 /** A request's cost, added to its model's spend this month. */
 async function spend(model: KnowledgeModel, usage: Usage) {
   const now = new Date();
@@ -161,7 +172,7 @@ export async function writePlotWithModels(
           .update(knowledgeModels)
           .set({
             unavailableUntil: model.unavailableUntil,
-            lastError: `${failure.status ?? "no answer"}: ${failure.body}`.slice(0, 500),
+            lastError: `${failure.status ?? "no answer"}: ${messageOf(failure.body)}`.slice(0, 500),
           })
           .where(eq(knowledgeModels.id, model.id));
       }

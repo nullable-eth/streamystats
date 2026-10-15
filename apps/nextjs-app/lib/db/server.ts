@@ -1075,7 +1075,10 @@ export const testChatConnection = async ({
     });
 
     if (!response.ok) {
-      return { success: false, message: "Failed to connect to API" };
+      return {
+        success: false,
+        message: `Failed to connect to API: ${response.status} ${(await response.text()).slice(0, 200)}`,
+      };
     }
     return { success: true, message: "Connection successful" };
   } catch (error) {

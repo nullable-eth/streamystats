@@ -105,7 +105,7 @@ function Section({
     <section className="space-y-2">
       <h3 className="text-sm font-medium">{title}</h3>
       <p className="text-sm text-muted-foreground">{about}</p>
-      {children}
+      <div className="space-y-2 border-l-2 pl-4">{children}</div>
     </section>
   );
 }
