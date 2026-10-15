@@ -5,6 +5,7 @@ import {
   items,
   itemTexts,
   KNOWLEDGE_ITEM_TYPES,
+  knowledgeModels,
   servers,
 } from "@streamystats/database";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
@@ -46,7 +47,7 @@ export async function getKnowledgeIndexStatus(
       wikipedia: servers.knowledgeWikipedia,
       embeddingModel: servers.embeddingModel,
       chatModel: servers.chatModel,
-      synopsisModel: servers.synopsisModel,
+      knowledgeModels: sql<number>`(SELECT count(*)::int FROM ${knowledgeModels} WHERE ${knowledgeModels.serverId} = ${servers.id})`,
     })
     .from(servers)
     .where(eq(servers.id, serverId))
@@ -117,7 +118,7 @@ export async function getKnowledgeIndexStatus(
   return {
     enabled: server?.enabled ?? false,
     embeddingsConfigured: Boolean(server?.embeddingModel),
-    chatConfigured: Boolean(server?.synopsisModel || server?.chatModel),
+    chatConfigured: Boolean(server?.knowledgeModels || server?.chatModel),
     wikipedia: server?.wikipedia ?? false,
     byType: KNOWLEDGE_ITEM_TYPES.map((type) => ({
       type,

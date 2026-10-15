@@ -21,190 +21,32 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
 import type { ServerPublic } from "@/lib/types";
 import {
-  type ChatModelPurpose,
-  type ChatProvider,
   clearChatConfigAction,
   saveChatConfigAction,
   testChatConnectionAction,
 } from "./actions";
+import {
+  initialSettings,
+  isComplete,
+  ModelFields,
+  type ModelSettings,
+} from "./model-fields";
 
-const PROVIDER_PRESETS = {
-  openai: {
-    name: "OpenAI",
-    baseUrl: "https://api.openai.com/v1",
-    defaultModel: "gpt-4o-mini",
-    requiresApiKey: true,
-    provider: "openai-compatible" as ChatProvider,
-  },
-  anthropic: {
-    name: "Anthropic",
-    baseUrl: "https://api.anthropic.com",
-    defaultModel: "claude-sonnet-5-5",
-    requiresApiKey: true,
-    provider: "anthropic" as ChatProvider,
-  },
-  gemini: {
-    name: "Google Gemini",
-    baseUrl: "https://generativelanguage.googleapis.com/v1beta",
-    defaultModel: "gemini-3.8-flash-high",
-    requiresApiKey: true,
-    provider: "gemini" as ChatProvider,
-  },
-  "together-ai": {
-    name: "Together AI",
-    baseUrl: "https://api.together.xyz/v1",
-    defaultModel: "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-    requiresApiKey: true,
-    provider: "openai-compatible" as ChatProvider,
-  },
-  fireworks: {
-    name: "Fireworks AI",
-    baseUrl: "https://api.fireworks.ai/inference/v1",
-    defaultModel: "accounts/fireworks/models/llama-v3p1-70b-instruct",
-    requiresApiKey: true,
-    provider: "openai-compatible" as ChatProvider,
-  },
-  groq: {
-    name: "Groq",
-    baseUrl: "https://api.groq.com/openai/v1",
-    defaultModel: "llama-3.3-70b-versatile",
-    requiresApiKey: true,
-    provider: "openai-compatible" as ChatProvider,
-  },
-  openrouter: {
-    name: "OpenRouter",
-    baseUrl: "https://openrouter.ai/api/v1",
-    defaultModel: "openai/gpt-4o-mini",
-    requiresApiKey: true,
-    provider: "openai-compatible" as ChatProvider,
-  },
-  ollama: {
-    name: "Ollama",
-    baseUrl: "http://localhost:11434/v1",
-    defaultModel: "llama3.2",
-    requiresApiKey: false,
-    provider: "ollama" as ChatProvider,
-  },
-  "lm-studio": {
-    name: "LM Studio",
-    baseUrl: "http://localhost:1234/v1",
-    defaultModel: "local-model",
-    requiresApiKey: false,
-    provider: "openai-compatible" as ChatProvider,
-  },
-  custom: {
-    name: "Custom",
-    baseUrl: "",
-    defaultModel: "",
-    requiresApiKey: false,
-    provider: "openai-compatible" as ChatProvider,
-  },
-} as const;
-
-type PresetKey = keyof typeof PROVIDER_PRESETS;
-
-interface SavedModel {
-  provider: string | null;
-  baseUrl: string | null;
-  model: string | null;
-  hasApiKey: boolean;
-}
-
-function savedModel(
-  server: ServerPublic,
-  purpose: ChatModelPurpose,
-): SavedModel {
-  return purpose === "synopsis"
-    ? {
-        provider: server.synopsisProvider,
-        baseUrl: server.synopsisBaseUrl,
-        model: server.synopsisModel,
-        hasApiKey: server.hasSynopsisApiKey,
-      }
-    : {
-        provider: server.chatProvider,
-        baseUrl: server.chatBaseUrl,
-        model: server.chatModel,
-        hasApiKey: server.hasChatApiKey,
-      };
-}
-
-const TEXT: Record<
-  ChatModelPurpose,
-  { title: string; description: string; name: string }
-> = {
-  chat: {
-    title: "Chat Model",
-    description:
-      "Configure an AI provider to enable the chat assistant. Use Cmd+K to ask questions about your watch history and get recommendations.",
-    name: "AI Chat",
-  },
-  synopsis: {
-    title: "Knowledge Index Model (optional)",
-    description:
-      "The model the knowledge index writes the plot with: scene notes with their times, and a synopsis, for every movie and episode, each from the title's whole transcript in one request (four titles at a time with Anthropic and Gemini). It needs a long context window, 64k tokens or more: a feature film's subtitles alone run to some 30k. Large hosted models such as Claude are the most accurate; a local model of around 30B parameters works, but gets more speakers and timings wrong; small models and short context windows do not write usable notes. With Ollama, raise the context length (OLLAMA_CONTEXT_LENGTH), whose default cuts long transcripts off. Leave it unconfigured to use the chat model.",
-    name: "knowledge index model",
-  },
-};
-
-function detectPreset(saved: SavedModel): PresetKey {
-  // Not openai-compatible providers should be detected first regarless of url
-  if (saved.provider === "anthropic") {
-    return "anthropic";
-  }
-  if (saved.provider === "ollama") {
-    return "ollama";
-  }
-  if (saved.provider === "gemini") {
-    return "gemini";
-  }
-
-  const baseUrl = saved.baseUrl || "";
-  for (const [key, preset] of Object.entries(PROVIDER_PRESETS)) {
-    if (key !== "custom" && baseUrl === preset.baseUrl) {
-      return key as PresetKey;
-    }
-  }
-  return baseUrl ? "custom" : "openai";
-}
-
-export function ChatAIManager({
-  server,
-  purpose = "chat",
-}: {
-  server: ServerPublic;
-  purpose?: ChatModelPurpose;
-}) {
-  const saved = savedModel(server, purpose);
-  const text = TEXT[purpose];
-  const [isConfigured, setIsConfigured] = useState(Boolean(saved.provider));
-  const [selectedPreset, setSelectedPreset] = useState<PresetKey>(
-    detectPreset(saved),
-  );
-
-  const [baseUrl, setBaseUrl] = useState(
-    saved.baseUrl || PROVIDER_PRESETS.openai.baseUrl,
+export function ChatAIManager({ server }: { server: ServerPublic }) {
+  const [settings, setSettings] = useState<ModelSettings>(
+    initialSettings({
+      provider: server.chatProvider,
+      baseUrl: server.chatBaseUrl,
+      model: server.chatModel,
+    }),
   );
   // Don't pre-fill API key for security - just track if one exists
-  const [apiKey, setApiKey] = useState("");
-  const hasExistingApiKey = saved.hasApiKey;
-  const [model, setModel] = useState(
-    saved.model || PROVIDER_PRESETS.openai.defaultModel,
-  );
-  const [provider, setProvider] = useState<ChatProvider>(
-    (saved.provider as ChatProvider) || "openai-compatible",
+  const hasExistingApiKey = server.hasChatApiKey;
+  const [isConfigured, setIsConfigured] = useState(
+    Boolean(server.chatProvider),
   );
 
   const [isSaving, setIsSaving] = useState(false);
@@ -212,35 +54,21 @@ export function ChatAIManager({
   const [isClearing, setIsClearing] = useState(false);
   const [showClearDialog, setShowClearDialog] = useState(false);
 
-  const handlePresetChange = (preset: PresetKey) => {
-    setSelectedPreset(preset);
-    const presetConfig = PROVIDER_PRESETS[preset];
-    if (preset === "custom") {
-      setProvider("openai-compatible");
-    } else {
-      setBaseUrl(presetConfig.baseUrl);
-      setModel(presetConfig.defaultModel);
-      setProvider(presetConfig.provider);
-    }
-  };
+  const config = () => ({
+    provider: settings.provider,
+    baseUrl: settings.baseUrl,
+    apiKey: settings.apiKey || undefined,
+    model: settings.model,
+  });
 
   const handleSaveConfig = async () => {
     setIsSaving(true);
     try {
-      await saveChatConfigAction(
-        server.id,
-        {
-          provider,
-          baseUrl,
-          apiKey: apiKey || undefined,
-          model,
-        },
-        purpose,
-      );
+      await saveChatConfigAction(server.id, config());
       setIsConfigured(true);
-      toast.success(`${text.title} configuration saved`);
+      toast.success("AI Chat configuration saved");
     } catch (_error) {
-      toast.error(`Failed to save ${text.name} configuration`);
+      toast.error("Failed to save AI Chat configuration");
     } finally {
       setIsSaving(false);
     }
@@ -249,16 +77,7 @@ export function ChatAIManager({
   const handleTestConnection = async () => {
     setIsTesting(true);
     try {
-      const result = await testChatConnectionAction(
-        server.id,
-        {
-          provider,
-          baseUrl,
-          apiKey: apiKey || undefined,
-          model,
-        },
-        purpose,
-      );
+      const result = await testChatConnectionAction(server.id, config());
       if (result.success) {
         toast.success(result.message);
       } else {
@@ -271,27 +90,13 @@ export function ChatAIManager({
     }
   };
 
-  const hasValidConfig = () => {
-    const preset = PROVIDER_PRESETS[selectedPreset];
-    // API key is valid if: already saved OR newly entered
-    const hasApiKey = hasExistingApiKey || !!apiKey;
-    if (preset.requiresApiKey && !hasApiKey) {
-      return false;
-    }
-    return !!baseUrl && !!model;
-  };
-
   const handleClearConfig = async () => {
     setIsClearing(true);
     try {
-      await clearChatConfigAction(server.id, purpose);
+      await clearChatConfigAction(server.id);
       setIsConfigured(false);
-      toast.success(`${text.title} configuration cleared`);
-      setBaseUrl(PROVIDER_PRESETS.openai.baseUrl);
-      setApiKey("");
-      setModel(PROVIDER_PRESETS.openai.defaultModel);
-      setProvider("openai-compatible");
-      setSelectedPreset("openai");
+      toast.success("AI Chat configuration cleared");
+      setSettings(initialSettings());
     } catch (err) {
       toast.error(
         err instanceof Error ? err.message : "Failed to clear configuration",
@@ -306,135 +111,46 @@ export function ChatAIManager({
     <>
       <Card className="w-full mb-6">
         <CardHeader>
-          <CardTitle>{text.title}</CardTitle>
-          <CardDescription>{text.description}</CardDescription>
+          <CardTitle>Chat Model</CardTitle>
+          <CardDescription>
+            Configure an AI provider to enable the chat assistant. Use Cmd+K to
+            ask questions about your watch history and get recommendations.
+          </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor={`preset-select-${purpose}`}>Provider</Label>
-              <Select
-                value={selectedPreset}
-                onValueChange={(value: PresetKey) => handlePresetChange(value)}
-              >
-                <SelectTrigger id={`preset-select-${purpose}`}>
-                  <SelectValue placeholder="Select provider" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="openai">OpenAI</SelectItem>
-                  <SelectItem value="anthropic">Anthropic (Claude)</SelectItem>
-                  <SelectItem value="gemini">Google Gemini</SelectItem>
-                  <SelectItem value="together-ai">Together AI</SelectItem>
-                  <SelectItem value="fireworks">Fireworks AI</SelectItem>
-                  <SelectItem value="groq">Groq</SelectItem>
-                  <SelectItem value="openrouter">OpenRouter</SelectItem>
-                  <SelectItem value="ollama">Ollama (Local)</SelectItem>
-                  <SelectItem value="lm-studio">LM Studio (Local)</SelectItem>
-                  <SelectItem value="custom">Custom</SelectItem>
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-foreground">
-                Select a provider or choose Custom for any OpenAI-compatible API
-              </p>
-            </div>
-          </div>
+          <ModelFields
+            id="chat"
+            value={settings}
+            onChange={setSettings}
+            hasSavedKey={hasExistingApiKey}
+          />
 
-          <Separator />
-
-          <div className="space-y-4">
-            <h3 className="text-sm font-medium">
-              {PROVIDER_PRESETS[selectedPreset].name} Configuration
-            </h3>
-
-            <div className="space-y-3">
-              <div className="space-y-2">
-                <Label htmlFor={`base-url-${purpose}`}>Base URL</Label>
-                <Input
-                  id={`base-url-${purpose}`}
-                  placeholder="https://api.openai.com/v1"
-                  value={baseUrl}
-                  onChange={(e) => setBaseUrl(e.target.value)}
-                />
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor={`api-key-${purpose}`}>
-                  API Key{" "}
-                  {!PROVIDER_PRESETS[selectedPreset].requiresApiKey &&
-                    "(Optional)"}
-                </Label>
-                <Input
-                  id={`api-key-${purpose}`}
-                  type="password"
-                  placeholder={
-                    hasExistingApiKey
-                      ? "API key saved (enter new key to replace)"
-                      : PROVIDER_PRESETS[selectedPreset].requiresApiKey
-                        ? "Required"
-                        : "Optional"
-                  }
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                />
-                {hasExistingApiKey && !apiKey && (
-                  <p className="text-xs text-green-600 dark:text-green-400">
-                    An API key is already saved. Leave empty to keep it.
-                  </p>
-                )}
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor={`model-${purpose}`}>Model</Label>
-                <Input
-                  id={`model-${purpose}`}
-                  placeholder="gpt-4o-mini"
-                  value={model}
-                  onChange={(e) => setModel(e.target.value)}
-                />
-                <p className="text-xs text-muted-foreground">
-                  Enter the chat model name supported by your provider
-                </p>
-              </div>
-
-              {selectedPreset === "ollama" && (
-                <div className="text-xs text-muted-foreground space-y-1 p-3 bg-muted rounded-md">
-                  <p>
-                    Make sure the model is available in your Ollama instance:
-                  </p>
-                  <code className="bg-background px-2 py-1 rounded text-xs block">
-                    ollama pull {model}
-                  </code>
-                </div>
+          <div className="flex gap-2">
+            <Button
+              type="button"
+              onClick={handleSaveConfig}
+              disabled={isSaving || !settings.baseUrl || !settings.model}
+              className="flex-1"
+            >
+              {isSaving ? "Saving..." : "Save Configuration"}
+            </Button>
+            <Button
+              type="button"
+              onClick={handleTestConnection}
+              disabled={isTesting || !isComplete(settings, hasExistingApiKey)}
+              variant="outline"
+              className="flex items-center gap-1"
+            >
+              {isTesting ? (
+                <>
+                  <Loader className="h-4 w-4 animate-spin" /> Testing...
+                </>
+              ) : (
+                <>
+                  <Zap className="h-4 w-4" /> Test
+                </>
               )}
-
-              <div className="flex gap-2">
-                <Button
-                  type="button"
-                  onClick={handleSaveConfig}
-                  disabled={isSaving || !baseUrl || !model}
-                  className="flex-1"
-                >
-                  {isSaving ? "Saving..." : "Save Configuration"}
-                </Button>
-                <Button
-                  type="button"
-                  onClick={handleTestConnection}
-                  disabled={isTesting || !hasValidConfig()}
-                  variant="outline"
-                  className="flex items-center gap-1"
-                >
-                  {isTesting ? (
-                    <>
-                      <Loader className="h-4 w-4 animate-spin" /> Testing...
-                    </>
-                  ) : (
-                    <>
-                      <Zap className="h-4 w-4" /> Test
-                    </>
-                  )}
-                </Button>
-              </div>
-            </div>
+            </Button>
           </div>
 
           <Separator />
@@ -442,7 +158,7 @@ export function ChatAIManager({
           <div className="space-y-4">
             <h3 className="text-sm font-medium">Clear Configuration</h3>
             <p className="text-sm text-gray-400">
-              Remove the {text.name} configuration from this server.
+              Remove the AI Chat configuration from this server.
             </p>
             <Button
               type="button"
@@ -459,13 +175,10 @@ export function ChatAIManager({
       <AlertDialog open={showClearDialog} onOpenChange={setShowClearDialog}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>
-              Clear {text.title} Configuration?
-            </AlertDialogTitle>
+            <AlertDialogTitle>Clear AI Chat Configuration?</AlertDialogTitle>
             <AlertDialogDescription>
-              {purpose === "synopsis"
-                ? "Synopses will be written with the chat model again."
-                : "This will remove the AI Chat configuration. The chat feature will be disabled until you configure a new provider."}
+              This will remove the AI Chat configuration. The chat feature will
+              be disabled until you configure a new provider.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

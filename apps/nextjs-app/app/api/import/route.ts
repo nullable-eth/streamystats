@@ -10,6 +10,7 @@ import {
 import { eq } from "drizzle-orm";
 import { type NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
+import { replaceKnowledgeModels } from "@/lib/db/knowledge-models";
 import { getServerWithSecrets } from "@/lib/db/server";
 import { jellyfinHeaders } from "@/lib/jellyfin-auth";
 
@@ -142,6 +143,8 @@ interface ImportData {
     chatProvider?: string | null;
     chatBaseUrl?: string | null;
     chatModel?: string | null;
+    knowledgeModels?: Parameters<typeof replaceKnowledgeModels>[1];
+    /** Older backups: the one knowledge index model. */
     synopsisProvider?: string | null;
     synopsisBaseUrl?: string | null;
     synopsisModel?: string | null;
@@ -309,14 +312,21 @@ export async function POST(req: NextRequest) {
       if (importData.server.chatModel !== undefined) {
         update.chatModel = importData.server.chatModel ?? null;
       }
-      if (importData.server.synopsisProvider !== undefined) {
-        update.synopsisProvider = importData.server.synopsisProvider ?? null;
-      }
-      if (importData.server.synopsisBaseUrl !== undefined) {
-        update.synopsisBaseUrl = importData.server.synopsisBaseUrl ?? null;
-      }
-      if (importData.server.synopsisModel !== undefined) {
-        update.synopsisModel = importData.server.synopsisModel ?? null;
+      const { synopsisProvider, synopsisBaseUrl, synopsisModel } =
+        importData.server;
+      const knowledgeModels = Array.isArray(importData.server.knowledgeModels)
+        ? importData.server.knowledgeModels
+        : synopsisProvider && synopsisModel
+          ? [
+              {
+                provider: synopsisProvider,
+                baseUrl: synopsisBaseUrl ?? null,
+                model: synopsisModel,
+              },
+            ]
+          : null;
+      if (knowledgeModels) {
+        await replaceKnowledgeModels(serverIdNum, knowledgeModels);
       }
       if (typeof importData.server.knowledgeIndexEnabled === "boolean") {
         update.knowledgeIndexEnabled = importData.server.knowledgeIndexEnabled;
