@@ -109,6 +109,10 @@ exports.servers = (0, pg_core_1.pgTable)("servers", {
         .array()
         .notNull()
         .default(["Movie", "Episode"]),
+    // Fetch each title's plot from Wikipedia (by its IMDb id, through
+    // Wikidata): a reference the synopsis is written with, and searched on
+    // its own. Off by default: it calls out to Wikimedia.
+    knowledgeWikipedia: (0, pg_core_1.boolean)("knowledge_wikipedia").notNull().default(false),
     // Display timezone for this server (IANA timezone identifier)
     // All data is stored in UTC; this controls display formatting only
     timezone: (0, pg_core_1.text)("timezone").notNull().default("Etc/UTC"),
@@ -395,10 +399,11 @@ exports.mediaSources = (0, pg_core_1.pgTable)("media_sources", {
     (0, pg_core_1.index)("media_sources_server_id_idx").on(table.serverId),
 ]);
 // Full texts behind the knowledge index, one row per item and kind:
-// "transcript" (cleaned dialogue from a library subtitle track) or
-// "synopsis" (written by the chat model from the transcript). status
-// "missing" records that no usable subtitle existed when last checked, so the
-// item is retried later instead of on every run.
+// "transcript" (cleaned dialogue from a library subtitle track), "scenes" and
+// "synopsis" (written by the chat model from the transcript) or "reference"
+// (the plot from Wikipedia). status "missing" records that no usable subtitle
+// (or Wikipedia plot) existed when last checked, so the item is retried later
+// instead of on every run.
 exports.itemTexts = (0, pg_core_1.pgTable)("item_texts", {
     id: (0, pg_core_1.serial)("id").primaryKey(),
     serverId: (0, pg_core_1.integer)("server_id")
@@ -407,11 +412,12 @@ exports.itemTexts = (0, pg_core_1.pgTable)("item_texts", {
     itemId: (0, pg_core_1.text)("item_id")
         .notNull()
         .references(() => exports.items.id, { onDelete: "cascade" }),
-    kind: (0, pg_core_1.text)("kind").notNull(), // "transcript" | "scenes" | "synopsis"
+    kind: (0, pg_core_1.text)("kind").notNull(), // "transcript" | "scenes" | "synopsis" | "reference"
     status: (0, pg_core_1.text)("status").notNull(), // "ready" | "missing"
     // transcript: the subtitle stream it was read from; scenes (the plot part
     // by part, each under its times) and synopsis: the transcript hash they
-    // were written from. A change means rebuild.
+    // were written from, and the reference's when there was one (a change
+    // means rebuild); reference: the Wikipedia revision's permanent link.
     source: (0, pg_core_1.text)("source"),
     content: (0, pg_core_1.text)("content").notNull().default(""),
     contentHash: (0, pg_core_1.text)("content_hash"),
@@ -442,7 +448,7 @@ exports.itemTextChunks = (0, pg_core_1.pgTable)("item_text_chunks", {
     itemId: (0, pg_core_1.text)("item_id")
         .notNull()
         .references(() => exports.items.id, { onDelete: "cascade" }),
-    kind: (0, pg_core_1.text)("kind").notNull().default("transcript"), // "transcript" | "synopsis"
+    kind: (0, pg_core_1.text)("kind").notNull().default("transcript"), // "transcript" | "synopsis" | "reference"
     startMs: (0, pg_core_1.integer)("start_ms"),
     endMs: (0, pg_core_1.integer)("end_ms"),
     text: (0, pg_core_1.text)("text").notNull(),

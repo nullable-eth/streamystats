@@ -19,14 +19,16 @@ export type PlotSearchType = "Movie" | "Series" | "Episode";
 const POOL = 50;
 
 /**
- * Titles that match a description of their story, best first. Three rankings
+ * Titles that match a description of their story, best first. Four rankings
  * are fused: the item vectors (overview, details and, once the knowledge
  * index has written one, the plot synopsis), the plot windows (the synopsis
  * whole and by paragraph, and the scene notes part by part, so one plot
- * point can match) and the transcript windows (what was said), each title by
- * its best rank in any of them: a title one ranking puts first is not buried
- * under titles several rankings put halfway down. Only items the viewer may
- * see.
+ * point can match), the Wikipedia plot windows (the plot as people wrote it,
+ * so a point the model's synopsis left out or got wrong still matches) and
+ * the transcript windows (what was said), each title by its best rank in any
+ * of them: a title one ranking puts first is not buried under titles several
+ * rankings put halfway down, and one several rankings agree on wins a tie.
+ * Only items the viewer may see.
  *
  * A title found through its dialogue or its scene notes carries the moment
  * in `metadata`, from whichever of the two ranked it higher: `momentMs`
@@ -64,7 +66,7 @@ export async function searchByPlot({
   const { distance, dimensionFilter } = getItemEmbeddingComparison(embedding);
   // Only movies and episodes have transcripts and synopses.
   const hasTexts = types.some((t) => t !== "Series");
-  const windows = (kind: "synopsis" | "transcript") =>
+  const windows = (kind: "synopsis" | "reference" | "transcript") =>
     hasTexts
       ? searchTextWindows({
           kind,
@@ -75,7 +77,7 @@ export async function searchByPlot({
           limit: POOL,
         })
       : Promise.resolve([]);
-  const [byStory, byPlot, byDialogue] = await Promise.all([
+  const [byStory, byPlot, byReference, byDialogue] = await Promise.all([
     db
       .select({ id: items.id })
       .from(items)
@@ -83,6 +85,7 @@ export async function searchByPlot({
       .orderBy(asc(distance))
       .limit(POOL),
     windows("synopsis"),
+    windows("reference"),
     windows("transcript"),
   ]);
 
@@ -90,9 +93,10 @@ export async function searchByPlot({
     [
       byStory.map((r) => r.id),
       byPlot.map((m) => m.itemId),
+      byReference.map((m) => m.itemId),
       byDialogue.map((m) => m.itemId),
     ],
-    POOL * 3,
+    POOL * 4,
   );
   if (fused.length === 0) return [];
 

@@ -18,6 +18,7 @@ import type { KnowledgeIndexStatus } from "@/lib/db/knowledge-index";
 import {
   setKnowledgeIndexEnabledAction,
   setKnowledgeItemTypesAction,
+  setKnowledgeWikipediaAction,
 } from "./knowledge-actions";
 
 const TYPE_LABELS: Record<string, string> = {
@@ -38,6 +39,7 @@ export function KnowledgeIndexManager({
 }) {
   const router = useRouter();
   const [enabled, setEnabled] = useState(status.enabled);
+  const [wikipedia, setWikipedia] = useState(status.wikipedia);
   const [types, setTypes] = useState<string[]>(
     status.byType.filter((t) => t.enabled).map((t) => t.type),
   );
@@ -54,6 +56,19 @@ export function KnowledgeIndexManager({
       } catch {
         setEnabled(!value);
         toast.error("Failed to update the knowledge index setting");
+      }
+    });
+  };
+
+  const toggleWikipedia = (value: boolean) => {
+    setWikipedia(value);
+    startTransition(async () => {
+      try {
+        await setKnowledgeWikipediaAction(serverId, value);
+        router.refresh();
+      } catch {
+        setWikipedia(!value);
+        toast.error("Failed to update the Wikipedia setting");
       }
     });
   };
@@ -129,6 +144,28 @@ export function KnowledgeIndexManager({
           </p>
         )}
 
+        <div className="space-y-1">
+          <div className="flex items-center justify-between gap-4">
+            <Label htmlFor="knowledge-wikipedia">Plots from Wikipedia</Label>
+            <Switch
+              id="knowledge-wikipedia"
+              checked={wikipedia}
+              disabled={pending}
+              onCheckedChange={toggleWikipedia}
+            />
+          </div>
+          <p className="text-sm text-muted-foreground">
+            Fetches each title&apos;s plot from its English Wikipedia article
+            (found by its IMDb id through Wikidata). The plot is written by
+            people who watched it, so the synopsis is written with it: it says
+            who people are and what happens where the dialogue does not. It is
+            also searched on its own, so a plot point the synopsis left out
+            still finds the title. Calls Wikimedia&apos;s servers; Wikipedia
+            text is CC BY-SA. Turning this off removes the plots fetched so far,
+            and synopses written with them are rewritten without.
+          </p>
+        </div>
+
         <div className="space-y-2">
           {status.byType.map((t) => (
             <div
@@ -149,6 +186,8 @@ export function KnowledgeIndexManager({
               <span className="text-muted-foreground">
                 {t.transcripts.toLocaleString()} transcripts ·{" "}
                 {t.synopses.toLocaleString()} synopses ·{" "}
+                {wikipedia &&
+                  `${t.references.toLocaleString()} Wikipedia plots · `}
                 {t.checked.toLocaleString()} of {t.total.toLocaleString()}{" "}
                 checked
               </span>

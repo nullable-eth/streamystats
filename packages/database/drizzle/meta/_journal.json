@@ -358,6 +358,13 @@
       "when": 1791910409693,
       "tag": "0050_synopsis_windows",
       "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1792082241837,
+      "tag": "0051_wikipedia_plots",
+      "breakpoints": true
     }
   ]
 }

@@ -1,18 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import {
   characterNames,
-  extractTagged,
   formatScenes,
   parseScenes,
   parseWholeTitle,
   readEvents,
   sceneWindows,
-  scenePrompt,
-  synopsisPrompt,
   synopsisWindows,
   transcriptParts,
   wholeTitlePrompt,
-  writesWholeTitles,
 } from "./synopsis";
 
 const moon = { title: "Moon (2009)", overview: null, characters: [] };
@@ -66,20 +62,6 @@ describe("scenes", () => {
       { startMs: 0, endMs: 9, text: "Moon (2009): Sam finds a clone." },
     ]);
   });
-
-  test("the first part has no story so far; later parts carry the notes before them", () => {
-    const part = { startMs: 0, endMs: 1000, text: "Hello." };
-    expect(scenePrompt(moon, [], part, 1, 2)).not.toContain("story so far");
-    const later = scenePrompt({ ...moon, overview: "Sam is alone." }, [{ ...part, text: "Sam wakes." }], part, 2, 2);
-    expect(later).toContain("[00:00:00-00:00:01]\nSam wakes.");
-    expect(later).toContain("part 2 of 2");
-  });
-
-  test("the synopsis prompt omits the overview and characters when there are none", () => {
-    const prompt = synopsisPrompt(moon, [{ startMs: 0, endMs: 0, text: "Sam." }]);
-    expect(prompt).not.toContain("Official overview");
-    expect(prompt).not.toContain("Characters");
-  });
 });
 
 describe("characterNames", () => {
@@ -96,18 +78,30 @@ describe("whole title in one request", () => {
     { startMs: 480_000, endMs: 950_000, text: "Keep Summer safe." },
   ];
 
-  test("only hosted models", () => {
-    const chat = { baseUrl: null, apiKey: null, model: "m" };
-    expect(writesWholeTitles({ ...chat, provider: "anthropic" })).toBe(true);
-    expect(writesWholeTitles({ ...chat, provider: "gemini" })).toBe(true);
-    expect(writesWholeTitles({ ...chat, provider: "openai-compatible" })).toBe(false);
-    expect(writesWholeTitles({ ...chat, provider: "ollama" })).toBe(false);
-  });
-
   test("the transcript in numbered parts with their times, and the cast", () => {
     const prompt = wholeTitlePrompt({ ...moon, characters: ["Sam Bell", "GERTY"] }, parts);
     expect(prompt).toContain("Characters: Sam Bell, GERTY");
     expect(prompt).toContain('<part n="2" time="00:08:00-00:15:50">\nKeep Summer safe.\n</part>');
+  });
+
+  test("no overview or characters when there are none", () => {
+    const prompt = wholeTitlePrompt(moon, parts);
+    expect(prompt).not.toContain("Official overview");
+    expect(prompt).not.toContain("Characters");
+  });
+
+  test("without a reference plot, only what the transcript shows", () => {
+    const prompt = wholeTitlePrompt(moon, parts);
+    expect(prompt).not.toContain("<reference>");
+    expect(prompt).toContain("Only what the transcript shows");
+  });
+
+  test("with one, the plot before the transcript, for who and what; the transcript for when", () => {
+    const prompt = wholeTitlePrompt({ ...moon, reference: "Sam discovers he is a clone." }, parts);
+    expect(prompt).toContain("<reference>\nSam discovers he is a clone.\n</reference>");
+    expect(prompt.indexOf("<reference>")).toBeLessThan(prompt.indexOf("Dialogue transcript"));
+    expect(prompt).toContain("Use the reference plot to know who people are and what happens");
+    expect(prompt).not.toContain("Only what the transcript shows");
   });
 
   test("notes closed with </part>, or not closed, or opened as <part>", () => {
@@ -119,6 +113,11 @@ describe("whole title in one request", () => {
     ]);
   });
 
+  test("a reasoning model's thinking block is not notes", () => {
+    const answer = '<think>Part 1 is <notes n="1">Sam</notes>?</think><notes n="1">Sam wakes.</notes><synopsis>Sam wakes.</synopsis>';
+    expect(parseWholeTitle(answer, parts).scenes.map((s) => s.text)).toEqual(["Sam wakes."]);
+  });
+
   test("notes land on their parts' times; a part with none is left out", () => {
     const answer =
       'Sure.\n<notes n="2">Rick tells the car to keep Summer safe.</notes>\n<synopsis>Rick and Morty leave.</synopsis>';
@@ -126,19 +125,6 @@ describe("whole title in one request", () => {
       scenes: [{ startMs: 480_000, endMs: 950_000, text: "Rick tells the car to keep Summer safe." }],
       synopsis: "Rick and Morty leave.",
     });
-  });
-});
-
-describe("extractTagged", () => {
-  test("drops a reasoning model's thinking block", () => {
-    expect(extractTagged("<think>hmm\nok</think>\n\nTwo astronauts...", "synopsis")).toBe("Two astronauts...");
-  });
-
-  test("keeps only the tagged answer, without the chatter around it", () => {
-    expect(
-      extractTagged("I'll work from the transcript.\n<synopsis>\nTwo astronauts...\n</synopsis>\nDone.", "synopsis")
-    ).toBe("Two astronauts...");
-    expect(extractTagged("<notes>Cut off at the end", "notes")).toBe("Cut off at the end");
   });
 });
 

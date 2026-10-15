@@ -19,6 +19,8 @@ export interface KnowledgeTypeStatus {
   checked: number;
   transcripts: number;
   synopses: number;
+  /** Plots fetched from Wikipedia. */
+  references: number;
   /** Checked, but no full text subtitle: the subtitle downloader's to-do list. */
   missing: number;
 }
@@ -27,6 +29,8 @@ export interface KnowledgeIndexStatus {
   enabled: boolean;
   embeddingsConfigured: boolean;
   chatConfigured: boolean;
+  /** Plots are fetched from Wikipedia. */
+  wikipedia: boolean;
   byType: KnowledgeTypeStatus[];
   /** Enabled items with no full text subtitle, grouped by series and movie. */
   missing: MissingSummary;
@@ -39,6 +43,7 @@ export async function getKnowledgeIndexStatus(
     .select({
       enabled: servers.knowledgeIndexEnabled,
       types: servers.knowledgeItemTypes,
+      wikipedia: servers.knowledgeWikipedia,
       embeddingModel: servers.embeddingModel,
       chatModel: servers.chatModel,
       synopsisModel: servers.synopsisModel,
@@ -113,6 +118,7 @@ export async function getKnowledgeIndexStatus(
     enabled: server?.enabled ?? false,
     embeddingsConfigured: Boolean(server?.embeddingModel),
     chatConfigured: Boolean(server?.synopsisModel || server?.chatModel),
+    wikipedia: server?.wikipedia ?? false,
     byType: KNOWLEDGE_ITEM_TYPES.map((type) => ({
       type,
       enabled: enabledTypes.includes(type),
@@ -122,6 +128,7 @@ export async function getKnowledgeIndexStatus(
       // Written together with the scene notes; a synopsis from before scene
       // notes is rewritten with them.
       synopses: count(type, "scenes", "ready"),
+      references: count(type, "reference", "ready"),
       missing: count(type, "transcript", "missing"),
     })),
     missing: summarizeMissing(missingRows),
@@ -145,4 +152,30 @@ export async function setKnowledgeItemTypes(serverId: number, types: string[]) {
     .update(servers)
     .set({ knowledgeItemTypes: types.filter((t) => allowed.includes(t)) })
     .where(eq(servers.id, serverId));
+}
+
+/**
+ * Whether plots are fetched from Wikipedia. Turned off, the plots fetched so
+ * far go too: the synopses written with them are rewritten without.
+ */
+export async function setKnowledgeWikipedia(
+  serverId: number,
+  enabled: boolean,
+) {
+  await db.transaction(async (tx) => {
+    await tx
+      .update(servers)
+      .set({ knowledgeWikipedia: enabled })
+      .where(eq(servers.id, serverId));
+    if (!enabled) {
+      await tx
+        .delete(itemTexts)
+        .where(
+          and(
+            eq(itemTexts.serverId, serverId),
+            eq(itemTexts.kind, "reference"),
+          ),
+        );
+    }
+  });
 }

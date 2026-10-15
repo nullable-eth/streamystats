@@ -34,8 +34,8 @@ import {
   synopsisWindows,
   transcriptParts,
   writePlot,
-  writesWholeTitles,
 } from "../knowledge/synopsis";
+import { articlesByImdbId, plotsOf } from "../knowledge/wikipedia";
 import type { PgBossJob, ServerIdJobData } from "../types/job-status";
 import { logJobResult } from "./job-logger";
 
@@ -46,12 +46,12 @@ const RUN_BUDGET_MS = 90 * 60_000;
 const ITEMS_PER_QUERY = 25;
 const EMBED_BATCH = 32;
 const MAX_TRACKS_TRIED = 3;
-/** Titles written at once with a hosted model; a local one gets one at a time. */
+/** Titles written at once with a hosted model; a local server is busy with one. */
 const HOSTED_CONCURRENCY = 4;
 
 type Outcome = "indexed" | "unchanged" | "missing";
 
-type DueItem = {
+type ItemRow = {
   id: string;
   name: string;
   type: string;
@@ -62,7 +62,14 @@ type DueItem = {
   overview: string | null;
 };
 
-type WindowKind = "transcript" | "synopsis";
+type DueItem = ItemRow & {
+  imdb_id: string | null;
+  /** Its Wikipedia plot is to be looked up (again). */
+  reference_due: boolean;
+};
+
+/** Dialogue; the plot as the model wrote it; the plot as people wrote it (Wikipedia's). */
+type WindowKind = "transcript" | "synopsis" | "reference";
 
 const ensuredIndexes = new Set<string>();
 
@@ -113,7 +120,7 @@ async function embedAll(
   return vectors;
 }
 
-function titleOf(item: DueItem): string {
+function titleOf(item: ItemRow): string {
   if (item.type !== "Episode") {
     return item.production_year ? `${item.name} (${item.production_year})` : item.name;
   }
@@ -123,26 +130,40 @@ function titleOf(item: DueItem): string {
 }
 
 /**
+ * What scene notes are written from: the transcript, and the Wikipedia plot
+ * when there is one. Notes written from anything else are rewritten.
+ */
+const plotBasis = (transcriptHash: string, reference: ItemText | undefined) =>
+  reference?.status === "ready" && reference.contentHash ? `${transcriptHash}:${reference.contentHash}` : transcriptHash;
+
+/**
  * Selected movies/episodes that need work: never looked at; no usable subtitle a
  * day ago (a subtitle downloader may have fetched one since); a weekly re-check for upgraded
- * subtitles; a transcript indexed before line timings were kept; or, with a
+ * subtitles; a transcript indexed before line timings were kept; with a
  * chat model, scene notes (and the synopsis written with them) missing or
- * written from an older transcript.
+ * written from an older transcript or Wikipedia plot (see plotBasis); or,
+ * with Wikipedia plots on, a plot never looked up, missing for a month (an
+ * article may have been written since) or three months old.
  */
 async function dueItems(
   serverId: number,
   types: readonly string[],
-  withSynopses: boolean
+  withSynopses: boolean,
+  withReferences: boolean
 ): Promise<DueItem[]> {
   const allowed: readonly string[] = KNOWLEDGE_ITEM_TYPES;
   const selected = types.filter((t) => allowed.includes(t));
   if (selected.length === 0) return [];
+  const referenceDue = sql`(${withReferences} AND (r.id IS NULL
+    OR r.checked_at < now() - CASE WHEN r.status = 'ready' THEN interval '90 days' ELSE interval '30 days' END))`;
   const rows = await db.execute<DueItem>(sql`
     SELECT i.id, i.name, i.type, i.series_name, i.parent_index_number,
-           i.index_number, i.production_year, i.overview
+           i.index_number, i.production_year, i.overview,
+           i.provider_ids->>'Imdb' AS imdb_id, ${referenceDue} AS reference_due
     FROM items i
     LEFT JOIN item_texts t ON t.item_id = i.id AND t.kind = 'transcript'
     LEFT JOIN item_texts s ON s.item_id = i.id AND s.kind = 'scenes'
+    LEFT JOIN item_texts r ON r.item_id = i.id AND r.kind = 'reference'
     WHERE i.server_id = ${serverId}
       AND i.deleted_at IS NULL
       AND i.type IN ${selected}
@@ -152,8 +173,10 @@ async function dueItems(
         OR (t.status = 'ready' AND t.checked_at < now() - interval '7 days')
         OR (t.status = 'ready' AND t.cue_starts_ms IS NULL)
         OR (${withSynopses} AND t.status = 'ready'
-            AND (s.id IS NULL OR s.source IS DISTINCT FROM t.content_hash)
+            AND (s.id IS NULL OR s.source IS DISTINCT FROM
+                 concat_ws(':', t.content_hash, CASE WHEN r.status = 'ready' THEN r.content_hash END))
             AND (s.id IS NULL OR s.checked_at < now() - interval '1 day'))
+        OR ${referenceDue}
       )
     ORDER BY (t.id IS NULL) DESC, i.date_created DESC NULLS LAST
     LIMIT ${ITEMS_PER_QUERY}
@@ -294,9 +317,11 @@ async function indexTranscript(
 type PlotText = { id: number; itemId: string; kind: string; content: string };
 
 /**
- * A plot text as search windows of the plot ranking, replacing any it had:
- * the synopsis whole and by paragraph (see synopsisWindows), or each part of
- * the scene notes with its times.
+ * A plot text as search windows, replacing any it had: the synopsis or the
+ * Wikipedia plot whole and by paragraph (see synopsisWindows), or each part
+ * of the scene notes with its times. The Wikipedia plot ranks on its own, so
+ * a title it matches is found even where the model's synopsis left the plot
+ * point out, and one both match ranks higher.
  */
 async function indexPlotWindows(
   serverId: number,
@@ -308,7 +333,8 @@ async function indexPlotWindows(
     text.kind === "scenes"
       ? sceneWindows(title, parseScenes(text.content))
       : synopsisWindows(title, text.content).map((w) => ({ text: w, startMs: null, endMs: null }));
-  const vectors = await embedAll(embedding, windows.map((w) => w.text), "synopsis");
+  const kind: WindowKind = text.kind === "reference" ? "reference" : "synopsis";
+  const vectors = await embedAll(embedding, windows.map((w) => w.text), kind);
   await db.transaction(async (tx) => {
     await tx.delete(itemTextChunks).where(eq(itemTextChunks.itemTextId, text.id));
     if (windows.length === 0) return;
@@ -317,7 +343,7 @@ async function indexPlotWindows(
         itemTextId: text.id,
         serverId,
         itemId: text.itemId,
-        kind: "synopsis",
+        kind,
         startMs: w.startMs,
         endMs: w.endMs,
         text: w.text,
@@ -328,10 +354,43 @@ async function indexPlotWindows(
 }
 
 /**
+ * Wikipedia plots for a batch of items, looked up together, each stored as
+ * the item's "reference" text and indexed as search windows of its own. An
+ * item without an English article with a Plot section is marked missing.
+ */
+async function indexReferences(serverId: number, embedding: EmbeddingSettings, batch: DueItem[]): Promise<number> {
+  const articles = await articlesByImdbId(batch.flatMap((item) => (item.imdb_id ? [item.imdb_id] : [])));
+  const plots = await plotsOf([...new Set(articles.values())]);
+  let found = 0;
+  for (const item of batch) {
+    const article = item.imdb_id ? articles.get(item.imdb_id) : undefined;
+    const plot = article ? plots.get(article) : undefined;
+    if (!plot) {
+      const id = await saveText(serverId, item.id, "reference", { status: "missing", source: null, content: "", contentHash: null });
+      await db.delete(itemTextChunks).where(eq(itemTextChunks.itemTextId, id));
+      continue;
+    }
+    const previous = await getText(item.id, "reference");
+    const contentHash = hash(plot.plot);
+    const id = await saveText(serverId, item.id, "reference", {
+      status: "ready",
+      source: plot.source,
+      content: plot.plot,
+      contentHash,
+    });
+    if (previous?.contentHash !== contentHash) {
+      await indexPlotWindows(serverId, embedding, { id, itemId: item.id, kind: "reference", content: plot.plot }, titleOf(item));
+    }
+    found++;
+  }
+  return found;
+}
+
+/**
  * Character names from the title's own cast. Not the series' for an episode:
  * a model told of a regular who is not in the episode puts them in it.
  */
-async function charactersOf(item: DueItem): Promise<string[]> {
+async function charactersOf(item: ItemRow): Promise<string[]> {
   const rows = await db.execute<{ role: string }>(sql`
     SELECT role FROM item_people
     WHERE type = 'Actor' AND role <> '' AND item_id = ${item.id}
@@ -354,15 +413,22 @@ async function indexSynopsis(
 ): Promise<boolean> {
   const transcript = await getText(item.id, "transcript");
   if (transcript?.status !== "ready" || !transcript.contentHash || !transcript.cueStartsMs) return false;
+  const reference = await getText(item.id, "reference");
+  const basis = plotBasis(transcript.contentHash, reference);
   const previous = await getText(item.id, "scenes");
-  if (previous?.status === "ready" && previous.source === transcript.contentHash) return false;
+  if (previous?.status === "ready" && previous.source === basis) return false;
 
   const title = titleOf(item);
   const saved: PlotText[] = [];
   try {
     const { scenes, synopsis } = await writePlot(
       chat,
-      { title, overview: item.overview, characters: await charactersOf(item) },
+      {
+        title,
+        overview: item.overview,
+        characters: await charactersOf(item),
+        reference: reference?.status === "ready" ? reference.content : null,
+      },
       transcriptParts(transcript.content.split("\n"), transcript.cueStartsMs)
     );
     for (const [kind, content] of [
@@ -371,7 +437,7 @@ async function indexSynopsis(
     ] as const) {
       const id = await saveText(serverId, item.id, kind, {
         status: "ready",
-        source: transcript.contentHash,
+        source: basis,
         content,
         contentHash: hash(content),
       });
@@ -397,7 +463,7 @@ async function indexSynopsis(
   return true;
 }
 
-type PlotTextRow = DueItem & { text_id: number; kind: string; content: string };
+type PlotTextRow = ItemRow & { text_id: number; kind: string; content: string };
 
 /** Plot texts without search windows: written before they existed, or their embedding failed. */
 async function plotTextsWithoutWindows(serverId: number): Promise<PlotTextRow[]> {
@@ -407,7 +473,7 @@ async function plotTextsWithoutWindows(serverId: number): Promise<PlotTextRow[]>
     FROM item_texts s
     JOIN items i ON i.id = s.item_id
     WHERE s.server_id = ${serverId}
-      AND s.kind IN ('synopsis', 'scenes')
+      AND s.kind IN ('synopsis', 'scenes', 'reference')
       AND s.status = 'ready'
       AND btrim(s.content) <> ''
       AND i.deleted_at IS NULL
@@ -420,7 +486,7 @@ async function plotTextsWithoutWindows(serverId: number): Promise<PlotTextRow[]>
 export async function knowledgeIndexJob(job: PgBossJob<ServerIdJobData>) {
   const startTime = Date.now();
   const { serverId } = job.data;
-  const counts = { indexed: 0, unchanged: 0, missing: 0, synopses: 0, windows: 0, errors: 0 };
+  const counts = { indexed: 0, unchanged: 0, missing: 0, synopses: 0, references: 0, windows: 0, errors: 0 };
   let lastError: string | null = null;
 
   const [server] = await db.select().from(servers).where(eq(servers.id, serverId)).limit(1);
@@ -432,13 +498,14 @@ export async function knowledgeIndexJob(job: PgBossJob<ServerIdJobData>) {
     return { skipped: "embeddings not configured" };
   }
   const chat = await getChatSettings(serverId);
+  const withReferences = server.knowledgeWikipedia;
   const client = JellyfinClient.fromServer(server);
   // Transcripts in the language people search in. A transcript picked
   // under an earlier choice is replaced at its weekly re-check.
   const languages = await client.getMetadataLanguageCodes().catch(() => ["en", "eng"]);
 
   console.info(
-    `[knowledge] serverId=${serverId} action=start synopses=${chat ? chat.model : "off"} language=${languages.join("/")}`
+    `[knowledge] serverId=${serverId} action=start synopses=${chat ? chat.model : "off"} wikipedia=${withReferences} language=${languages.join("/")}`
   );
   try {
     // Plot texts still without search windows: embedding only, no model calls.
@@ -464,10 +531,24 @@ export async function knowledgeIndexJob(job: PgBossJob<ServerIdJobData>) {
       }
     }
 
-    const concurrency = chat && writesWholeTitles(chat) ? HOSTED_CONCURRENCY : 1;
+    const hosted = chat?.provider === "anthropic" || chat?.provider === "gemini";
+    const concurrency = hosted ? HOSTED_CONCURRENCY : 1;
     while (Date.now() - startTime < RUN_BUDGET_MS) {
-      const batch = await dueItems(serverId, server.knowledgeItemTypes, chat !== null);
+      const batch = await dueItems(serverId, server.knowledgeItemTypes, chat !== null, withReferences);
       if (batch.length === 0) break;
+      const lookUp = batch.filter((item) => item.reference_due);
+      if (lookUp.length > 0) {
+        try {
+          counts.references += await indexReferences(serverId, embedding, lookUp);
+        } catch (error) {
+          // Wikipedia unreachable: stop rather than write notes without the
+          // plots, which would be rewritten once they come. The next run retries.
+          counts.errors++;
+          lastError = `Wikipedia plots: ${error instanceof Error ? error.message : String(error)}`;
+          console.warn(`[knowledge] serverId=${serverId} error=${lastError}`);
+          break;
+        }
+      }
       const indexItem = async (item: DueItem) => {
         try {
           counts[await indexTranscript(serverId, client, embedding, languages, item)]++;
