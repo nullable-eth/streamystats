@@ -9,7 +9,7 @@ mock.module("./synopsis", () => ({
     return answers.get(chat.model)?.() ?? { scenes: [], synopsis: "ok" };
   },
 }));
-const { costOf, isUsable, restFor, spentThisMonth, writePlotWithModels } = await import("./models");
+const { costOf, isUsable, messageOf, restFor, spentThisMonth, writePlotWithModels } = await import("./models");
 
 const now = new Date("2026-10-15T12:00:00Z");
 const model = (name: string, extra = {}) => ({
@@ -97,5 +97,17 @@ describe("writePlotWithModels", () => {
     await expect(
       writePlotWithModels([spent, resting], { title: "T", overview: null, characters: [] }, [])
     ).rejects.toThrow("No knowledge index model is usable");
+  });
+});
+
+describe("messageOf", () => {
+  test("an error body's message, with OpenRouter's provider reason", () => {
+    expect(messageOf('{"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low"}}')).toBe(
+      "Your credit balance is too low"
+    );
+    expect(
+      messageOf('{"error":{"message":"Provider returned error","code":429,"metadata":{"raw":"model is rate-limited upstream"}}}')
+    ).toBe("Provider returned error: model is rate-limited upstream");
+    expect(messageOf("Bad Gateway")).toBe("Bad Gateway");
   });
 });
