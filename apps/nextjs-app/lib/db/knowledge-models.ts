@@ -6,9 +6,9 @@ import type { ChatAIConfig, ChatProvider } from "./server";
 
 /**
  * The models the knowledge index writes scene notes and synopses with, tried
- * in order (see the job's knowledge/models.ts): the first with budget left
- * this month that is not resting after a failure of its own gets the title,
- * the next one gets it if that fails. Secrets stay on the server.
+ * in order (see the job's knowledge/models.ts): the first not resting after a
+ * failure of its own gets the title, the next one gets it if that fails.
+ * Secrets stay on the server.
  */
 export interface KnowledgeModelPublic {
   id: number;
@@ -19,25 +19,12 @@ export interface KnowledgeModelPublic {
   baseUrl: string | null;
   model: string;
   hasApiKey: boolean;
-  /** USD per million tokens. */
-  inputPrice: number;
-  outputPrice: number;
-  /** USD per calendar month (UTC); null: no limit. */
-  monthlyBudget: number | null;
-  spentThisMonth: number;
-  titlesThisMonth: number;
+  /** Titles it has written. */
+  titles: number;
   /** ISO time it rests until after a failure of its own, if it is resting. */
   restingUntil: string | null;
   lastError: string | null;
 }
-
-export interface KnowledgeModelInput extends ChatAIConfig {
-  inputPrice: number;
-  outputPrice: number;
-  monthlyBudget: number | null;
-}
-
-const thisMonth = () => new Date().toISOString().slice(0, 7);
 
 export async function listKnowledgeModels(
   serverId: number,
@@ -47,7 +34,6 @@ export async function listKnowledgeModels(
     .from(knowledgeModels)
     .where(eq(knowledgeModels.serverId, serverId))
     .orderBy(asc(knowledgeModels.position), asc(knowledgeModels.id));
-  const month = thisMonth();
   const now = new Date();
   return rows.map((r) => ({
     id: r.id,
@@ -57,11 +43,7 @@ export async function listKnowledgeModels(
     baseUrl: r.baseUrl,
     model: r.model,
     hasApiKey: Boolean(r.apiKey),
-    inputPrice: r.inputPrice,
-    outputPrice: r.outputPrice,
-    monthlyBudget: r.monthlyBudget,
-    spentThisMonth: r.spentMonth === month ? r.spent : 0,
-    titlesThisMonth: r.spentMonth === month ? r.titles : 0,
+    titles: r.titles,
     restingUntil:
       r.unavailableUntil && r.unavailableUntil > now
         ? r.unavailableUntil.toISOString()
@@ -97,16 +79,13 @@ export async function getKnowledgeModelConfig(
  */
 export async function saveKnowledgeModel(
   serverId: number,
-  input: KnowledgeModelInput & { id?: number },
+  input: ChatAIConfig & { id?: number },
 ) {
   const values = {
     provider: input.provider,
     name: input.name?.trim() || null,
     baseUrl: input.baseUrl.replace(/\/+$/, "") || null,
     model: input.model,
-    inputPrice: input.inputPrice,
-    outputPrice: input.outputPrice,
-    monthlyBudget: input.monthlyBudget,
     ...(input.apiKey?.trim() ? { apiKey: input.apiKey } : {}),
   };
   if (input.id !== undefined) {
@@ -189,32 +168,23 @@ export async function moveKnowledgeModel(
   });
 }
 
-/** The list as a backup keeps it: no keys, no spend. */
+/** The list as a backup keeps it: no keys, no counts. */
 export async function exportKnowledgeModels(serverId: number) {
   return (await listKnowledgeModels(serverId)).map(
-    ({
+    ({ name, enabled, provider, baseUrl, model }) => ({
       name,
       enabled,
       provider,
       baseUrl,
       model,
-      inputPrice,
-      outputPrice,
-      monthlyBudget,
-    }) => ({
-      name,
-      enabled,
-      provider,
-      baseUrl,
-      model,
-      inputPrice,
-      outputPrice,
-      monthlyBudget,
     }),
   );
 }
 
-/** Restore a backup's list in place of the server's, keys to be entered again. */
+/**
+ * Restore a backup's list in place of the server's, keys to be entered again
+ * (an older backup's prices and budgets are ignored).
+ */
 export async function replaceKnowledgeModels(
   serverId: number,
   models: {
@@ -223,9 +193,6 @@ export async function replaceKnowledgeModels(
     provider: string;
     baseUrl: string | null;
     model: string;
-    inputPrice?: number;
-    outputPrice?: number;
-    monthlyBudget?: number | null;
   }[],
 ) {
   await db.transaction(async (tx) => {
@@ -242,9 +209,6 @@ export async function replaceKnowledgeModels(
         provider: m.provider,
         baseUrl: m.baseUrl,
         model: m.model,
-        inputPrice: m.inputPrice ?? 0,
-        outputPrice: m.outputPrice ?? 0,
-        monthlyBudget: m.monthlyBudget ?? null,
       })),
     );
   });

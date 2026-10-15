@@ -419,7 +419,7 @@ exports.itemTexts = (0, pg_core_1.pgTable)("item_texts", {
     content: (0, pg_core_1.text)("content").notNull().default(""),
     contentHash: (0, pg_core_1.text)("content_hash"),
     // scenes and synopsis: the model that wrote them ("provider:model"), so
-    // notes from a fallback model are rewritten once a better one has budget.
+    // notes from a fallback model are rewritten once a better one is back.
     writtenBy: (0, pg_core_1.text)("written_by"),
     // transcript: when each line of `content` starts, so a matched line can
     // be located to the moment it is said.
@@ -431,9 +431,8 @@ exports.itemTexts = (0, pg_core_1.pgTable)("item_texts", {
     (0, pg_core_1.index)("item_texts_server_kind_idx").on(table.serverId, table.kind),
 ]);
 // The models the knowledge index writes scene notes and synopses with, tried
-// in order: a title goes to the first one that is usable (has budget left this
-// month and is not resting after a failure of its own), and on to the next if
-// it fails. None: the AI Chat model.
+// in order: a title goes to the first one not resting after a failure of its
+// own, and on to the next if it fails. None: the AI Chat model.
 exports.knowledgeModels = (0, pg_core_1.pgTable)("knowledge_models", {
     id: (0, pg_core_1.serial)("id").primaryKey(),
     serverId: (0, pg_core_1.integer)("server_id")
@@ -448,15 +447,7 @@ exports.knowledgeModels = (0, pg_core_1.pgTable)("knowledge_models", {
     baseUrl: (0, pg_core_1.text)("base_url"),
     apiKey: (0, pg_core_1.text)("api_key"),
     model: (0, pg_core_1.text)("model").notNull(),
-    // USD per million tokens; 0 for a local model.
-    inputPrice: (0, pg_core_1.doublePrecision)("input_price").notNull().default(0),
-    outputPrice: (0, pg_core_1.doublePrecision)("output_price").notNull().default(0),
-    // USD per calendar month (UTC); null: no limit.
-    monthlyBudget: (0, pg_core_1.doublePrecision)("monthly_budget"),
-    // What it has cost in spentMonth ("YYYY-MM"), and titles written; a new
-    // month starts from zero.
-    spentMonth: (0, pg_core_1.text)("spent_month"),
-    spent: (0, pg_core_1.doublePrecision)("spent").notNull().default(0),
+    // Titles it has written.
     titles: (0, pg_core_1.integer)("titles").notNull().default(0),
     // Out of credit, rate limited, or down: not tried again until then.
     unavailableUntil: (0, pg_core_1.timestamp)("unavailable_until", { withTimezone: true }),

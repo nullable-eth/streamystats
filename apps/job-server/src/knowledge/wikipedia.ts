@@ -1,5 +1,5 @@
 import axios from "axios";
-import { withRetries } from "./synopsis";
+import { withRetries } from "./retry";
 
 /**
  * Plots from Wikipedia, a reference for the knowledge index: written by people

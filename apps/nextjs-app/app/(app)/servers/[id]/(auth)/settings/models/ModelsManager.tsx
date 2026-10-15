@@ -15,7 +15,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -39,9 +38,6 @@ interface Configured extends SavedModel {
   hasApiKey: boolean;
   name: string | null;
 }
-
-const usd = (n: number) =>
-  n.toLocaleString(undefined, { style: "currency", currency: "USD" });
 
 /** "Provider · model" as the presets name it. */
 function nameOf(use: ModelUse, m: SavedModel) {
@@ -231,7 +227,7 @@ export function ModelsManager({
 
         <Section
           title="Knowledge index"
-          about="Writes each title's scene notes and synopsis. Tried in order: a title goes to the first model with budget left this month, and to the next if it fails. A model that fails on its own account (no credit, rate limited, down) rests for an hour, and notes written by a model lower in the list are rewritten by a higher one once it has budget."
+          about="Writes each title's scene notes and synopsis. Tried in order: a title goes to the first model that is not resting, and to the next if it fails. A rate-limited model rests until its provider says the limit resets; one without credit, with a rejected key, or down rests a while. Notes written by a model lower in the list are rewritten by a higher one once it is back."
         >
           {knowledgeModels.length === 0 && (
             <p className="text-sm">None listed: the chat model writes.</p>
@@ -278,9 +274,6 @@ export function ModelsManager({
                           id: m.id,
                           saved: m,
                           hasSavedKey: m.hasApiKey,
-                          inputPrice: m.inputPrice,
-                          outputPrice: m.outputPrice,
-                          monthlyBudget: m.monthlyBudget,
                           name: m.name,
                         })
                       }
@@ -318,26 +311,12 @@ export function ModelsManager({
               >
                 <p className="text-sm text-muted-foreground">
                   {m.name && `${nameOf("knowledge", m)} · `}
-                  {m.inputPrice || m.outputPrice
-                    ? `${usd(m.inputPrice)} in, ${usd(m.outputPrice)} out per million tokens`
-                    : "Free"}{" "}
-                  ·{" "}
-                  {m.monthlyBudget === null
-                    ? "no budget limit"
-                    : `budget ${usd(m.monthlyBudget)} a month`}{" "}
-                  · this month {usd(m.spentThisMonth)},{" "}
-                  {m.titlesThisMonth.toLocaleString()} titles
+                  {m.titles.toLocaleString()}{" "}
+                  {m.titles === 1 ? "title" : "titles"} written
                 </p>
-                {m.monthlyBudget !== null &&
-                  m.spentThisMonth >= m.monthlyBudget && (
-                    <Badge variant="secondary">
-                      Budget spent until next month
-                    </Badge>
-                  )}
                 {m.restingUntil && (
                   <p className="text-sm text-amber-600 dark:text-amber-400 break-all">
-                    Resting until{" "}
-                    {new Date(m.restingUntil).toLocaleTimeString()}
+                    Resting until {new Date(m.restingUntil).toLocaleString()}
                     {m.lastError ? `: ${m.lastError}` : ""}
                   </p>
                 )}
@@ -357,8 +336,8 @@ export function ModelsManager({
               models and short context windows do not write usable notes. With
               Ollama, raise the context length (OLLAMA_CONTEXT_LENGTH), whose
               default cuts long transcripts off. Free models, such as
-              OpenRouter&apos;s, work at a price of 0: when their daily quota
-              runs out they rest, and the next model takes over.
+              OpenRouter&apos;s, work too: when their quota runs out they rest
+              until it resets, and the next model takes over.
             </p>
           </details>
         </Section>

@@ -1,4 +1,5 @@
 import axios from "axios";
+import { withRetries } from "./retry";
 
 /**
  * The plot, written from an item's transcript by a knowledge index model (see
@@ -46,12 +47,6 @@ export interface Scene {
   /** When the part's last line starts. */
   endMs: number;
   text: string;
-}
-
-/** Tokens a request took, as the provider reports them. */
-export interface Usage {
-  inputTokens: number;
-  outputTokens: number;
 }
 
 /** Endpoints that rejected the sampling hints (see complete); not sent to them again. */
@@ -211,40 +206,12 @@ export function parseWholeTitle(answer: string, parts: Scene[]): { scenes: Scene
   return { scenes, synopsis };
 }
 
-/**
- * Rate limits and overload (429, 503, 529) and dropped connections: wait as
- * asked, or back off, and try again. A timeout is not retried.
- */
-export async function withRetries<T>(call: () => Promise<T>): Promise<T> {
-  for (let attempt = 1; ; attempt++) {
-    try {
-      return await call();
-    } catch (error) {
-      const response = axios.isAxiosError(error) ? error.response : undefined;
-      const dropped = axios.isAxiosError(error) && !response && error.code !== "ECONNABORTED";
-      if (attempt >= 6 || !(dropped || [429, 503, 529].includes(response?.status ?? 0))) throw error;
-      const after = Number(response?.headers?.["retry-after"]);
-      const seconds = after > 0 ? after : 5 * 2 ** attempt;
-      await new Promise((resolve) => setTimeout(resolve, seconds * 1000));
-    }
-  }
-}
-
-/** The fields of Anthropic's and Gemini's stream events that carry text and token counts. */
+/** The fields of Anthropic's and Gemini's stream events that carry text. */
 type StreamEvent = {
   type?: string;
   error?: { message?: string };
   delta?: { text?: unknown };
   candidates?: { content?: { parts?: { text?: unknown }[] } }[];
-  message?: { usage?: AnthropicUsage };
-  usage?: AnthropicUsage;
-  usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number; thoughtsTokenCount?: number };
-};
-type AnthropicUsage = {
-  input_tokens?: number;
-  cache_creation_input_tokens?: number;
-  cache_read_input_tokens?: number;
-  output_tokens?: number;
 };
 
 /** The text of a server-sent event stream, each event's `data` read by `text`. */
@@ -279,7 +246,7 @@ export async function readEvents(
  * rejects these hints (current Claude models and some reasoning models take no
  * temperature) gets a plain retry and is never sent them again.
  */
-async function complete(chat: ChatSettings, prompt: string): Promise<{ text: string; usage: Usage }> {
+async function complete(chat: ChatSettings, prompt: string): Promise<string> {
   const endpoint = `${chat.provider} ${chat.baseUrl ?? ""} ${chat.model}`;
   const hinted = !plainEndpoints.has(endpoint);
   try {
@@ -292,10 +259,9 @@ async function complete(chat: ChatSettings, prompt: string): Promise<{ text: str
   }
 }
 
-async function send(chat: ChatSettings, prompt: string, hinted: boolean): Promise<{ text: string; usage: Usage }> {
+async function send(chat: ChatSettings, prompt: string, hinted: boolean): Promise<string> {
   const base = chat.baseUrl?.replace(/\/+$/, "");
   const temperature = hinted ? { temperature: TEMPERATURE } : {};
-  const usage: Usage = { inputTokens: 0, outputTokens: 0 };
   switch (chat.provider) {
     // Hosted models stream: a whole title's notes take minutes to write, and
     // networks drop a connection that stays silent that long.
@@ -315,20 +281,12 @@ async function send(chat: ChatSettings, prompt: string, hinted: boolean): Promis
           timeout: TIMEOUT_MS,
         }
       );
-      const text = await readEvents(res.data, (event) => {
+      return readEvents(res.data, (event) => {
         if (event.type === "error") throw new Error(event.error?.message ?? "Stream error");
-        // The prompt's count comes first, the answer's (running total) after.
-        const counted = event.message?.usage ?? event.usage;
-        if (counted?.input_tokens !== undefined) {
-          usage.inputTokens =
-            counted.input_tokens + (counted.cache_creation_input_tokens ?? 0) + (counted.cache_read_input_tokens ?? 0);
-        }
-        if (counted?.output_tokens !== undefined) usage.outputTokens = counted.output_tokens;
         return event.type === "content_block_delta" && typeof event.delta?.text === "string"
           ? event.delta.text
           : "";
       });
-      return { text, usage };
     }
     case "gemini": {
       const name = chat.model.startsWith("models/") ? chat.model : `models/${chat.model}`;
@@ -340,17 +298,10 @@ async function send(chat: ChatSettings, prompt: string, hinted: boolean): Promis
         },
         { headers: { "x-goog-api-key": chat.apiKey ?? "" }, responseType: "stream", timeout: TIMEOUT_MS }
       );
-      const text = await readEvents(res.data, (event) => {
-        // Running totals; the last event's are the request's.
-        const counted = event.usageMetadata;
-        if (counted) {
-          usage.inputTokens = counted.promptTokenCount ?? 0;
-          usage.outputTokens = (counted.candidatesTokenCount ?? 0) + (counted.thoughtsTokenCount ?? 0);
-        }
+      return readEvents(res.data, (event) => {
         const parts = event.candidates?.[0]?.content?.parts ?? [];
         return parts.map((p) => (typeof p.text === "string" ? p.text : "")).join("");
       });
-      return { text, usage };
     }
     default: {
       // "openai-compatible" and "ollama" (its OpenAI-compatible /v1 API).
@@ -365,26 +316,18 @@ async function send(chat: ChatSettings, prompt: string, hinted: boolean): Promis
         { headers: chat.apiKey ? { Authorization: `Bearer ${chat.apiKey}` } : {}, timeout: TIMEOUT_MS }
       );
       const content: unknown = res.data?.choices?.[0]?.message?.content;
-      usage.inputTokens = res.data?.usage?.prompt_tokens ?? 0;
-      usage.outputTokens = res.data?.usage?.completion_tokens ?? 0;
-      return { text: typeof content === "string" ? content : "", usage };
+      return typeof content === "string" ? content : "";
     }
   }
 }
 
-/**
- * Scene notes and the synopsis for a transcript's parts, in one request.
- * `used` hears what the request took as soon as it is answered, whether or
- * not the answer is usable.
- */
+/** Scene notes and the synopsis for a transcript's parts, in one request. */
 export async function writePlot(
   chat: ChatSettings,
   info: TitleInfo,
-  parts: Scene[],
-  used: (usage: Usage) => Promise<void> | void = () => {}
+  parts: Scene[]
 ): Promise<{ scenes: Scene[]; synopsis: string }> {
-  const { text: answer, usage } = await complete(chat, wholeTitlePrompt(info, parts));
-  await used(usage);
+  const answer = await complete(chat, wholeTitlePrompt(info, parts));
   const plot = parseWholeTitle(answer, parts);
   if (plot.scenes.length === 0) throw new Error(`Chat model returned no scene notes: ${answer.slice(0, 300)}`);
   if (plot.synopsis.split(/\s+/).length < 20) throw new Error("Chat model returned an empty or too-short synopsis");

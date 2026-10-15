@@ -64,7 +64,7 @@ export const USES: Record<
     label: "Knowledge index",
     presets: CHAT_PRESETS,
     about:
-      "Writes each title's scene notes and synopsis. Listed models are tried in order; give it a price to track spend, and a budget to cap it.",
+      "Writes each title's scene notes and synopsis. Listed models are tried in order; one that is rate limited or out of credit rests until it can be used again.",
   },
   embedding: {
     label: "Embeddings",
@@ -83,9 +83,6 @@ export interface Editing {
   id?: number;
   saved: SavedModel | null;
   hasSavedKey: boolean;
-  inputPrice?: number;
-  outputPrice?: number;
-  monthlyBudget?: number | null;
   dimensions?: number | null;
   name?: string | null;
 }
@@ -108,14 +105,6 @@ export function ModelDialog({
   const [settings, setSettings] = useState<ModelSettings>(
     initialSettings(presets, editing.saved),
   );
-  const [prices, setPrices] = useState({
-    inputPrice: String(editing.inputPrice ?? 0),
-    outputPrice: String(editing.outputPrice ?? 0),
-    monthlyBudget:
-      editing.monthlyBudget === null || editing.monthlyBudget === undefined
-        ? ""
-        : String(editing.monthlyBudget),
-  });
   const [dimensions, setDimensions] = useState(
     editing.dimensions ??
       EMBEDDING_PRESETS[settings.preset]?.defaultDimensions ??
@@ -165,12 +154,6 @@ export function ModelDialog({
           ...config(),
           provider: settings.provider as ChatProvider,
           id: editing.id,
-          inputPrice: Number(prices.inputPrice) || 0,
-          outputPrice: Number(prices.outputPrice) || 0,
-          monthlyBudget:
-            prices.monthlyBudget.trim() === ""
-              ? null
-              : Number(prices.monthlyBudget),
         });
       }
       toast.success(`${USES[use].label} model saved`);
@@ -248,32 +231,6 @@ export function ModelDialog({
             }}
             hasSavedKey={editing.hasSavedKey}
           />
-
-          {use === "knowledge" && (
-            <div className="grid gap-3 sm:grid-cols-3">
-              {(
-                [
-                  ["inputPrice", "Input, USD per million tokens"],
-                  ["outputPrice", "Output, USD per million tokens"],
-                  ["monthlyBudget", "Monthly budget, USD (blank: none)"],
-                ] as const
-              ).map(([key, label]) => (
-                <div key={key} className="space-y-2">
-                  <Label htmlFor={`model-${key}`}>{label}</Label>
-                  <Input
-                    id={`model-${key}`}
-                    type="number"
-                    min={0}
-                    step="0.01"
-                    value={prices[key]}
-                    onChange={(e) =>
-                      setPrices({ ...prices, [key]: e.target.value })
-                    }
-                  />
-                </div>
-              ))}
-            </div>
-          )}
 
           {use === "embedding" && (
             <div className="space-y-2">

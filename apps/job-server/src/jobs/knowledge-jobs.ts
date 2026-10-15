@@ -545,7 +545,7 @@ export async function knowledgeIndexJob(job: PgBossJob<ServerIdJobData>) {
     }
 
     while (Date.now() - startTime < RUN_BUDGET_MS) {
-      // Read again each batch: budgets run out, models rest, settings change.
+      // Read again each batch: models rest, settings change.
       const models = await getKnowledgeModels(serverId);
       const best = models.findIndex((m) => isUsable(m));
       // Notes by a model listed below the best usable one are rewritten by it

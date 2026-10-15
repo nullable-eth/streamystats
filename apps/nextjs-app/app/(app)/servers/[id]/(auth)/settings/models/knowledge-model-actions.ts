@@ -3,7 +3,6 @@
 import { revalidatePath } from "next/cache";
 import {
   getKnowledgeModelConfig,
-  type KnowledgeModelInput,
   moveKnowledgeModel,
   removeKnowledgeModel,
   saveKnowledgeModel,
@@ -23,7 +22,7 @@ const refresh = (serverId: number) =>
 
 export async function saveKnowledgeModelAction(
   serverId: number,
-  input: KnowledgeModelInput & { id?: number },
+  input: ChatAIConfig & { id?: number },
 ) {
   await requireAdmin(serverId);
   await saveKnowledgeModel(serverId, input);

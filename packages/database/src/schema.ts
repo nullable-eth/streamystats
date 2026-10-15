@@ -560,7 +560,7 @@ export const itemTexts = pgTable(
     content: text("content").notNull().default(""),
     contentHash: text("content_hash"),
     // scenes and synopsis: the model that wrote them ("provider:model"), so
-    // notes from a fallback model are rewritten once a better one has budget.
+    // notes from a fallback model are rewritten once a better one is back.
     writtenBy: text("written_by"),
     // transcript: when each line of `content` starts, so a matched line can
     // be located to the moment it is said.
@@ -575,9 +575,8 @@ export const itemTexts = pgTable(
 );
 
 // The models the knowledge index writes scene notes and synopses with, tried
-// in order: a title goes to the first one that is usable (has budget left this
-// month and is not resting after a failure of its own), and on to the next if
-// it fails. None: the AI Chat model.
+// in order: a title goes to the first one not resting after a failure of its
+// own, and on to the next if it fails. None: the AI Chat model.
 export const knowledgeModels = pgTable(
   "knowledge_models",
   {
@@ -594,15 +593,7 @@ export const knowledgeModels = pgTable(
     baseUrl: text("base_url"),
     apiKey: text("api_key"),
     model: text("model").notNull(),
-    // USD per million tokens; 0 for a local model.
-    inputPrice: doublePrecision("input_price").notNull().default(0),
-    outputPrice: doublePrecision("output_price").notNull().default(0),
-    // USD per calendar month (UTC); null: no limit.
-    monthlyBudget: doublePrecision("monthly_budget"),
-    // What it has cost in spentMonth ("YYYY-MM"), and titles written; a new
-    // month starts from zero.
-    spentMonth: text("spent_month"),
-    spent: doublePrecision("spent").notNull().default(0),
+    // Titles it has written.
     titles: integer("titles").notNull().default(0),
     // Out of credit, rate limited, or down: not tried again until then.
     unavailableUntil: timestamp("unavailable_until", { withTimezone: true }),
