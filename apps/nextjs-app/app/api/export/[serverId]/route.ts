@@ -111,6 +111,8 @@ export async function GET(
         chatProvider: server.chatProvider,
         chatBaseUrl: server.chatBaseUrl,
         chatModel: server.chatModel,
+        chatName: server.chatName,
+        embeddingName: server.embeddingName,
         // Without their keys, like the models above.
         knowledgeModels: await exportKnowledgeModels(server.id),
         knowledgeIndexEnabled: server.knowledgeIndexEnabled,

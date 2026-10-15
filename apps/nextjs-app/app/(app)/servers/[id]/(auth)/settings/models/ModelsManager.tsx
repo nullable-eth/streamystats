@@ -24,17 +24,20 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { Switch } from "@/components/ui/switch";
 import type { KnowledgeModelPublic } from "@/lib/db/knowledge-models";
 import { clearChatConfigAction } from "../chat/actions";
 import {
   moveKnowledgeModelAction,
   removeKnowledgeModelAction,
+  setKnowledgeModelEnabledAction,
 } from "./knowledge-model-actions";
 import { type Editing, ModelDialog, type ModelUse, USES } from "./ModelDialog";
 import { detectPreset, type SavedModel } from "./model-fields";
 
 interface Configured extends SavedModel {
   hasApiKey: boolean;
+  name: string | null;
 }
 
 const usd = (n: number) =>
@@ -51,13 +54,18 @@ function Row({
   title,
   children,
   actions,
+  off,
 }: {
   title: string;
   children?: ReactNode;
   actions: ReactNode;
+  /** Turned off: shown faded. */
+  off?: boolean;
 }) {
   return (
-    <li className="rounded-md border p-3 space-y-1">
+    <li
+      className={`rounded-md border p-3 space-y-1 ${off ? "opacity-60" : ""}`}
+    >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <span className="font-medium break-all">{title}</span>
         <div className="flex gap-1">{actions}</div>
@@ -182,7 +190,7 @@ export function ModelsManager({
           {chat ? (
             <ul>
               <Row
-                title={nameOf("chat", chat)}
+                title={chat.name || nameOf("chat", chat)}
                 actions={
                   <>
                     <IconButton
@@ -194,6 +202,7 @@ export function ModelsManager({
                           adding: false,
                           saved: chat,
                           hasSavedKey: chat.hasApiKey,
+                          name: chat.name,
                         })
                       }
                     >
@@ -210,6 +219,7 @@ export function ModelsManager({
                 }
               >
                 <p className="text-sm text-muted-foreground break-all">
+                  {chat.name && `${nameOf("chat", chat)} · `}
                   {chat.baseUrl}
                 </p>
               </Row>
@@ -230,7 +240,8 @@ export function ModelsManager({
             {knowledgeModels.map((m, i) => (
               <Row
                 key={m.id}
-                title={`${i + 1}. ${nameOf("knowledge", m)}`}
+                off={!m.enabled}
+                title={`${i + 1}. ${m.name || nameOf("knowledge", m)}${m.enabled ? "" : " (off)"}`}
                 actions={
                   <>
                     <IconButton
@@ -270,11 +281,26 @@ export function ModelsManager({
                           inputPrice: m.inputPrice,
                           outputPrice: m.outputPrice,
                           monthlyBudget: m.monthlyBudget,
+                          name: m.name,
                         })
                       }
                     >
                       <Pencil className="h-4 w-4" />
                     </IconButton>
+                    <Switch
+                      className="mx-1 self-center"
+                      aria-label={m.enabled ? "Turn off" : "Turn on"}
+                      title={m.enabled ? "On: turn off" : "Off: turn on"}
+                      checked={m.enabled}
+                      disabled={pending}
+                      onCheckedChange={(on) =>
+                        run(
+                          () =>
+                            setKnowledgeModelEnabledAction(serverId, m.id, on),
+                          "Failed to turn the model on or off",
+                        )
+                      }
+                    />
                     <IconButton
                       label="Remove"
                       disabled={pending}
@@ -291,6 +317,7 @@ export function ModelsManager({
                 }
               >
                 <p className="text-sm text-muted-foreground">
+                  {m.name && `${nameOf("knowledge", m)} · `}
                   {m.inputPrice || m.outputPrice
                     ? `${usd(m.inputPrice)} in, ${usd(m.outputPrice)} out per million tokens`
                     : "Free"}{" "}
@@ -356,7 +383,7 @@ export function ModelsManager({
           {embedding ? (
             <ul>
               <Row
-                title={nameOf("embedding", embedding)}
+                title={embedding.name || nameOf("embedding", embedding)}
                 actions={
                   <IconButton
                     label="Edit"
@@ -368,6 +395,7 @@ export function ModelsManager({
                         saved: embedding,
                         hasSavedKey: embedding.hasApiKey,
                         dimensions: embedding.dimensions,
+                        name: embedding.name,
                       })
                     }
                   >
@@ -376,6 +404,7 @@ export function ModelsManager({
                 }
               >
                 <p className="text-sm text-muted-foreground break-all">
+                  {embedding.name && `${nameOf("embedding", embedding)} · `}
                   {embedding.dimensions ?? "?"} dimensions · {embedding.baseUrl}
                 </p>
               </Row>

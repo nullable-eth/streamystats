@@ -12,6 +12,9 @@ import type { ChatAIConfig, ChatProvider } from "./server";
  */
 export interface KnowledgeModelPublic {
   id: number;
+  name: string | null;
+  /** Off: kept, but not tried. */
+  enabled: boolean;
   provider: ChatProvider;
   baseUrl: string | null;
   model: string;
@@ -48,6 +51,8 @@ export async function listKnowledgeModels(
   const now = new Date();
   return rows.map((r) => ({
     id: r.id,
+    name: r.name,
+    enabled: r.enabled,
     provider: r.provider as ChatProvider,
     baseUrl: r.baseUrl,
     model: r.model,
@@ -96,6 +101,7 @@ export async function saveKnowledgeModel(
 ) {
   const values = {
     provider: input.provider,
+    name: input.name?.trim() || null,
     baseUrl: input.baseUrl.replace(/\/+$/, "") || null,
     model: input.model,
     inputPrice: input.inputPrice,
@@ -139,6 +145,24 @@ export async function removeKnowledgeModel(serverId: number, id: number) {
     );
 }
 
+/** Turn a model off (kept, not tried) or back on; back on, it is no longer resting. */
+export async function setKnowledgeModelEnabled(
+  serverId: number,
+  id: number,
+  enabled: boolean,
+) {
+  await db
+    .update(knowledgeModels)
+    .set({
+      enabled,
+      ...(enabled ? { unavailableUntil: null, lastError: null } : {}),
+      updatedAt: new Date(),
+    })
+    .where(
+      and(eq(knowledgeModels.serverId, serverId), eq(knowledgeModels.id, id)),
+    );
+}
+
 /** Swap a model with its neighbour above (-1) or below (1). */
 export async function moveKnowledgeModel(
   serverId: number,
@@ -168,7 +192,18 @@ export async function moveKnowledgeModel(
 /** The list as a backup keeps it: no keys, no spend. */
 export async function exportKnowledgeModels(serverId: number) {
   return (await listKnowledgeModels(serverId)).map(
-    ({ provider, baseUrl, model, inputPrice, outputPrice, monthlyBudget }) => ({
+    ({
+      name,
+      enabled,
+      provider,
+      baseUrl,
+      model,
+      inputPrice,
+      outputPrice,
+      monthlyBudget,
+    }) => ({
+      name,
+      enabled,
       provider,
       baseUrl,
       model,
@@ -183,6 +218,8 @@ export async function exportKnowledgeModels(serverId: number) {
 export async function replaceKnowledgeModels(
   serverId: number,
   models: {
+    name?: string | null;
+    enabled?: boolean;
     provider: string;
     baseUrl: string | null;
     model: string;
@@ -200,6 +237,8 @@ export async function replaceKnowledgeModels(
       models.map((m, position) => ({
         serverId,
         position,
+        name: m.name ?? null,
+        enabled: m.enabled ?? true,
         provider: m.provider,
         baseUrl: m.baseUrl,
         model: m.model,

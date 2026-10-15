@@ -29,6 +29,7 @@ export default async function AIModelsSettings(props: {
                 baseUrl: server.chatBaseUrl,
                 model: server.chatModel,
                 hasApiKey: server.hasChatApiKey,
+                name: server.chatName,
               }
             : null
         }
@@ -40,6 +41,7 @@ export default async function AIModelsSettings(props: {
                 model: server.embeddingModel,
                 dimensions: server.embeddingDimensions,
                 hasApiKey: server.hasEmbeddingApiKey,
+                name: server.embeddingName,
               }
             : null
         }

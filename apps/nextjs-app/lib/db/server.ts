@@ -45,6 +45,8 @@ const SERVER_PUBLIC_SELECT = {
   chatProvider: servers.chatProvider,
   chatBaseUrl: servers.chatBaseUrl,
   chatModel: servers.chatModel,
+  chatName: servers.chatName,
+  embeddingName: servers.embeddingName,
   syncStatus: servers.syncStatus,
   syncProgress: servers.syncProgress,
   syncError: servers.syncError,
@@ -188,6 +190,8 @@ export interface EmbeddingConfig {
   apiKey?: string;
   model: string;
   dimensions?: number;
+  /** What the settings show it as; left as is when undefined. */
+  name?: string | null;
 }
 
 export const saveEmbeddingConfig = async ({
@@ -208,6 +212,9 @@ export const saveEmbeddingConfig = async ({
       embeddingBaseUrl: normalizedBaseUrl,
       embeddingModel: config.model,
       embeddingDimensions: config.dimensions || 1536,
+      ...(config.name !== undefined
+        ? { embeddingName: config.name?.trim() || null }
+        : {}),
     };
 
     // Only update API key if a non-empty value is provided
@@ -912,6 +919,8 @@ export interface ChatAIConfig {
   baseUrl: string;
   apiKey?: string;
   model: string;
+  /** What the settings show it as; left as is when undefined. */
+  name?: string | null;
 }
 
 export const saveChatConfig = async ({
@@ -931,6 +940,9 @@ export const saveChatConfig = async ({
       chatProvider: config.provider,
       chatBaseUrl: normalizedBaseUrl,
       chatModel: config.model,
+      ...(config.name !== undefined
+        ? { chatName: config.name?.trim() || null }
+        : {}),
     };
 
     // Only update API key if a non-empty value is provided
@@ -977,6 +989,7 @@ export const clearChatConfig = async ({ serverId }: { serverId: number }) => {
         chatBaseUrl: null,
         chatApiKey: null,
         chatModel: null,
+        chatName: null,
       })
       .where(eq(servers.id, serverId));
   } catch (error) {
