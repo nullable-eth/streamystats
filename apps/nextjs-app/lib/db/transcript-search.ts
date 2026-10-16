@@ -17,6 +17,7 @@ import { fuseChunkRankings, type TranscriptMatch } from "./transcript-rank";
 
 export { formatTimestamp } from "./transcript-rank";
 
+/** Windows each ranking reads, at least; more when more titles are asked for. */
 const POOL = 50;
 const KIND_LITERALS = {
   transcript: "'transcript'",
@@ -70,6 +71,8 @@ export async function searchTextWindows({
     text: itemTextChunks.text,
   };
   const tsQuery = sql`websearch_to_tsquery('english', ${query})`;
+  // A title has several windows, so read enough of them for `limit` titles.
+  const pool = Math.max(POOL, limit * 3);
 
   const textRanking = db
     .select(columns)
@@ -77,7 +80,7 @@ export async function searchTextWindows({
     .innerJoin(items, eq(items.id, itemTextChunks.itemId))
     .where(and(...visible, sql`${itemTextChunks.searchVector} @@ ${tsQuery}`))
     .orderBy(desc(sql`ts_rank_cd(${itemTextChunks.searchVector}, ${tsQuery})`))
-    .limit(POOL);
+    .limit(pool);
 
   const vectorRanking = async () => {
     if (!embedding) return [];
@@ -91,7 +94,7 @@ export async function searchTextWindows({
       .innerJoin(items, eq(items.id, itemTextChunks.itemId))
       .where(and(...visible, dimensionFilter))
       .orderBy(asc(distance))
-      .limit(POOL);
+      .limit(pool);
   };
 
   const rankings = await Promise.all([textRanking, vectorRanking()]);

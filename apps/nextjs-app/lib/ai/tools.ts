@@ -22,6 +22,7 @@ import {
   findItemsByCharacter,
   findItemsByPerson,
 } from "@/lib/db/item-people-search";
+import { titlesMentioning } from "@/lib/db/mentions";
 import { findMoments, momentScope } from "@/lib/db/moments";
 import { searchByPlot } from "@/lib/db/plot-search";
 import { getRatedItems } from "@/lib/db/rated-items";
@@ -142,6 +143,20 @@ function getHolidayHintScore(item: Item): number {
 
   return keywordHits + genreHits * 2;
 }
+
+/** Most titles one ranked search returns. */
+const MAX_TITLES = 50;
+const titleLimit = (fallback: number) =>
+  z
+    .number()
+    .int()
+    .min(1)
+    .max(MAX_TITLES)
+    .optional()
+    .default(fallback)
+    .describe(
+      `Number of titles, up to ${MAX_TITLES}: ask for more when the user wants any or every title about something`,
+    );
 
 const limitSchema = z.object({
   limit: z
@@ -1096,7 +1111,7 @@ export function createChatTools(
 
     searchLibraryBySemanticQuery: tool({
       description:
-        "Semantic search across the user's library using embeddings. Use this for theme-based queries like 'Christmas movie I have', 'cozy winter movie', or 'something like a heist thriller'. To identify a title from what happens in it, use findTitleByPlot instead. Use type 'all' when it is unclear whether it was a movie, a series or a single episode. Returns items from the library ranked by semantic similarity.",
+        "Semantic search across the user's library using embeddings. Use this for theme-based queries like 'Christmas movie I have', 'cozy winter movie', or 'something like a heist thriller'. To identify a title from what happens in it, use findTitleByPlot instead. Use type 'all' when it is unclear whether it was a movie, a series or a single episode, or when the user wants any or every title about a theme (with a higher limit). Returns items from the library ranked by semantic similarity.",
       inputSchema: z.object({
         query: z
           .string()
@@ -1106,7 +1121,7 @@ export function createChatTools(
           .optional()
           .default("Movie")
           .describe("Filter by item type ('all' includes episodes)"),
-        limit: z.number().optional().default(10).describe("Number of results"),
+        limit: titleLimit(10),
       }),
       execute: async ({
         query,
@@ -1231,7 +1246,7 @@ export function createChatTools(
 
     findTitleByPlot: tool({
       description:
-        "Find a movie, series or episode in the library from a description of what happens in it: a scene, a twist, a character's fate, how it ends, or a half-remembered line. It searches the plot synopses (whole and paragraph by paragraph) and the dialogue as well as the overviews, so it finds titles from details their official description leaves out. Describe the events in plain words, as the user remembers them. Use type 'all' unless the user is sure whether it was a movie or an episode. Returns titles best first.",
+        "Find a movie, series or episode in the library from a description of what happens in it: a scene, a twist, a character's fate, how it ends, or a half-remembered line. It searches the plot synopses (whole and paragraph by paragraph) and the dialogue as well as the overviews, so it finds titles from details their official description leaves out. Describe the events in plain words, as the user remembers them. Use type 'all' unless the user is sure whether it was a movie or an episode. Returns titles best first; for any or every title about a topic, raise the limit.",
       inputSchema: z.object({
         description: z.string().describe("What happens, in the user's words"),
         type: z
@@ -1239,7 +1254,7 @@ export function createChatTools(
           .optional()
           .default("all")
           .describe("Filter by item type"),
-        limit: z.number().optional().default(8).describe("Number of titles"),
+        limit: titleLimit(8),
       }),
       execute: async ({
         description,
@@ -1402,12 +1417,12 @@ export function createChatTools(
 
     searchTranscripts: tool({
       description:
-        "Search the dialogue of every movie and episode in the library (indexed from their subtitles). Use it to find which title has a remembered line or quote, or a scene the user half-remembers (what was said, names mentioned, a situation). Put exact remembered wording in double quotes for a phrase match. Returns titles with the matching moments and their timestamps.",
+        "Search the dialogue of every movie and episode in the library (indexed from their subtitles). Use it to find which title has a remembered line or quote, or a scene the user half-remembers (what was said, names mentioned, a situation). Put exact remembered wording in double quotes for a phrase match. Returns the best matching titles with their moments and timestamps; to list every title that mentions something, use findTitlesMentioning.",
       inputSchema: z.object({
         query: z
           .string()
           .describe("Remembered line, quote or description of the scene"),
-        limit: z.number().optional().default(8).describe("Number of titles"),
+        limit: titleLimit(8),
       }),
       execute: async ({ query, limit }: { query: string; limit: number }) => {
         const embed = await embedTextForServer({ serverId, text: query });
@@ -1433,6 +1448,74 @@ export function createChatTools(
             matched.length > 0
               ? `Found ${matched.length} titles whose dialogue matches "${query}"`
               : `No dialogue matches "${query}". Transcripts exist only for titles with a full text subtitle, once the knowledge index has run.`,
+        };
+      },
+    }),
+
+    findTitlesMentioning: tool({
+      description:
+        "List every movie, series and episode whose dialogue, plot notes, Wikipedia plot, or title and description mention a word, name or phrase, in any word form ('quantum computer' also finds 'quantum computing'). Unlike the ranked searches, nothing that mentions it is left out, so use it whenever the user wants any or every title about a specific topic, term or name; add findTitleByPlot and searchLibraryBySemanticQuery for titles about the theme that never name it. Put a phrase in double quotes to keep its words together, and separate alternatives with OR. Each title says how many passages mention it in each source and shows the best matching line and plot passage: a mention in the plot or description suggests the topic is central, a single line of dialogue a passing one.",
+      inputSchema: z.object({
+        phrase: z
+          .string()
+          .describe('Words to find, e.g. "quantum computer" OR qubit'),
+        type: z
+          .enum(["Movie", "Series", "Episode", "all"])
+          .optional()
+          .default("all")
+          .describe("Filter by item type"),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(100)
+          .optional()
+          .default(50)
+          .describe("Most titles to list, up to 100"),
+      }),
+      execute: async ({
+        phrase,
+        type,
+        limit,
+      }: {
+        phrase: string;
+        type: "Movie" | "Series" | "Episode" | "all";
+        limit: number;
+      }) => {
+        const { total, titles } = await titlesMentioning({
+          serverId,
+          userId,
+          phrase,
+          types: type === "all" ? ["Movie", "Series", "Episode"] : [type],
+          limit,
+        });
+        const matched = await getMatchedItems(titles.map((t) => t.itemId));
+        const byId = new Map(titles.map((t) => [t.itemId, t]));
+        return {
+          items: matched.map((item) => {
+            const t = byId.get(item.id);
+            return {
+              ...formatItem(item),
+              ...episodeOf(item),
+              mentions: {
+                dialogue: t?.dialogue ?? 0,
+                plot: t?.plot ?? 0,
+                wikipedia: t?.wikipedia ?? 0,
+                description: t?.description ?? false,
+              },
+              evidence: (t?.evidence ?? []).map((e) => ({
+                source: e.source,
+                at: e.startMs === null ? undefined : formatTimestamp(e.startMs),
+                text: e.text,
+              })),
+            };
+          }),
+          message:
+            total === 0
+              ? `Nothing in the library mentions ${phrase}.`
+              : total > matched.length
+                ? `${total} titles mention ${phrase}; showing the first ${matched.length}. Raise the limit to see the rest.`
+                : `${total} titles mention ${phrase}.`,
         };
       },
     }),
