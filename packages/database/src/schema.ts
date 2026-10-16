@@ -593,8 +593,6 @@ export const knowledgeModels = pgTable(
     baseUrl: text("base_url"),
     apiKey: text("api_key"),
     model: text("model").notNull(),
-    // Titles it has written.
-    titles: integer("titles").notNull().default(0),
     // Out of credit, rate limited, or down: not tried again until then.
     unavailableUntil: timestamp("unavailable_until", { withTimezone: true }),
     lastError: text("last_error"),

@@ -1,0 +1,1 @@
+ALTER TABLE "knowledge_models" DROP COLUMN "titles";

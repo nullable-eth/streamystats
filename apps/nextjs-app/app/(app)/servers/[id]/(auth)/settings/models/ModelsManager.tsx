@@ -227,7 +227,7 @@ export function ModelsManager({
 
         <Section
           title="Knowledge index"
-          about="Writes each title's scene notes and synopsis. Tried in order: a title goes to the first model that is not resting, and to the next if it fails. A rate-limited model rests until its provider says the limit resets; one without credit, with a rejected key, or down rests a while. Notes written by a model lower in the list are rewritten by a higher one once it is back."
+          about="Writes each title's scene notes and synopsis. Tried in order: a title goes to the first model that is not resting, and to the next if it fails. A rate-limited model rests until its provider says the limit resets; one without credit, with a rejected key, or down rests a while. Notes written by a model lower in the list are rewritten by a higher one once it is back, and never the other way round."
         >
           {knowledgeModels.length === 0 && (
             <p className="text-sm">None listed: the chat model writes.</p>
