@@ -424,8 +424,7 @@ async function charactersOf(item: ItemRow): Promise<string[]> {
 async function indexSynopsis(
   serverId: number,
   models: KnowledgeModel[],
-  upgradeFrom: string[],
-  keepFrom: string[],
+  { upgradeFrom, keepFrom }: { upgradeFrom: string[]; keepFrom: string[] },
   embedding: EmbeddingSettings,
   item: DueItem
 ): Promise<boolean> {
@@ -552,7 +551,7 @@ export async function knowledgeIndexJob(job: PgBossJob<ServerIdJobData>) {
     }
 
     while (Date.now() - startTime < RUN_BUDGET_MS) {
-      // Read again each batch: models rest, settings change.
+      // Read again each batch (and each title, below): models rest, settings change.
       const models = await getKnowledgeModels(serverId);
       const best = models.findIndex((m) => isUsable(m));
       const { upgradeFrom, keepFrom } = ranking(models, best);
@@ -576,7 +575,11 @@ export async function knowledgeIndexJob(job: PgBossJob<ServerIdJobData>) {
       const indexItem = async (item: DueItem) => {
         try {
           counts[await indexTranscript(serverId, client, embedding, languages, item)]++;
-          if (models.some((m) => isUsable(m)) && (await indexSynopsis(serverId, models, upgradeFrom, keepFrom, embedding, item))) {
+          // A batch for a local model can take hours: a model turned off or
+          // resting since it began is not tried.
+          const current = await getKnowledgeModels(serverId);
+          const usable = current.findIndex((m) => isUsable(m));
+          if (usable >= 0 && (await indexSynopsis(serverId, current, ranking(current, usable), embedding, item))) {
             counts.synopses++;
           }
         } catch (error) {
@@ -589,10 +592,12 @@ export async function knowledgeIndexJob(job: PgBossJob<ServerIdJobData>) {
           await saveText(serverId, item.id, "transcript", { status: transcript?.status ?? "error" });
         }
       };
-      // `concurrency` workers taking titles off the batch.
+      // `concurrency` workers taking titles off the batch while the run has time;
+      // titles left over stay due for the next run.
+      const inTime = () => Date.now() - startTime < RUN_BUDGET_MS;
       await Promise.all(
         Array.from({ length: concurrency }, async () => {
-          for (let item = batch.shift(); item; item = batch.shift()) await indexItem(item);
+          for (let item = batch.shift(); item && inTime(); item = batch.shift()) await indexItem(item);
         })
       );
       await logJobResult(job.id, KNOWLEDGE_INDEX_JOB_NAME, "processing", { serverId, ...counts, lastError }, Date.now() - startTime);
