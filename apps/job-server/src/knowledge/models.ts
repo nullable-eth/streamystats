@@ -1,6 +1,6 @@
 import { db, knowledgeModels, servers } from "@streamystats/database";
 import axios from "axios";
-import { asc, eq, sql } from "drizzle-orm";
+import { asc, eq } from "drizzle-orm";
 import { MAX_WAIT_MS, waitAsked } from "./retry";
 import { type ChatSettings, type Scene, type TitleInfo, writePlot } from "./synopsis";
 
@@ -39,6 +39,38 @@ export async function getKnowledgeModels(serverId: number): Promise<KnowledgeMod
     .limit(1);
   if (!s?.provider || !s.model) return [];
   return [{ ...s, provider: s.provider, model: s.model, id: null, unavailableUntil: null }];
+}
+
+/**
+ * Whose notes the best usable model (at `best`) rewrites: those by a model
+ * listed below it (not by another account's copy of the same model listed
+ * above it). Whose it keeps even when stale: those by a model listed above it,
+ * until that model is back.
+ */
+export function ranking(models: ChatSettings[], best: number) {
+  if (best < 0) return { upgradeFrom: [], keepFrom: [] };
+  const own = modelLabel(models[best]);
+  const above = new Set(models.slice(0, best).map(modelLabel));
+  above.delete(own);
+  const below = new Set(models.slice(best + 1).map(modelLabel));
+  return { upgradeFrom: [...below].filter((l) => l !== own && !above.has(l)), keepFrom: [...above] };
+}
+
+/**
+ * Whether a title's notes are to be written: none yet, by a model in
+ * `upgradeFrom`, or from an older transcript unless a model in `keepFrom`
+ * wrote them. Their source is "transcript hash[:plot hash]"; a Wikipedia plot
+ * found since they were written does not make them stale.
+ */
+export function notesDue(
+  previous: { status: string; source: string | null; writtenBy: string | null } | undefined,
+  transcriptHash: string,
+  { upgradeFrom, keepFrom }: { upgradeFrom: string[]; keepFrom: string[] }
+): boolean {
+  if (previous?.status !== "ready") return true;
+  if (previous.writtenBy && upgradeFrom.includes(previous.writtenBy)) return true;
+  const stale = previous.source?.split(":")[0] !== transcriptHash;
+  return stale && !(previous.writtenBy && keepFrom.includes(previous.writtenBy));
 }
 
 /** Not resting after a failure of its own. */
@@ -105,14 +137,7 @@ export async function writePlotWithModels(
   for (const model of models) {
     if (!isUsable(model)) continue;
     try {
-      const plot = await writePlot(model, info, parts);
-      if (model.id !== null) {
-        await db
-          .update(knowledgeModels)
-          .set({ titles: sql`${knowledgeModels.titles} + 1` })
-          .where(eq(knowledgeModels.id, model.id));
-      }
-      return { ...plot, model };
+      return { ...(await writePlot(model, info, parts)), model };
     } catch (error) {
       lastError = error;
       const failure = await failureOf(error);

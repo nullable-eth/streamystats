@@ -9,7 +9,7 @@ mock.module("./synopsis", () => ({
   ...synopsis,
   writePlot: async (chat: { model: string }) => answers.get(chat.model)?.() ?? { scenes: [], synopsis: "ok" },
 }));
-const { isUsable, messageOf, restFor, writePlotWithModels } = await import("./models");
+const { isUsable, messageOf, notesDue, ranking, restFor, writePlotWithModels } = await import("./models");
 const { durationMs, waitAsked } = await import("./retry");
 
 const now = new Date("2026-10-15T12:00:00Z");
@@ -170,5 +170,39 @@ describe("messageOf", () => {
       messageOf('{"error":{"message":"Provider returned error","code":429,"metadata":{"raw":"model is rate-limited upstream"}}}')
     ).toBe("Provider returned error: model is rate-limited upstream");
     expect(messageOf("Bad Gateway")).toBe("Bad Gateway");
+  });
+});
+
+describe("whose notes stand", () => {
+  const listed = ["claude", "gemma", "qwen"].map((m) => model(m));
+  const label = (m: string) => `openai-compatible:${m}`;
+
+  test("the best usable model upgrades those below it and keeps those above it", () => {
+    expect(ranking(listed, 0)).toEqual({ upgradeFrom: [label("gemma"), label("qwen")], keepFrom: [] });
+    expect(ranking(listed, 1)).toEqual({ upgradeFrom: [label("qwen")], keepFrom: [label("claude")] });
+    expect(ranking(listed, -1)).toEqual({ upgradeFrom: [], keepFrom: [] });
+    // Another account's copy of the best model, listed above or below it, is neither.
+    expect(ranking([model("claude"), model("gemma"), model("claude")], 2)).toEqual({ upgradeFrom: [], keepFrom: [label("gemma")] });
+  });
+
+  const notes = (writtenBy: string | null, source = "t1") => ({ status: "ready", source, writtenBy });
+  const whenGemmaIsBest = ranking(listed, 1);
+
+  test("missing notes and a lesser model's are written", () => {
+    expect(notesDue(undefined, "t1", whenGemmaIsBest)).toBe(true);
+    expect(notesDue({ status: "missing", source: null, writtenBy: null }, "t1", whenGemmaIsBest)).toBe(true);
+    expect(notesDue(notes(label("qwen")), "t1", whenGemmaIsBest)).toBe(true);
+  });
+
+  test("a plot found since does not make notes stale", () => {
+    expect(notesDue(notes(label("gemma"), "t1"), "t1", whenGemmaIsBest)).toBe(false);
+    expect(notesDue(notes(label("claude"), "t1:p1"), "t1", whenGemmaIsBest)).toBe(false);
+  });
+
+  test("notes from an older transcript are rewritten, unless a better model wrote them", () => {
+    expect(notesDue(notes(label("gemma"), "t0"), "t1", whenGemmaIsBest)).toBe(true);
+    expect(notesDue(notes(null, "t0:p1"), "t1", whenGemmaIsBest)).toBe(true);
+    expect(notesDue(notes(label("claude"), "t0"), "t1", whenGemmaIsBest)).toBe(false);
+    expect(notesDue(notes(label("claude"), "t0"), "t1", ranking(listed, 0))).toBe(true);
   });
 });

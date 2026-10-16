@@ -29,6 +29,8 @@ import {
   isUsable,
   type KnowledgeModel,
   modelLabel,
+  notesDue,
+  ranking,
   writePlotWithModels,
 } from "../knowledge/models";
 import {
@@ -134,8 +136,9 @@ function titleOf(item: ItemRow): string {
 }
 
 /**
- * What scene notes are written from: the transcript, and the Wikipedia plot
- * when there is one. Notes written from anything else are rewritten.
+ * What scene notes are written from, kept as their source: the transcript,
+ * and the Wikipedia plot when there was one. Only a changed transcript makes
+ * them stale; a plot found later does not, since it is searchable on its own.
  */
 const plotBasis = (transcriptHash: string, reference: ItemText | undefined) =>
   reference?.status === "ready" && reference.contentHash ? `${transcriptHash}:${reference.contentHash}` : transcriptHash;
@@ -145,23 +148,26 @@ const plotBasis = (transcriptHash: string, reference: ItemText | undefined) =>
  * day ago (a subtitle downloader may have fetched one since); a weekly re-check for upgraded
  * subtitles; a transcript indexed before line timings were kept; with a
  * usable model, scene notes (and the synopsis written with them) missing,
- * written from an older transcript or Wikipedia plot (see plotBasis), or
- * written by a model in `upgradeFrom` (listed below the best usable one); or,
- * with Wikipedia plots on, a plot never looked up, missing for a month (an
- * article may have been written since) or three months old. Notes whose
- * writing failed wait a day.
+ * written by a model in `upgradeFrom` (listed below the best usable one), or
+ * written from an older transcript unless a model in `keepFrom` (listed above
+ * the best usable one) wrote them, since a lesser model never replaces a
+ * better one's notes; or, with Wikipedia plots on, a plot never looked up,
+ * missing for a month (an article may have been written since) or three
+ * months old. Notes whose writing failed wait a day.
  */
 async function dueItems(
   serverId: number,
   types: readonly string[],
   withSynopses: boolean,
   upgradeFrom: string[],
+  keepFrom: string[],
   withReferences: boolean
 ): Promise<DueItem[]> {
   const allowed: readonly string[] = KNOWLEDGE_ITEM_TYPES;
   const selected = types.filter((t) => allowed.includes(t));
   if (selected.length === 0) return [];
   const upgrade = upgradeFrom.length > 0 ? sql`s.written_by IN ${upgradeFrom}` : sql`false`;
+  const replaceable = keepFrom.length > 0 ? sql`(s.written_by IS NULL OR s.written_by NOT IN ${keepFrom})` : sql`true`;
   const referenceDue = sql`(${withReferences} AND (r.id IS NULL
     OR r.checked_at < now() - CASE WHEN r.status = 'ready' THEN interval '90 days' ELSE interval '30 days' END))`;
   const rows = await db.execute<DueItem>(sql`
@@ -181,8 +187,8 @@ async function dueItems(
         OR (t.status = 'ready' AND t.checked_at < now() - interval '7 days')
         OR (t.status = 'ready' AND t.cue_starts_ms IS NULL)
         OR (${withSynopses} AND t.status = 'ready'
-            AND (s.id IS NULL OR s.status <> 'ready' OR ${upgrade} OR s.source IS DISTINCT FROM
-                 concat_ws(':', t.content_hash, CASE WHEN r.status = 'ready' THEN r.content_hash END))
+            AND (s.id IS NULL OR s.status <> 'ready' OR ${upgrade}
+                 OR (split_part(s.source, ':', 1) IS DISTINCT FROM t.content_hash AND ${replaceable}))
             AND (s.id IS NULL OR s.checked_at < now() - interval '1 day'))
         OR ${referenceDue}
       )
@@ -411,13 +417,15 @@ async function charactersOf(item: ItemRow): Promise<string[]> {
  * Write the scene notes and the synopsis summarised from them, and re-queue
  * the item for embedding, so the plot becomes part of the item vector that
  * search and recommendations already use; then index both as search windows
- * of their own. Notes already written from the same transcript and plot are
- * kept, unless a model in `upgradeFrom` wrote them.
+ * of their own. Notes already there are kept unless a model in `upgradeFrom`
+ * wrote them, or they were written from an older transcript by a model not in
+ * `keepFrom` (see dueItems).
  */
 async function indexSynopsis(
   serverId: number,
   models: KnowledgeModel[],
   upgradeFrom: string[],
+  keepFrom: string[],
   embedding: EmbeddingSettings,
   item: DueItem
 ): Promise<boolean> {
@@ -426,8 +434,7 @@ async function indexSynopsis(
   const reference = await getText(item.id, "reference");
   const basis = plotBasis(transcript.contentHash, reference);
   const previous = await getText(item.id, "scenes");
-  const upgrade = previous?.writtenBy ? upgradeFrom.includes(previous.writtenBy) : false;
-  if (previous?.status === "ready" && previous.source === basis && !upgrade) return false;
+  if (!notesDue(previous, transcript.contentHash, { upgradeFrom, keepFrom })) return false;
 
   const title = titleOf(item);
   const saved: PlotText[] = [];
@@ -548,13 +555,10 @@ export async function knowledgeIndexJob(job: PgBossJob<ServerIdJobData>) {
       // Read again each batch: models rest, settings change.
       const models = await getKnowledgeModels(serverId);
       const best = models.findIndex((m) => isUsable(m));
-      // Notes by a model listed below the best usable one are rewritten by it
-      // (not by another account's copy of the same model listed above).
-      const above = new Set(models.slice(0, best + 1).map(modelLabel));
-      const upgradeFrom = best < 0 ? [] : [...new Set(models.slice(best + 1).map(modelLabel))].filter((l) => !above.has(l));
+      const { upgradeFrom, keepFrom } = ranking(models, best);
       const hosted = best >= 0 && ["anthropic", "gemini"].includes(models[best].provider);
       const concurrency = hosted ? HOSTED_CONCURRENCY : 1;
-      const batch = await dueItems(serverId, server.knowledgeItemTypes, best >= 0, upgradeFrom, withReferences);
+      const batch = await dueItems(serverId, server.knowledgeItemTypes, best >= 0, upgradeFrom, keepFrom, withReferences);
       if (batch.length === 0) break;
       const lookUp = batch.filter((item) => item.reference_due);
       if (lookUp.length > 0) {
@@ -562,7 +566,7 @@ export async function knowledgeIndexJob(job: PgBossJob<ServerIdJobData>) {
           counts.references += await indexReferences(serverId, embedding, lookUp);
         } catch (error) {
           // Wikipedia unreachable: stop rather than write notes without the
-          // plots, which would be rewritten once they come. The next run retries.
+          // plots, which they would then lack for good. The next run retries.
           counts.errors++;
           lastError = `Wikipedia plots: ${error instanceof Error ? error.message : String(error)}`;
           console.warn(`[knowledge] serverId=${serverId} error=${lastError}`);
@@ -572,7 +576,7 @@ export async function knowledgeIndexJob(job: PgBossJob<ServerIdJobData>) {
       const indexItem = async (item: DueItem) => {
         try {
           counts[await indexTranscript(serverId, client, embedding, languages, item)]++;
-          if (models.some((m) => isUsable(m)) && (await indexSynopsis(serverId, models, upgradeFrom, embedding, item))) {
+          if (models.some((m) => isUsable(m)) && (await indexSynopsis(serverId, models, upgradeFrom, keepFrom, embedding, item))) {
             counts.synopses++;
           }
         } catch (error) {

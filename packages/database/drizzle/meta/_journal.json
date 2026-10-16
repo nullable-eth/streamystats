@@ -386,6 +386,13 @@
       "when": 1792103266513,
       "tag": "0054_no_model_costs",
       "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1792169303794,
+      "tag": "0055_notes_credit_by_writer",
+      "breakpoints": true
     }
   ]
 }

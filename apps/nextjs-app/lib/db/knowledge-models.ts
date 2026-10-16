@@ -1,6 +1,6 @@
 import "server-only";
 
-import { db, knowledgeModels } from "@streamystats/database";
+import { db, itemTexts, knowledgeModels } from "@streamystats/database";
 import { and, asc, eq, sql } from "drizzle-orm";
 import type { ChatAIConfig, ChatProvider } from "./server";
 
@@ -19,7 +19,11 @@ export interface KnowledgeModelPublic {
   baseUrl: string | null;
   model: string;
   hasApiKey: boolean;
-  /** Titles it has written. */
+  /**
+   * Titles whose current notes it wrote, by provider and model as the notes
+   * record them: notes written for it elsewhere count, and another account's
+   * copy of the same model shows the same count.
+   */
   titles: number;
   /** ISO time it rests until after a failure of its own, if it is resting. */
   restingUntil: string | null;
@@ -34,6 +38,18 @@ export async function listKnowledgeModels(
     .from(knowledgeModels)
     .where(eq(knowledgeModels.serverId, serverId))
     .orderBy(asc(knowledgeModels.position), asc(knowledgeModels.id));
+  const written = await db
+    .select({ by: itemTexts.writtenBy, n: sql<number>`count(*)::int` })
+    .from(itemTexts)
+    .where(
+      and(
+        eq(itemTexts.serverId, serverId),
+        eq(itemTexts.kind, "scenes"),
+        eq(itemTexts.status, "ready"),
+      ),
+    )
+    .groupBy(itemTexts.writtenBy);
+  const titlesBy = new Map(written.map((w) => [w.by, w.n]));
   const now = new Date();
   return rows.map((r) => ({
     id: r.id,
@@ -43,7 +59,7 @@ export async function listKnowledgeModels(
     baseUrl: r.baseUrl,
     model: r.model,
     hasApiKey: Boolean(r.apiKey),
-    titles: r.titles,
+    titles: titlesBy.get(`${r.provider}:${r.model}`) ?? 0,
     restingUntil:
       r.unavailableUntil && r.unavailableUntil > now
         ? r.unavailableUntil.toISOString()
