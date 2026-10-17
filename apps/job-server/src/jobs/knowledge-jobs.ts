@@ -538,6 +538,8 @@ export async function knowledgeIndexJob(job: PgBossJob<ServerIdJobData>) {
   console.info(
     `[knowledge] serverId=${serverId} action=start synopses=${listed.map(modelLabel).join(" > ") || "off"} wikipedia=${withReferences} language=${languages.join("/")}`
   );
+  // So the settings show the run as going from its start, not its first batch.
+  await logJobResult(job.id, KNOWLEDGE_INDEX_JOB_NAME, "processing", { serverId, ...counts, lastError }, 0);
   try {
     // Plot texts still without search windows: embedding only, no model calls.
     const failed = new Set<number>();

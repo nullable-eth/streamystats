@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { rewriteLoops, withoutLoops } from "./knowledge-rewrites";
+import { rewriteLoops, withoutLoops } from "./knowledge-writers";
 
 const model = (name: string, rewriteFrom: string[] = []) => ({
   provider: "p",
