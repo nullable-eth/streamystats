@@ -9,8 +9,11 @@ export interface TranscriptMatch {
 }
 
 /**
- * Reciprocal rank fusion of ranked chunk lists, grouped by item: an item
- * scores by its best chunks, and keeps its two best moments as evidence.
+ * Ranked chunk lists fused by item, each item placed by its best rank in any
+ * of them, so a title the exact wording puts first (a quoted line) is not
+ * buried under titles that match by meaning a little in two windows. Ties go
+ * to the item the rankings agree on more: its two best chunks' reciprocal
+ * rank fusion, which is its score; those two are its moments, as evidence.
  */
 export function fuseChunkRankings(
   rankings: {
@@ -32,11 +35,13 @@ export function fuseChunkRankings(
       score: number;
     }
   >();
+  const best = new Map<string, number>();
   for (const ranking of rankings) {
     ranking.forEach((c, rank) => {
       const entry = chunks.get(c.id) ?? { ...c, score: 0 };
       entry.score += 1 / (RRF_K + rank + 1);
       chunks.set(c.id, entry);
+      best.set(c.itemId, Math.min(best.get(c.itemId) ?? rank, rank));
     });
   }
   const byItem = new Map<string, TranscriptMatch>();
@@ -52,7 +57,13 @@ export function fuseChunkRankings(
     }
     byItem.set(c.itemId, match);
   }
-  return [...byItem.values()].sort((a, b) => b.score - a.score).slice(0, limit);
+  return [...byItem.values()]
+    .sort(
+      (a, b) =>
+        (best.get(a.itemId) ?? 0) - (best.get(b.itemId) ?? 0) ||
+        b.score - a.score,
+    )
+    .slice(0, limit);
 }
 
 /**
