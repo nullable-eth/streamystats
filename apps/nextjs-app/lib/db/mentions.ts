@@ -14,7 +14,9 @@ export interface TitleMention {
   /** The best matching dialogue and plot passages, the match in **bold**. */
   evidence: {
     source: "dialogue" | "plot";
+    /** The dialogue window's span; null for plot passages. */
     startMs: number | null;
+    endMs: number | null;
     text: string;
   }[];
 }
@@ -93,11 +95,12 @@ export async function titlesMentioning({
     item_id: string;
     kind: string;
     start_ms: number | null;
+    end_ms: number | null;
     text: string;
   }>(sql`
     SELECT DISTINCT ON (${itemTextChunks.itemId}, ${itemTextChunks.kind} = 'transcript')
       ${itemTextChunks.itemId} AS item_id, ${itemTextChunks.kind} AS kind,
-      ${itemTextChunks.startMs} AS start_ms,
+      ${itemTextChunks.startMs} AS start_ms, ${itemTextChunks.endMs} AS end_ms,
       ts_headline('english', ${itemTextChunks.text}, ${query},
         'MaxWords=30, MinWords=12, MaxFragments=1, StartSel=**, StopSel=**') AS text
     FROM ${itemTextChunks}
@@ -115,6 +118,7 @@ export async function titlesMentioning({
     list.push({
       source: p.kind === "transcript" ? "dialogue" : "plot",
       startMs: p.kind === "transcript" ? p.start_ms : null,
+      endMs: p.kind === "transcript" ? p.end_ms : null,
       text: p.text,
     });
     evidence.set(p.item_id, list);
