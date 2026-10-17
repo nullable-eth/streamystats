@@ -1,4 +1,5 @@
 import type { Server as DatabaseServer } from "@streamystats/database";
+import type { SynopsisState } from "./db/knowledge-index";
 
 // Re-export types from database
 export type {
@@ -39,6 +40,8 @@ export interface ItemWatchStats {
   unique_viewers: number;
   last_watched?: string | null;
   first_watched?: string | null;
+  /** Where its synopsis stands; asked for by admins. */
+  synopsis?: SynopsisState;
 }
 
 export interface ItemWatchStatsResponse {

@@ -45,17 +45,21 @@ import type {
 import { formatDuration } from "@/lib/utils";
 import { Poster } from "../dashboard/Poster";
 import LibraryDropdown from "./LibraryDropdown";
+import { SynopsisCell } from "./SynopsisCell";
 
 export interface ItemWatchStatsTableProps {
   server: ServerPublic;
   data: ItemWatchStatsResponse;
   libraries: Library[];
+  /** Admins also see each item's synopsis and can move it up the queue. */
+  isAdmin?: boolean;
 }
 
 export function ItemWatchStatsTable({
   server,
   data,
   libraries,
+  isAdmin = false,
 }: ItemWatchStatsTableProps) {
   const searchParams = useSearchParams();
 
@@ -278,6 +282,34 @@ export function ItemWatchStatsTable({
       minSize: 120,
       maxSize: 240,
     },
+    ...(isAdmin
+      ? [
+          {
+            id: "synopsis",
+            accessorFn: (row) => row.synopsis?.written,
+            header: () => (
+              <Button
+                variant="ghost"
+                onClick={() => handleSortChange("synopsis")}
+              >
+                Synopsis
+                <ArrowUpDown className="ml-2 h-4 w-4" />
+              </Button>
+            ),
+            cell: ({ row }) => (
+              <SynopsisCell
+                serverId={server.id}
+                itemId={row.original.item.id}
+                series={row.original.item.type === "Series"}
+                state={row.original.synopsis}
+              />
+            ),
+            size: 120,
+            minSize: 100,
+            maxSize: 160,
+          } satisfies ColumnDef<ItemWatchStats>,
+        ]
+      : []),
   ];
 
   const table = useReactTable({
