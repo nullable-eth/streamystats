@@ -64,7 +64,7 @@ export const USES: Record<
     label: "Knowledge index",
     presets: CHAT_PRESETS,
     about:
-      "Writes each title's scene notes and synopsis. Listed models are tried in order; one that is rate limited or out of credit rests until it can be used again.",
+      "Writes each title's scene notes and synopsis. A title without notes goes to the first listed model that is not resting; one that is rate limited or out of credit rests until it can be used again.",
   },
   embedding: {
     label: "Embeddings",
@@ -73,6 +73,10 @@ export const USES: Record<
       "Turns titles, plots and transcripts into vectors for search and recommendations. One at a time.",
   },
 };
+
+/** Requests a knowledge index model is sent at once unless set, as the job sends them. */
+export const defaultParallel = (provider: string) =>
+  provider === "anthropic" || provider === "gemini" ? 4 : 1;
 
 /** The model being added or changed. */
 export interface Editing {
@@ -85,6 +89,8 @@ export interface Editing {
   hasSavedKey: boolean;
   dimensions?: number | null;
   name?: string | null;
+  /** A knowledge index model's requests at once; null: its provider's default. */
+  parallelRequests?: number | null;
 }
 
 export function ModelDialog({
@@ -111,6 +117,9 @@ export function ModelDialog({
       1536,
   );
   const [name, setName] = useState(editing.name ?? "");
+  const [parallel, setParallel] = useState(
+    editing.parallelRequests?.toString() ?? "",
+  );
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
 
@@ -150,10 +159,12 @@ export function ModelDialog({
           dimensions,
         });
       } else {
+        const atOnce = Number.parseInt(parallel, 10);
         await saveKnowledgeModelAction(serverId, {
           ...config(),
           provider: settings.provider as ChatProvider,
           id: editing.id,
+          parallelRequests: atOnce >= 1 ? atOnce : null,
         });
       }
       toast.success(`${USES[use].label} model saved`);
@@ -231,6 +242,30 @@ export function ModelDialog({
             }}
             hasSavedKey={editing.hasSavedKey}
           />
+
+          {use === "knowledge" && (
+            <div className="space-y-2">
+              <Label htmlFor="model-parallel">Requests at once</Label>
+              <Input
+                id="model-parallel"
+                type="number"
+                min={1}
+                max={64}
+                placeholder={String(defaultParallel(settings.provider))}
+                value={parallel}
+                onChange={(e) => setParallel(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                Titles it writes at the same time. Empty:{" "}
+                {defaultParallel(settings.provider)} for this provider (4 for
+                Anthropic and Gemini, 1 for others). For a local server, match
+                its parallel slots (llama.cpp --parallel, OLLAMA_NUM_PARALLEL),
+                each with the whole context a title needs: llama.cpp divides its
+                context size among them. Requests beyond what it takes wait on
+                the server and can time out.
+              </p>
+            </div>
+          )}
 
           {use === "embedding" && (
             <div className="space-y-2">

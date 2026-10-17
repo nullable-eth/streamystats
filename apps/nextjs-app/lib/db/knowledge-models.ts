@@ -33,6 +33,8 @@ export interface KnowledgeModelPublic {
   titles: number;
   /** Writers whose notes it replaces. */
   rewriteFrom: string[];
+  /** Requests it is sent at once; null: its provider's default. */
+  parallelRequests: number | null;
   /** ISO time it rests until after a failure of its own, if it is resting. */
   restingUntil: string | null;
   lastError: string | null;
@@ -82,6 +84,7 @@ export async function listKnowledgeModels(
     hasApiKey: Boolean(r.apiKey),
     titles: titlesBy.get(writerLabel(r)) ?? 0,
     rewriteFrom: r.rewriteFrom,
+    parallelRequests: r.parallelRequests,
     restingUntil:
       r.unavailableUntil && r.unavailableUntil > now
         ? r.unavailableUntil.toISOString()
@@ -89,6 +92,12 @@ export async function listKnowledgeModels(
     lastError: r.lastError,
   }));
 }
+
+/** Requests at once as entered: a whole number from 1 to 64, else the provider's default. */
+const requestsAtOnce = (n: unknown) =>
+  typeof n === "number" && Number.isInteger(n) && n >= 1
+    ? Math.min(n, 64)
+    : null;
 
 /** A model's saved settings with its key, for a connection test. */
 export async function getKnowledgeModelConfig(
@@ -119,13 +128,14 @@ export async function getKnowledgeModelConfig(
  */
 export async function saveKnowledgeModel(
   serverId: number,
-  input: ChatAIConfig & { id?: number },
+  input: ChatAIConfig & { id?: number; parallelRequests?: number | null },
 ) {
   const values = {
     provider: input.provider,
     name: input.name?.trim() || null,
     baseUrl: input.baseUrl.replace(/\/+$/, "") || null,
     model: input.model,
+    parallelRequests: requestsAtOnce(input.parallelRequests),
     ...(input.apiKey?.trim() ? { apiKey: input.apiKey } : {}),
   };
   if (input.id !== undefined) {
@@ -254,13 +264,22 @@ export async function moveKnowledgeModel(
 /** The list as a backup keeps it: no keys, no counts. */
 export async function exportKnowledgeModels(serverId: number) {
   return (await listKnowledgeModels(serverId)).map(
-    ({ name, enabled, provider, baseUrl, model, rewriteFrom }) => ({
+    ({
       name,
       enabled,
       provider,
       baseUrl,
       model,
       rewriteFrom,
+      parallelRequests,
+    }) => ({
+      name,
+      enabled,
+      provider,
+      baseUrl,
+      model,
+      rewriteFrom,
+      parallelRequests,
     }),
   );
 }
@@ -279,6 +298,7 @@ export async function replaceKnowledgeModels(
     baseUrl: string | null;
     model: string;
     rewriteFrom?: string[];
+    parallelRequests?: number | null;
   }[],
 ) {
   await db.transaction(async (tx) => {
@@ -296,6 +316,7 @@ export async function replaceKnowledgeModels(
         baseUrl: m.baseUrl,
         model: m.model,
         rewriteFrom: m.rewriteFrom,
+        parallelRequests: requestsAtOnce(m.parallelRequests),
       })),
     );
   });

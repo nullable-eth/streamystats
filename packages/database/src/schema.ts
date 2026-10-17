@@ -595,6 +595,8 @@ export const knowledgeModels = pgTable(
     model: text("model").notNull(),
     // Writers ("provider:model") whose notes it replaces, as asked in the settings.
     rewriteFrom: text("rewrite_from").array().notNull().default([]),
+    // Requests it is sent at once; null: its provider's default (see the job).
+    parallelRequests: integer("parallel_requests"),
     // Out of credit, rate limited, or down: not tried again until then.
     unavailableUntil: timestamp("unavailable_until", { withTimezone: true }),
     lastError: text("last_error"),

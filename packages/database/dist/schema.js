@@ -449,6 +449,8 @@ exports.knowledgeModels = (0, pg_core_1.pgTable)("knowledge_models", {
     model: (0, pg_core_1.text)("model").notNull(),
     // Writers ("provider:model") whose notes it replaces, as asked in the settings.
     rewriteFrom: (0, pg_core_1.text)("rewrite_from").array().notNull().default([]),
+    // Requests it is sent at once; null: its provider's default (see the job).
+    parallelRequests: (0, pg_core_1.integer)("parallel_requests"),
     // Out of credit, rate limited, or down: not tried again until then.
     unavailableUntil: (0, pg_core_1.timestamp)("unavailable_until", { withTimezone: true }),
     lastError: (0, pg_core_1.text)("last_error"),

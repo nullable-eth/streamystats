@@ -29,6 +29,7 @@ import {
   isUsable,
   type KnowledgeModel,
   modelLabel,
+  parallelOf,
   rewritesOf,
   writePlotWithModels,
   writersFor,
@@ -52,8 +53,6 @@ const RUN_BUDGET_MS = 90 * 60_000;
 const ITEMS_PER_QUERY = 25;
 const EMBED_BATCH = 32;
 const MAX_TRACKS_TRIED = 3;
-/** Titles written at once with a hosted model; a local server is busy with one. */
-const HOSTED_CONCURRENCY = 4;
 
 type Outcome = "indexed" | "unchanged" | "missing";
 
@@ -556,8 +555,9 @@ export async function knowledgeIndexJob(job: PgBossJob<ServerIdJobData>) {
     while (Date.now() - startTime < RUN_BUDGET_MS) {
       // Read again each batch (and each title, below): models rest, settings change.
       const usable = (await getKnowledgeModels(serverId)).filter((m) => isUsable(m));
-      const hosted = usable.length > 0 && ["anthropic", "gemini"].includes(usable[0].provider);
-      const concurrency = hosted ? HOSTED_CONCURRENCY : 1;
+      // Enough titles at once for the model taking most; each model is sent
+      // no more requests at once than it takes (see parallelOf).
+      const concurrency = Math.max(1, ...usable.map(parallelOf));
       const batch = await dueItems(serverId, server.knowledgeItemTypes, usable, withReferences, taken);
       if (batch.length === 0) break;
       for (const item of batch) taken.add(item.id);
