@@ -23,7 +23,7 @@ import {
   findItemsByPerson,
 } from "@/lib/db/item-people-search";
 import { titlesMentioning } from "@/lib/db/mentions";
-import { findMoments, momentScope } from "@/lib/db/moments";
+import { findMoments, locateMoment, momentScope } from "@/lib/db/moments";
 import { searchByPlot } from "@/lib/db/plot-search";
 import { getRatedItems } from "@/lib/db/rated-items";
 import { alternate } from "@/lib/db/rating-signals-pick";
@@ -1417,7 +1417,7 @@ export function createChatTools(
 
     searchTranscripts: tool({
       description:
-        "Search the dialogue of every movie and episode in the library (indexed from their subtitles). Use it to find which title has a remembered line or quote, or a scene the user half-remembers (what was said, names mentioned, a situation). Put exact remembered wording in double quotes for a phrase match. Returns the best matching titles with their moments and timestamps; to list every title that mentions something, use findTitlesMentioning.",
+        "Search the dialogue of every movie and episode in the library (indexed from their subtitles). Use it to find which title has a remembered line or quote, or a scene the user half-remembers (what was said, names mentioned, a situation). Put exact remembered wording in double quotes for a phrase match. Returns the best matching titles with their moments: 'at' is when the matching line is said, 'line' the line, and 'dialogue' the two minutes of dialogue around it. Subtitles carry no speaker names or setting, so the dialogue alone does not say who speaks a line, to whom, or where. To list every title that mentions something, use findTitlesMentioning.",
       inputSchema: z.object({
         query: z
           .string()
@@ -1434,15 +1434,40 @@ export function createChatTools(
           limit,
         });
         const matched = await getMatchedItems(matches.map((m) => m.itemId));
-        const moments = new Map(matches.map((m) => [m.itemId, m.moments]));
+        // Each window pinned to its matching line, so 'at' is when it is said.
+        const moments = new Map(
+          await Promise.all(
+            matches.map(
+              async (m) =>
+                [
+                  m.itemId,
+                  await Promise.all(
+                    m.moments.map(async (w) => {
+                      if (w.startMs === null) return { dialogue: w.text };
+                      const at = await locateMoment(
+                        {
+                          itemId: m.itemId,
+                          startMs: w.startMs,
+                          endMs: w.endMs,
+                        },
+                        query,
+                      );
+                      return {
+                        at: formatTimestamp(at.startMs),
+                        line: at.line ?? undefined,
+                        dialogue: w.text,
+                      };
+                    }),
+                  ),
+                ] as const,
+            ),
+          ),
+        );
         return {
           items: matched.map((item) => ({
             ...formatItem(item),
             ...episodeOf(item),
-            moments: (moments.get(item.id) ?? []).map((m) => ({
-              at: m.startMs === null ? undefined : formatTimestamp(m.startMs),
-              dialogue: m.text,
-            })),
+            moments: moments.get(item.id) ?? [],
           })),
           message:
             matched.length > 0
@@ -1491,6 +1516,19 @@ export function createChatTools(
         });
         const matched = await getMatchedItems(titles.map((t) => t.itemId));
         const byId = new Map(titles.map((t) => [t.itemId, t]));
+        // Dialogue evidence pinned to its matching line, so 'at' is when it is said.
+        await Promise.all(
+          titles.flatMap((t) =>
+            t.evidence.map(async (e) => {
+              if (e.startMs === null || e.endMs === null) return;
+              const at = await locateMoment(
+                { itemId: t.itemId, startMs: e.startMs, endMs: e.endMs },
+                phrase,
+              );
+              e.startMs = at.startMs;
+            }),
+          ),
+        );
         return {
           items: matched.map((item) => {
             const t = byId.get(item.id);
