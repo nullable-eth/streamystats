@@ -50,6 +50,9 @@ interface Configured extends SavedModel {
   name: string | null;
 }
 
+/** "1 thread", "4 threads". */
+const threads = (n: number) => `${n} ${n === 1 ? "thread" : "threads"}`;
+
 /** "Provider · model" as the presets name it. */
 function nameOf(use: ModelUse, m: SavedModel) {
   const presets = USES[use].presets;
@@ -345,7 +348,7 @@ export function ModelsManager({
                   {m.name && `${nameOf("knowledge", m)} · `}
                   {m.titles.toLocaleString()}{" "}
                   {m.titles === 1 ? "synopsis" : "synopses"} written ·{" "}
-                  {m.parallelRequests ?? defaultParallel(m.provider)} at once
+                  {threads(m.parallelRequests ?? defaultParallel(m.provider))}
                 </p>
                 {m.rewriteFrom.map((from) => (
                   <p key={from} className="flex items-center gap-1 text-sm">

@@ -86,7 +86,7 @@ export interface Editing {
   hasSavedKey: boolean;
   dimensions?: number | null;
   name?: string | null;
-  /** A knowledge index model's requests at once; null: its provider's default. */
+  /** A knowledge index model's threads (requests at once); null: its provider's default. */
   parallelRequests?: number | null;
 }
 
@@ -242,7 +242,7 @@ export function ModelDialog({
 
           {use === "knowledge" && (
             <div className="space-y-2">
-              <Label htmlFor="model-parallel">Requests at once</Label>
+              <Label htmlFor="model-parallel">Threads</Label>
               <Input
                 id="model-parallel"
                 type="number"

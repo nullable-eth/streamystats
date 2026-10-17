@@ -346,7 +346,8 @@ function Writers({
   }
   return (
     <>
-      {ready[0].name} writes them, {ready[0].atOnce} at a time
+      {ready[0].name} writes them with {ready[0].atOnce}{" "}
+      {ready[0].atOnce === 1 ? "thread" : "threads"}
       {ready.length > 1 &&
         `; ${ready
           .slice(1)
