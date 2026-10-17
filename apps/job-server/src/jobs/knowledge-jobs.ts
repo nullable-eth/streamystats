@@ -136,11 +136,7 @@ function titleOf(item: ItemRow): string {
   return `${item.series_name ?? "Unknown series"} S${s}E${e} "${item.name}"`;
 }
 
-/**
- * What scene notes are written from, kept as their source: the transcript,
- * and the Wikipedia plot when there was one. Only a changed transcript makes
- * them stale; a plot found later does not, since it is searchable on its own.
- */
+/** What scene notes are written from, kept as their source: the transcript, and the Wikipedia plot when there was one. */
 const plotBasis = (transcriptHash: string, reference: ItemText | undefined) =>
   reference?.status === "ready" && reference.contentHash ? `${transcriptHash}:${reference.contentHash}` : transcriptHash;
 
@@ -149,10 +145,9 @@ const plotBasis = (transcriptHash: string, reference: ItemText | undefined) =>
  * day ago (a subtitle downloader may have fetched one since); a weekly re-check for upgraded
  * subtitles; a transcript indexed before line timings were kept; scene
  * notes (and the synopsis written with them) that one of the `usable` models
- * writes (see writersFor): missing, by a writer one was asked to replace, or
- * from an older transcript by one of them or by no recorded writer; or, with
- * Wikipedia plots on, a plot never looked up, missing for a month (an article
- * may have been written since) or three months old. Notes whose writing
+ * writes (see writersFor): missing, or by a writer one was asked to replace;
+ * or, with Wikipedia plots on, a plot never looked up, missing for a month
+ * (an article may have been written since) or three months old. Notes whose writing
  * failed wait a day; titles already taken this run (`taken`) wait for the next.
  */
 async function dueItems(
@@ -167,7 +162,6 @@ async function dueItems(
   if (selected.length === 0) return [];
   const replaced = rewritesOf(usable);
   const rewrite = replaced.length > 0 ? sql`s.written_by IN ${replaced}` : sql`false`;
-  const own = usable.length > 0 ? sql`s.written_by IN ${usable.map(modelLabel)}` : sql`false`;
   const fresh = sql`i.id <> ALL(${sql.param([...taken])}::text[])`;
   const referenceDue = sql`(${withReferences} AND (r.id IS NULL
     OR r.checked_at < now() - CASE WHEN r.status = 'ready' THEN interval '90 days' ELSE interval '30 days' END))`;
@@ -189,9 +183,7 @@ async function dueItems(
         OR (t.status = 'ready' AND t.checked_at < now() - interval '7 days')
         OR (t.status = 'ready' AND t.cue_starts_ms IS NULL)
         OR (${usable.length > 0} AND t.status = 'ready'
-            AND (s.id IS NULL OR s.status <> 'ready' OR ${rewrite}
-                 OR (split_part(s.source, ':', 1) IS DISTINCT FROM t.content_hash
-                     AND (s.written_by IS NULL OR ${own})))
+            AND (s.id IS NULL OR s.status <> 'ready' OR ${rewrite})
             AND (s.id IS NULL OR s.checked_at < now() - interval '1 day'))
         OR ${referenceDue}
       )
@@ -426,8 +418,7 @@ async function charactersOf(item: ItemRow): Promise<string[]> {
  * the item for embedding, so the plot becomes part of the item vector that
  * search and recommendations already use; then index both as search windows
  * of their own, by whichever of the `usable` models writersFor picks: notes
- * already there are kept unless a model was asked to replace their writer's,
- * or the transcript changed.
+ * already there are kept unless a model was asked to replace their writer's.
  */
 async function indexSynopsis(
   serverId: number,
@@ -440,7 +431,7 @@ async function indexSynopsis(
   const reference = await getText(item.id, "reference");
   const basis = plotBasis(transcript.contentHash, reference);
   const previous = await getText(item.id, "scenes");
-  const writers = writersFor(previous, transcript.contentHash, usable);
+  const writers = writersFor(previous, usable);
   if (writers.length === 0) return false;
 
   const title = titleOf(item);
