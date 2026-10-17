@@ -251,7 +251,7 @@ export function ModelsManager({
 
         <Section
           title="Knowledge index"
-          about="Writes the synopsis of each movie and episode. One without a synopsis goes to the first model in the list that is not resting, and to the next if that fails. A rate-limited model rests until its provider says the limit resets; one without credit, with a rejected key, or down rests a while. The order never replaces a synopsis already written: it is rewritten when the subtitles change, by the model that wrote it, or by a model you ask to rewrite that model's synopses."
+          about="Writes the synopsis of each movie and episode. One without a synopsis goes to the first model in the list that is not resting, and to the next if that fails. A rate-limited model rests until its provider says the limit resets; one without credit, with a rejected key, or down rests a while. A synopsis once written is kept, whatever the order or any new subtitles, until you ask another model to rewrite that model's synopses."
         >
           {knowledgeModels.length === 0 && (
             <p className="text-sm">None listed: the chat model writes.</p>

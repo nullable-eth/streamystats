@@ -180,38 +180,30 @@ describe("who writes a title's notes", () => {
   const claude = model("claude", { rewriteFrom: [label("gemma")] });
   const [gemma, qwen] = [model("gemma"), model("qwen")];
   const usable = [qwen, gemma, claude];
-  const notes = (writtenBy: string | null, source = "t1") => ({ status: "ready", source, writtenBy });
+  const notes = (writtenBy: string | null) => ({ status: "ready", writtenBy });
   const names = (models: { model: string }[]) => models.map((m) => m.model);
 
   test("missing notes: any, in the list's order", () => {
-    expect(names(writersFor(undefined, "t1", usable))).toEqual(["qwen", "gemma", "claude"]);
-    expect(names(writersFor({ status: "missing", source: null, writtenBy: null }, "t1", usable))).toEqual(["qwen", "gemma", "claude"]);
+    expect(names(writersFor(undefined, usable))).toEqual(["qwen", "gemma", "claude"]);
+    expect(names(writersFor({ status: "missing", writtenBy: null }, usable))).toEqual(["qwen", "gemma", "claude"]);
   });
 
-  test("the list's order never replaces notes already written", () => {
-    expect(writersFor(notes(label("claude")), "t1", usable)).toEqual([]);
-    expect(writersFor(notes(label("qwen")), "t1", [claude, gemma, qwen])).toEqual([]);
-    // A plot found since does not make them stale.
-    expect(writersFor(notes(label("claude"), "t1:p1"), "t1", usable)).toEqual([]);
+  test("notes once written are kept, whatever the list's order", () => {
+    expect(writersFor(notes(label("claude")), usable)).toEqual([]);
+    expect(writersFor(notes(label("qwen")), [claude, gemma, qwen])).toEqual([]);
+    expect(writersFor(notes(null), usable)).toEqual([]);
   });
 
   test("notes by a writer a model was asked to replace: that model", () => {
-    expect(names(writersFor(notes(label("gemma")), "t1", usable))).toEqual(["claude"]);
-    expect(names(writersFor(notes(label("gemma"), "t0"), "t1", usable))).toEqual(["claude"]);
+    expect(names(writersFor(notes(label("gemma")), usable))).toEqual(["claude"]);
     // Resting (not among the usable): left as they are.
-    expect(writersFor(notes(label("gemma")), "t1", [qwen, gemma])).toEqual([]);
+    expect(writersFor(notes(label("gemma")), [qwen, gemma])).toEqual([]);
   });
 
   test("never its own notes, whatever it was asked", () => {
     const self = model("claude", { rewriteFrom: [label("claude")] });
-    expect(writersFor(notes(label("claude")), "t1", [self])).toEqual([]);
+    expect(writersFor(notes(label("claude")), [self])).toEqual([]);
     expect(rewritesOf([self, claude])).toEqual([label("gemma")]);
-  });
-
-  test("notes from an older transcript: the model that wrote them, or any when none was recorded", () => {
-    expect(names(writersFor(notes(label("qwen"), "t0"), "t1", usable))).toEqual(["qwen"]);
-    expect(writersFor(notes(label("sonnet"), "t0:p1"), "t1", usable)).toEqual([]);
-    expect(names(writersFor(notes(null, "t0"), "t1", usable))).toEqual(["qwen", "gemma", "claude"]);
   });
 });
 

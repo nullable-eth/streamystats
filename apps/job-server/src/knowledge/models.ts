@@ -56,22 +56,18 @@ export const rewritesOf = (models: KnowledgeModel[]) =>
 /**
  * Which of `models` (the usable ones, in order) write a title's notes. None
  * yet: any, in order. Notes by a writer a model was asked to replace: those
- * models. Notes from an older transcript: the model that wrote them, or any
- * when no writer was recorded. Otherwise none: the list's order never
- * replaces notes already written. Their source is "transcript hash[:plot
- * hash]"; a Wikipedia plot found since does not make them stale.
+ * models. Otherwise none: notes once written are kept, whatever the list's
+ * order and whatever subtitles or Wikipedia plot turn up later (new subtitles
+ * mostly differ in wording and timing; a rewrite is asked for when one is
+ * worth it).
  */
 export function writersFor(
-  previous: { status: string; source: string | null; writtenBy: string | null } | undefined,
-  transcriptHash: string,
+  previous: { status: string; writtenBy: string | null } | undefined,
   models: KnowledgeModel[]
 ): KnowledgeModel[] {
   if (previous?.status !== "ready") return models;
   const by = previous.writtenBy;
-  const replacing = models.filter((m) => by !== null && by !== modelLabel(m) && m.rewriteFrom.includes(by));
-  if (replacing.length > 0) return replacing;
-  if (previous.source?.split(":")[0] === transcriptHash) return [];
-  return by === null ? models : models.filter((m) => modelLabel(m) === by);
+  return models.filter((m) => by !== null && by !== modelLabel(m) && m.rewriteFrom.includes(by));
 }
 
 /** Requests a model is sent at once: as set, or by default 4 to Anthropic and Gemini, 1 to others. */
