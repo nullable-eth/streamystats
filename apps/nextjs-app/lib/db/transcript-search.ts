@@ -13,6 +13,7 @@ import {
 } from "drizzle-orm";
 import { getItemEmbeddingComparison } from "./embedding-comparison";
 import { getStatisticsExclusions } from "./exclusions";
+import { anyWording } from "./full-text";
 import { fuseChunkRankings, type TranscriptMatch } from "./transcript-rank";
 
 export { formatTimestamp } from "./transcript-rank";
@@ -70,7 +71,7 @@ export async function searchTextWindows({
     endMs: itemTextChunks.endMs,
     text: itemTextChunks.text,
   };
-  const tsQuery = sql`websearch_to_tsquery('english', ${query})`;
+  const tsQuery = anyWording(query);
   // A title has several windows, so read enough of them for `limit` titles.
   const pool = Math.max(POOL, limit * 3);
 

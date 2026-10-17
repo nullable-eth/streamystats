@@ -2,7 +2,9 @@ import "server-only";
 
 import { db, items, itemTextChunks } from "@streamystats/database";
 import { and, asc, desc, eq, gt, inArray, type SQL, sql } from "drizzle-orm";
+import { wordings } from "@/lib/number-words";
 import { getStatisticsExclusions } from "./exclusions";
+import { anyWording } from "./full-text";
 import { findTitle } from "./synopsis-lookup";
 import { bestLine, fuseByBestRank } from "./transcript-rank";
 
@@ -41,7 +43,10 @@ export async function locateMoment(
       AND l.ms <= ${window.endMs ?? window.startMs}
     ORDER BY l.ms
   `);
-  const line = bestLine([...rows], query);
+  // The query as typed first, then with its numbers in the other wording.
+  const line = wordings(query)
+    .map((w) => bestLine([...rows], w))
+    .find(Boolean);
   return {
     itemId: window.itemId,
     startMs: line?.ms ?? window.startMs,
@@ -86,10 +91,10 @@ export async function findMoments({
     startMs: itemTextChunks.startMs,
     endMs: itemTextChunks.endMs,
   };
-  const tsQuery = sql`websearch_to_tsquery('english', ${query})`;
+  const tsQuery = anyWording(query);
   // The words in the order given: a quoted line, not just its words scattered
   // over a window full of common ones.
-  const phraseQuery = sql`phraseto_tsquery('english', ${query})`;
+  const phraseQuery = anyWording(query, "phraseto_tsquery");
   const pool = Math.max(limit * 5, 20);
 
   const byText = (kind: SQL, match: SQL) =>
