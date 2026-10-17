@@ -16,9 +16,20 @@ const chunk = (id: number, itemId: string) => ({
 });
 
 describe("fuseChunkRankings", () => {
-  test("a chunk found by both rankings beats one found by either alone", () => {
+  test("a title one ranking puts first beats titles both put lower", () => {
+    // An exact line (text first) over windows that match by meaning twice.
+    const text = [chunk(1, "quote"), chunk(2, "b"), chunk(3, "c")];
+    const vector = [chunk(4, "d"), chunk(2, "b"), chunk(3, "c")];
+    expect(fuseChunkRankings([text, vector], 3).map((m) => m.itemId)).toEqual([
+      "quote",
+      "d",
+      "b",
+    ]);
+  });
+
+  test("at the same best rank, the one both rankings found comes first", () => {
     const text = [chunk(1, "a"), chunk(2, "b")];
-    const vector = [chunk(3, "c"), chunk(2, "b")];
+    const vector = [chunk(2, "b"), chunk(3, "c")];
     expect(fuseChunkRankings([text, vector], 3).map((m) => m.itemId)).toEqual([
       "b",
       "a",
