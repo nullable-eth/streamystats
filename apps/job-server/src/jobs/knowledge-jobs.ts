@@ -125,6 +125,8 @@ async function embedAll(
   return vectors;
 }
 
+const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
 function titleOf(item: ItemRow): string {
   if (item.type !== "Episode") {
     return item.production_year ? `${item.name} (${item.production_year})` : item.name;
@@ -394,7 +396,12 @@ async function indexReferences(serverId: number, embedding: EmbeddingSettings, b
       contentHash,
     });
     if (previous?.contentHash !== contentHash) {
-      await indexPlotWindows(serverId, embedding, { id, itemId: item.id, kind: "reference", content: plot.plot }, titleOf(item));
+      try {
+        await indexPlotWindows(serverId, embedding, { id, itemId: item.id, kind: "reference", content: plot.plot }, titleOf(item));
+      } catch (error) {
+        // The plot stands; the backlog pass retries its windows.
+        console.warn(`[knowledge] serverId=${serverId} item=${item.id} reference windows: ${errorText(error)}`);
+      }
     }
     found++;
   }
@@ -476,7 +483,7 @@ async function indexSynopsis(
     } catch (error) {
       // The text stands; the backlog pass retries its windows.
       console.warn(
-        `[knowledge] serverId=${serverId} item=${item.id} ${text.kind} windows: ${error instanceof Error ? error.message : String(error)}`
+        `[knowledge] serverId=${serverId} item=${item.id} ${text.kind} windows: ${errorText(error)}`
       );
     }
   }
@@ -485,8 +492,11 @@ async function indexSynopsis(
 
 type PlotTextRow = ItemRow & { text_id: number; kind: string; content: string };
 
-/** Plot texts without search windows: written before they existed, or their embedding failed. */
-async function plotTextsWithoutWindows(serverId: number): Promise<PlotTextRow[]> {
+/**
+ * Plot texts without search windows: written before they existed, or their
+ * embedding failed. Those that failed this run (`failed`) wait for the next.
+ */
+async function plotTextsWithoutWindows(serverId: number, failed: Set<number>): Promise<PlotTextRow[]> {
   const rows = await db.execute<PlotTextRow>(sql`
     SELECT s.id AS text_id, s.kind, s.content, i.id, i.name, i.type, i.series_name,
            i.parent_index_number, i.index_number, i.production_year, i.overview
@@ -498,6 +508,7 @@ async function plotTextsWithoutWindows(serverId: number): Promise<PlotTextRow[]>
       AND btrim(s.content) <> ''
       AND i.deleted_at IS NULL
       AND NOT EXISTS (SELECT 1 FROM item_text_chunks c WHERE c.item_text_id = s.id)
+      AND s.id <> ALL(${sql.param([...failed])}::int[])
     LIMIT ${ITEMS_PER_QUERY}
   `);
   return Array.from(rows);
@@ -529,8 +540,9 @@ export async function knowledgeIndexJob(job: PgBossJob<ServerIdJobData>) {
   );
   try {
     // Plot texts still without search windows: embedding only, no model calls.
+    const failed = new Set<number>();
     backlog: while (Date.now() - startTime < RUN_BUDGET_MS) {
-      const rows = await plotTextsWithoutWindows(serverId);
+      const rows = await plotTextsWithoutWindows(serverId, failed);
       if (rows.length === 0) break;
       for (const row of rows) {
         try {
@@ -542,11 +554,13 @@ export async function knowledgeIndexJob(job: PgBossJob<ServerIdJobData>) {
           );
           counts.windows++;
         } catch (error) {
-          // Most likely the embedding server: leave the rest for the next run.
           counts.errors++;
-          lastError = `${titleOf(row)}: ${error instanceof Error ? error.message : String(error)}`;
+          lastError = `${titleOf(row)}: ${errorText(error)}`;
           console.warn(`[knowledge] serverId=${serverId} item=${row.id} error=${lastError}`);
-          break backlog;
+          failed.add(row.text_id);
+          // The text's own failure leaves the rest to go on; the embedding
+          // server's (it fails a word too) leaves them for the next run.
+          if (!(await embedTexts(embedding, ["test"]).then(() => true, () => false))) break backlog;
         }
       }
     }
@@ -569,7 +583,7 @@ export async function knowledgeIndexJob(job: PgBossJob<ServerIdJobData>) {
           // Wikipedia unreachable: stop rather than write notes without the
           // plots, which they would then lack for good. The next run retries.
           counts.errors++;
-          lastError = `Wikipedia plots: ${error instanceof Error ? error.message : String(error)}`;
+          lastError = `Wikipedia plots: ${errorText(error)}`;
           console.warn(`[knowledge] serverId=${serverId} error=${lastError}`);
           break;
         }
@@ -585,7 +599,7 @@ export async function knowledgeIndexJob(job: PgBossJob<ServerIdJobData>) {
           }
         } catch (error) {
           counts.errors++;
-          lastError = `${titleOf(item)}: ${error instanceof Error ? error.message : String(error)}`;
+          lastError = `${titleOf(item)}: ${errorText(error)}`;
           console.warn(`[knowledge] serverId=${serverId} item=${item.id} error=${lastError}`);
           // Never let one bad item stall the queue: stamp it as checked so it
           // waits for the next re-check instead of coming straight back.
