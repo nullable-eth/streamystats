@@ -59,6 +59,7 @@ export default async function DashboardPage({
       type,
       search,
       libraryIds,
+      withSynopses: isAdmin,
     }),
   ]);
 
@@ -86,6 +87,7 @@ export default async function DashboardPage({
           server={server}
           data={items}
           libraries={libraries}
+          isAdmin={isAdmin}
         />
       </Suspense>
       {/* <UnwatchedTable server={server} data={unwatchedItems} /> */}

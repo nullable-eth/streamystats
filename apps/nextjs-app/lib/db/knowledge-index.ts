@@ -9,7 +9,16 @@ import {
   knowledgeModels,
   servers,
 } from "@streamystats/database";
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import {
+  and,
+  type Column,
+  desc,
+  eq,
+  inArray,
+  isNull,
+  type SQL,
+  sql,
+} from "drizzle-orm";
 import { type MissingSummary, summarizeMissing } from "@/lib/knowledge-missing";
 import { defaultParallel } from "@/lib/knowledge-writers";
 import { listKnowledgeModels } from "./knowledge-models";
@@ -246,6 +255,63 @@ export interface SynopsisQueue {
   waiting: number;
   /** No readable subtitles: none can be written. */
   noSubtitles: number;
+}
+
+/** How far a movie's or episode's synopsis is, or a series' episodes'. */
+export type SynopsisState = {
+  /** Movies and episodes counted: 1, or a series' episodes. */
+  total: number;
+  /** With a synopsis; `best` of them with a Wikipedia plot too. */
+  written: number;
+  best: number;
+  /** Asked to be written next. */
+  next: number;
+  /** Subtitles read, the synopsis waiting in the queue. */
+  waiting: number;
+};
+
+/** A movie, episode or series (by the id given), and its episodes in the library. */
+const itemAndEpisodes = (x: SQL, id: SQL | Column) => sql`
+  ${x}.deleted_at IS NULL
+  AND ((${x}.id = ${id} AND ${x}.type IN ('Movie', 'Episode'))
+    OR (${x}.series_id = ${id} AND ${x}.type = 'Episode'))`;
+
+/**
+ * How far an item's synopsis is, to sort by: 0 waiting, 1 next in the queue,
+ * 2 written, 3 written with a Wikipedia plot; a series', its episodes'
+ * average. Null without subtitles, when none can be written.
+ */
+export const synopsisProgress = (id: SQL | Column) => sql`(
+  SELECT avg(CASE WHEN s.status = 'ready' AND r.status = 'ready' THEN 3 WHEN s.status = 'ready' THEN 2
+                  WHEN s.status = 'wanted' THEN 1 WHEN t.status = 'ready' THEN 0 END)
+  FROM ${items} x
+  LEFT JOIN ${itemTexts} t ON t.item_id = x.id AND t.kind = 'transcript'
+  LEFT JOIN ${itemTexts} s ON s.item_id = x.id AND s.kind = 'scenes'
+  LEFT JOIN ${itemTexts} r ON r.item_id = x.id AND r.kind = 'reference'
+  WHERE ${itemAndEpisodes(sql`x`, id)})`;
+
+/** Where each item's synopsis stands (a series': its episodes'), by id. */
+export async function getSynopsisStates(
+  itemIds: string[],
+): Promise<Map<string, SynopsisState>> {
+  if (itemIds.length === 0) return new Map();
+  const rows = await db.execute<SynopsisState & { id: string }>(sql`
+    SELECT o.id,
+      count(*)::int AS total,
+      count(*) FILTER (WHERE s.status = 'ready')::int AS written,
+      count(*) FILTER (WHERE s.status = 'ready' AND r.status = 'ready')::int AS best,
+      count(*) FILTER (WHERE s.status = 'wanted')::int AS next,
+      count(*) FILTER (WHERE t.status = 'ready'
+        AND s.status IS DISTINCT FROM 'ready' AND s.status IS DISTINCT FROM 'wanted')::int AS waiting
+    FROM ${items} o
+    JOIN ${items} x ON ${itemAndEpisodes(sql`x`, sql`o.id`)}
+    LEFT JOIN ${itemTexts} t ON t.item_id = x.id AND t.kind = 'transcript'
+    LEFT JOIN ${itemTexts} s ON s.item_id = x.id AND s.kind = 'scenes'
+    LEFT JOIN ${itemTexts} r ON r.item_id = x.id AND r.kind = 'reference'
+    WHERE o.id IN ${itemIds}
+    GROUP BY o.id
+  `);
+  return new Map(Array.from(rows, ({ id, ...state }) => [id, state]));
 }
 
 /** The movie or episode itself, or a series' episodes, in the library. */

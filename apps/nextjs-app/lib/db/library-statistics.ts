@@ -24,6 +24,11 @@ import {
   sum,
 } from "drizzle-orm";
 import { getStatisticsExclusions } from "./exclusions";
+import {
+  getSynopsisStates,
+  type SynopsisState,
+  synopsisProgress,
+} from "./knowledge-index";
 
 // Type definitions for library statistics
 export interface AggregatedLibraryStatistics {
@@ -46,6 +51,8 @@ export interface ItemWatchStats {
   unique_viewers: number;
   last_watched?: string | null;
   first_watched?: string | null;
+  /** Where its synopsis stands; asked for by admins. */
+  synopsis?: SynopsisState;
 }
 
 export interface ItemWatchStatsResponse {
@@ -176,6 +183,7 @@ export const getLibraryItemsWithStats = async ({
   type,
   search,
   libraryIds,
+  withSynopses,
 }: {
   serverId: number;
   userId?: string;
@@ -185,6 +193,8 @@ export const getLibraryItemsWithStats = async ({
   type?: "Movie" | "Episode" | "Series";
   search?: string;
   libraryIds?: string;
+  /** Include where each item's synopsis stands. */
+  withSynopses?: boolean;
 }): Promise<ItemWatchStatsResponse> => {
   // Get exclusion settings
   const { itemLibraryExclusion } = await getStatisticsExclusions(
@@ -271,6 +281,10 @@ export const getLibraryItemsWithStats = async ({
     case "genres":
       orderClause = order(sql`array_to_string(${items.genres}, ', ')`);
       break;
+    case "synopsis":
+      // Least done first (ascending); those without subtitles last either way.
+      orderClause = sql`${synopsisProgress(items.id)} ${sortOrder === "desc" ? sql`DESC` : sql`ASC`} NULLS LAST`;
+      break;
     default:
       orderClause = desc(sql`COALESCE(SUM(${sessions.playDuration}), 0)`);
   }
@@ -313,6 +327,11 @@ export const getLibraryItemsWithStats = async ({
       last_watched: row.lastWatched,
     }),
   );
+
+  if (withSynopses) {
+    const states = await getSynopsisStates(data.map((d) => d.item_id));
+    for (const d of data) d.synopsis = states.get(d.item_id);
+  }
 
   return {
     data,
