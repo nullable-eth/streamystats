@@ -463,8 +463,9 @@ async function indexSynopsis(
     await db.update(items).set({ processed: false }).where(eq(items.id, item.id));
   } catch (error) {
     // Back off a day rather than retrying failing models every run; notes
-    // already there stay until replaced.
-    await saveText(serverId, item.id, "scenes", { status: previous?.status === "ready" ? "ready" : "missing" });
+    // already there stay until replaced, and keep when they were written.
+    if (previous) await db.update(itemTexts).set({ checkedAt: new Date() }).where(eq(itemTexts.id, previous.id));
+    else await saveText(serverId, item.id, "scenes", { status: "missing" });
     throw error;
   }
 
