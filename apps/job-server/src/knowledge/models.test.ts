@@ -9,7 +9,7 @@ mock.module("./synopsis", () => ({
   ...synopsis,
   writePlot: async (chat: { model: string }) => answers.get(chat.model)?.() ?? { scenes: [], synopsis: "ok" },
 }));
-const { isUsable, messageOf, restFor, rewritesOf, writePlotWithModels, writersFor } = await import("./models");
+const { inSlot, isUsable, messageOf, parallelOf, restFor, rewritesOf, writePlotWithModels, writersFor } = await import("./models");
 const { durationMs, waitAsked } = await import("./retry");
 
 const now = new Date("2026-10-15T12:00:00Z");
@@ -21,6 +21,7 @@ const model = (name: string, extra = {}) => ({
   model: name,
   unavailableUntil: null as Date | null,
   rewriteFrom: [] as string[],
+  parallelRequests: null as number | null,
   ...extra,
 });
 const httpError = (status: number, data: unknown, headers = {}) =>
@@ -211,5 +212,40 @@ describe("who writes a title's notes", () => {
     expect(names(writersFor(notes(label("qwen"), "t0"), "t1", usable))).toEqual(["qwen"]);
     expect(writersFor(notes(label("sonnet"), "t0:p1"), "t1", usable)).toEqual([]);
     expect(names(writersFor(notes(null, "t0"), "t1", usable))).toEqual(["qwen", "gemma", "claude"]);
+  });
+});
+
+describe("requests at once", () => {
+  test("as set, or 4 to a hosted API and 1 to others", () => {
+    expect(parallelOf(model("claude", { provider: "anthropic" }))).toBe(4);
+    expect(parallelOf(model("gemini", { provider: "gemini" }))).toBe(4);
+    expect(parallelOf(model("qwen"))).toBe(1);
+    expect(parallelOf(model("qwen", { parallelRequests: 3 }))).toBe(3);
+  });
+
+  test("a model is sent no more at once than it takes", async () => {
+    const qwen = model("qwen-slots", { parallelRequests: 2 });
+    let running = 0;
+    let most = 0;
+    const releases: (() => void)[] = [];
+    const work = (waited: boolean) => {
+      running++;
+      most = Math.max(most, running);
+      return new Promise<boolean>((done) =>
+        releases.push(() => {
+          running--;
+          done(waited);
+        })
+      );
+    };
+    const titles = [inSlot(qwen, work), inSlot(qwen, work), inSlot(qwen, work)];
+    await Bun.sleep(0);
+    expect(releases).toHaveLength(2);
+    releases.shift()?.();
+    await Bun.sleep(0);
+    expect(releases).toHaveLength(2);
+    for (const release of releases.splice(0)) release();
+    expect(await Promise.all(titles)).toEqual([false, false, true]);
+    expect(most).toBe(2);
   });
 });

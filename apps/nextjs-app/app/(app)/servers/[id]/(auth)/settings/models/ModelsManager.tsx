@@ -41,7 +41,13 @@ import {
   setKnowledgeModelEnabledAction,
   setKnowledgeModelRewriteAction,
 } from "./knowledge-model-actions";
-import { type Editing, ModelDialog, type ModelUse, USES } from "./ModelDialog";
+import {
+  defaultParallel,
+  type Editing,
+  ModelDialog,
+  type ModelUse,
+  USES,
+} from "./ModelDialog";
 import { detectPreset, type SavedModel } from "./model-fields";
 import { RewriteDialog } from "./RewriteDialog";
 
@@ -299,6 +305,7 @@ export function ModelsManager({
                           saved: m,
                           hasSavedKey: m.hasApiKey,
                           name: m.name,
+                          parallelRequests: m.parallelRequests,
                         })
                       }
                     >
@@ -343,7 +350,8 @@ export function ModelsManager({
                 <p className="text-sm text-muted-foreground">
                   {m.name && `${nameOf("knowledge", m)} · `}
                   {m.titles.toLocaleString()}{" "}
-                  {m.titles === 1 ? "title" : "titles"} written
+                  {m.titles === 1 ? "title" : "titles"} written ·{" "}
+                  {m.parallelRequests ?? defaultParallel(m.provider)} at once
                 </p>
                 {m.rewriteFrom.map((from) => (
                   <p key={from} className="flex items-center gap-1 text-sm">

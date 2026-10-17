@@ -23,7 +23,7 @@ const refresh = (serverId: number) =>
 
 export async function saveKnowledgeModelAction(
   serverId: number,
-  input: ChatAIConfig & { id?: number },
+  input: ChatAIConfig & { id?: number; parallelRequests?: number | null },
 ) {
   await requireAdmin(serverId);
   await saveKnowledgeModel(serverId, input);

@@ -17,12 +17,17 @@ export interface KnowledgeModel extends ChatSettings {
   unavailableUntil: Date | null;
   /** Writers whose notes it replaces, as asked in the settings. */
   rewriteFrom: string[];
+  /** Requests it is sent at once; null: its provider's default (see parallelOf). */
+  parallelRequests: number | null;
 }
 
 /** How long a rejected key, unknown model or empty account rests. */
 const REST_MS = 60 * 60_000;
 /** How long a busy or unreachable model rests, and a rate-limited one that does not say. */
 const SHORT_REST_MS = 15 * 60_000;
+
+/** Requests a hosted API is sent at once unless set; a local server is sent one. */
+const HOSTED_PARALLEL = 4;
 
 /** Who wrote a title's notes, as kept with them. */
 export const modelLabel = (m: ChatSettings) => `${m.provider}:${m.model}`;
@@ -41,7 +46,7 @@ export async function getKnowledgeModels(serverId: number): Promise<KnowledgeMod
     .where(eq(servers.id, serverId))
     .limit(1);
   if (!s?.provider || !s.model) return [];
-  return [{ ...s, provider: s.provider, model: s.model, id: null, unavailableUntil: null, rewriteFrom: [] }];
+  return [{ ...s, provider: s.provider, model: s.model, id: null, unavailableUntil: null, rewriteFrom: [], parallelRequests: null }];
 }
 
 /** Writers whose notes the models replace, never their own. */
@@ -67,6 +72,32 @@ export function writersFor(
   if (replacing.length > 0) return replacing;
   if (previous.source?.split(":")[0] === transcriptHash) return [];
   return by === null ? models : models.filter((m) => modelLabel(m) === by);
+}
+
+/** Requests a model is sent at once: as set, or by default 4 to Anthropic and Gemini, 1 to others. */
+export const parallelOf = (m: KnowledgeModel) =>
+  m.parallelRequests ?? (["anthropic", "gemini"].includes(m.provider) ? HOSTED_PARALLEL : 1);
+
+/** Each model's requests in flight (by id; the chat model by its label) and titles waiting for one. */
+const slots = new Map<number | string, { running: number; waiting: (() => void)[] }>();
+
+/** `work` once the model has a request free; told whether it had to wait. */
+export async function inSlot<T>(model: KnowledgeModel, work: (waited: boolean) => Promise<T>): Promise<T> {
+  const key = model.id ?? modelLabel(model);
+  const slot = slots.get(key) ?? { running: 0, waiting: [] };
+  slots.set(key, slot);
+  let waited = false;
+  while (slot.running >= parallelOf(model)) {
+    waited = true;
+    await new Promise<void>((wake) => slot.waiting.push(wake));
+  }
+  slot.running++;
+  try {
+    return await work(waited);
+  } finally {
+    slot.running--;
+    slot.waiting.shift()?.();
+  }
 }
 
 /** Not resting after a failure of its own. */
@@ -121,8 +152,9 @@ export function messageOf(body: string): string {
 
 /**
  * A title's scene notes and synopsis from the first usable model that writes
- * them. A model that fails moves the title on to the next; one that failed on
- * its own account (see restFor) also rests, so the titles after it skip it.
+ * them, once it has a request free (see parallelOf). A model that fails moves
+ * the title on to the next; one that failed on its own account (see restFor)
+ * also rests, so the titles after it skip it.
  */
 export async function writePlotWithModels(
   models: KnowledgeModel[],
@@ -132,24 +164,41 @@ export async function writePlotWithModels(
   let lastError: unknown = new Error("No knowledge index model is usable: all are resting");
   for (const model of models) {
     if (!isUsable(model)) continue;
-    try {
-      return { ...(await writePlot(model, info, parts)), model };
-    } catch (error) {
-      lastError = error;
-      const failure = await failureOf(error);
-      const rest = restFor(failure);
-      if (rest === null) continue;
-      model.unavailableUntil = new Date(Date.now() + rest);
-      if (model.id !== null) {
-        await db
-          .update(knowledgeModels)
-          .set({
-            unavailableUntil: model.unavailableUntil,
-            lastError: `${failure.status ?? "no answer"}: ${messageOf(failure.body)}`.slice(0, 500),
-          })
+    const written = await inSlot(model, async (waited) => {
+      // Another title's request may have rested it meanwhile.
+      if (waited && model.id !== null) {
+        const [now] = await db
+          .select({ until: knowledgeModels.unavailableUntil })
+          .from(knowledgeModels)
           .where(eq(knowledgeModels.id, model.id));
+        model.unavailableUntil = now?.until ?? null;
+        if (!isUsable(model)) return null;
       }
-    }
+      try {
+        return { ...(await writePlot(model, info, parts)), model };
+      } catch (error) {
+        lastError = error;
+        await restAfter(model, error);
+        return null;
+      }
+    });
+    if (written) return written;
   }
   throw lastError;
+}
+
+/** Rest a model after a failure of its own (see restFor); a title's failure leaves it be. */
+async function restAfter(model: KnowledgeModel, error: unknown) {
+  const failure = await failureOf(error);
+  const rest = restFor(failure);
+  if (rest === null) return;
+  model.unavailableUntil = new Date(Date.now() + rest);
+  if (model.id === null) return;
+  await db
+    .update(knowledgeModels)
+    .set({
+      unavailableUntil: model.unavailableUntil,
+      lastError: `${failure.status ?? "no answer"}: ${messageOf(failure.body)}`.slice(0, 500),
+    })
+    .where(eq(knowledgeModels.id, model.id));
 }

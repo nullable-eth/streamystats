@@ -4051,6 +4051,23 @@ export declare const knowledgeModels: import("drizzle-orm/pg-core").PgTableWithC
             }, {}, {}, import("drizzle-orm").ColumnBuilderExtraConfig>;
             size: undefined;
         }>;
+        parallelRequests: import("drizzle-orm/pg-core").PgColumn<{
+            name: "parallel_requests";
+            tableName: "knowledge_models";
+            dataType: "number";
+            columnType: "PgInteger";
+            data: number;
+            driverParam: string | number;
+            notNull: false;
+            hasDefault: false;
+            isPrimaryKey: false;
+            isAutoincrement: false;
+            hasRuntimeDefault: false;
+            enumValues: undefined;
+            baseColumn: never;
+            identity: undefined;
+            generated: undefined;
+        }, {}, {}>;
         unavailableUntil: import("drizzle-orm/pg-core").PgColumn<{
             name: "unavailable_until";
             tableName: "knowledge_models";
