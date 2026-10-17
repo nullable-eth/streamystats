@@ -22,7 +22,7 @@ import {
   findItemsByCharacter,
   findItemsByPerson,
 } from "@/lib/db/item-people-search";
-import { titlesMentioning } from "@/lib/db/mentions";
+import { closeSpellings, titlesMentioning } from "@/lib/db/mentions";
 import { findMoments, locateMoment, momentScope } from "@/lib/db/moments";
 import { searchByPlot } from "@/lib/db/plot-search";
 import { getRatedItems } from "@/lib/db/rated-items";
@@ -184,6 +184,21 @@ export function createChatTools(
   userId: string,
   isAdmin: boolean = false,
 ) {
+  /** For a search that found nothing: names in the library spelled like it. */
+  const misspelled = async (phrase: string) => {
+    const close = await closeSpellings({
+      serverId,
+      userId,
+      phrase: phrase.replace(/"|\bOR\b/g, " ").trim(),
+    });
+    return close.length === 0
+      ? {}
+      : {
+          closeSpellings: close,
+          hint: "It may be misspelled: these names in the library are spelled like it. Search again with the one the user most likely meant.",
+        };
+  };
+
   return {
     getUserMostWatchedMovies: tool({
       description:
@@ -454,6 +469,7 @@ export function createChatTools(
             results.length > 0
               ? `Found ${results.length} items matching "${query}"`
               : `No items found matching "${query}"`,
+          ...(results.length === 0 ? await misspelled(query) : {}),
         };
       },
     }),
@@ -554,6 +570,7 @@ export function createChatTools(
             results.length > 0
               ? `Found ${results.length} items featuring character "${characterName}"`
               : `No items found featuring character "${characterName}"`,
+          ...(results.length === 0 ? await misspelled(characterName) : {}),
         };
       },
     }),
@@ -1554,6 +1571,7 @@ export function createChatTools(
               : total > matched.length
                 ? `${total} titles mention ${phrase}; showing the first ${matched.length}. Raise the limit to see the rest.`
                 : `${total} titles mention ${phrase}.`,
+          ...(total === 0 ? await misspelled(phrase) : {}),
         };
       },
     }),
