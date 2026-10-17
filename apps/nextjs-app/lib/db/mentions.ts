@@ -1,6 +1,12 @@
 import "server-only";
 
-import { db, items, itemTextChunks } from "@streamystats/database";
+import {
+  db,
+  itemPeople,
+  items,
+  itemTextChunks,
+  people,
+} from "@streamystats/database";
 import { and, eq, inArray, isNull, type SQL, sql } from "drizzle-orm";
 import { getStatisticsExclusions } from "./exclusions";
 
@@ -135,4 +141,71 @@ export async function titlesMentioning({
       evidence: evidence.get(r.id) ?? [],
     })),
   };
+}
+
+/** A name in the library spelled like a search that found nothing. */
+export interface CloseSpelling {
+  name: string;
+  kind: "title" | "character" | "person";
+  /** Where it is: an episode's series and number, or a series or movie a character is in. */
+  of?: string;
+}
+
+/**
+ * Titles, characters and people whose names are spelled like `phrase`, closest
+ * first (pg_trgm similarity): for a search that found nothing because of a
+ * misspelling, "Jeremy Beremy" for the episode "Jeremy Bearimy". Only what the
+ * viewer may see.
+ */
+export async function closeSpellings({
+  serverId,
+  userId,
+  phrase,
+  limit = 8,
+}: {
+  serverId: number;
+  userId?: string;
+  phrase: string;
+  limit?: number;
+}): Promise<CloseSpelling[]> {
+  const { itemLibraryExclusion } = await getStatisticsExclusions(
+    serverId,
+    userId,
+  );
+  const visible = and(
+    eq(items.serverId, serverId),
+    isNull(items.deletedAt),
+    itemLibraryExclusion,
+  );
+  const rows = await db.execute<{
+    name: string;
+    kind: CloseSpelling["kind"];
+    of: string | null;
+  }>(sql`
+    WITH names AS (
+      SELECT ${items.name} AS name, 'title' AS kind,
+        CASE WHEN ${items.type} = 'Episode' THEN format('%s S%sE%s', ${items.seriesName},
+          lpad(${items.parentIndexNumber}::text, 2, '0'), lpad(${items.indexNumber}::text, 2, '0')) END AS of
+      FROM ${items}
+      WHERE ${visible} AND ${items.name} % ${phrase}
+      UNION
+      SELECT ${itemPeople.role}, 'character', min(coalesce(${items.seriesName}, ${items.name}))
+      FROM ${itemPeople} JOIN ${items} ON ${items.id} = ${itemPeople.itemId}
+      WHERE ${visible} AND ${itemPeople.role} % ${phrase}
+      GROUP BY ${itemPeople.role}
+      UNION
+      SELECT ${people.name}, 'person', NULL
+      FROM ${people}
+      JOIN ${itemPeople} ON ${itemPeople.personId} = ${people.id} AND ${itemPeople.serverId} = ${people.serverId}
+      JOIN ${items} ON ${items.id} = ${itemPeople.itemId}
+      WHERE ${visible} AND ${people.name} % ${phrase})
+    SELECT name, kind, of FROM names
+    ORDER BY similarity(name, ${phrase}) DESC, name
+    LIMIT ${limit}
+  `);
+  return Array.from(rows, (r) => ({
+    name: r.name,
+    kind: r.kind,
+    ...(r.of ? { of: r.of } : {}),
+  }));
 }
