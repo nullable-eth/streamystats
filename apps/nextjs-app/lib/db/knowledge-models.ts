@@ -1,14 +1,20 @@
 import "server-only";
 
 import { db, itemTexts, knowledgeModels } from "@streamystats/database";
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNotNull, sql } from "drizzle-orm";
+import {
+  rewriteLoops,
+  withoutLoops,
+  writerLabel,
+} from "@/lib/knowledge-rewrites";
 import type { ChatAIConfig, ChatProvider } from "./server";
 
 /**
- * The models the knowledge index writes scene notes and synopses with, tried
- * in order (see the job's knowledge/models.ts): the first not resting after a
- * failure of its own gets the title, the next one gets it if that fails.
- * Secrets stay on the server.
+ * The models the knowledge index writes scene notes and synopses with (see
+ * the job's knowledge/models.ts). A title without notes goes to the first not
+ * resting after a failure of its own, and to the next if that fails; notes
+ * already written are replaced only by a model asked to replace their
+ * writer's. Secrets stay on the server.
  */
 export interface KnowledgeModelPublic {
   id: number;
@@ -25,9 +31,33 @@ export interface KnowledgeModelPublic {
    * copy of the same model shows the same count.
    */
   titles: number;
+  /** Writers whose notes it replaces. */
+  rewriteFrom: string[];
   /** ISO time it rests until after a failure of its own, if it is resting. */
   restingUntil: string | null;
   lastError: string | null;
+}
+
+/** Who wrote the server's current notes, and for how many titles, most first. */
+export async function listNoteWriters(
+  serverId: number,
+): Promise<{ label: string; titles: number }[]> {
+  const rows = await db
+    .select({ label: itemTexts.writtenBy, titles: sql<number>`count(*)::int` })
+    .from(itemTexts)
+    .where(
+      and(
+        eq(itemTexts.serverId, serverId),
+        eq(itemTexts.kind, "scenes"),
+        eq(itemTexts.status, "ready"),
+        isNotNull(itemTexts.writtenBy),
+      ),
+    )
+    .groupBy(itemTexts.writtenBy)
+    .orderBy(desc(sql`count(*)`));
+  return rows.flatMap((r) =>
+    r.label ? [{ label: r.label, titles: r.titles }] : [],
+  );
 }
 
 export async function listKnowledgeModels(
@@ -38,18 +68,9 @@ export async function listKnowledgeModels(
     .from(knowledgeModels)
     .where(eq(knowledgeModels.serverId, serverId))
     .orderBy(asc(knowledgeModels.position), asc(knowledgeModels.id));
-  const written = await db
-    .select({ by: itemTexts.writtenBy, n: sql<number>`count(*)::int` })
-    .from(itemTexts)
-    .where(
-      and(
-        eq(itemTexts.serverId, serverId),
-        eq(itemTexts.kind, "scenes"),
-        eq(itemTexts.status, "ready"),
-      ),
-    )
-    .groupBy(itemTexts.writtenBy);
-  const titlesBy = new Map(written.map((w) => [w.by, w.n]));
+  const titlesBy = new Map(
+    (await listNoteWriters(serverId)).map((w) => [w.label, w.titles]),
+  );
   const now = new Date();
   return rows.map((r) => ({
     id: r.id,
@@ -59,7 +80,8 @@ export async function listKnowledgeModels(
     baseUrl: r.baseUrl,
     model: r.model,
     hasApiKey: Boolean(r.apiKey),
-    titles: titlesBy.get(`${r.provider}:${r.model}`) ?? 0,
+    titles: titlesBy.get(writerLabel(r)) ?? 0,
+    rewriteFrom: r.rewriteFrom,
     restingUntil:
       r.unavailableUntil && r.unavailableUntil > now
         ? r.unavailableUntil.toISOString()
@@ -92,6 +114,8 @@ export async function getKnowledgeModelConfig(
 /**
  * Add a model at the end of the list, or change one (an empty key keeps the
  * saved one). A changed model is no longer resting: the fix may be the change.
+ * One changed to another model no longer replaces anyone's notes: that was
+ * asked of the old one.
  */
 export async function saveKnowledgeModel(
   serverId: number,
@@ -105,10 +129,24 @@ export async function saveKnowledgeModel(
     ...(input.apiKey?.trim() ? { apiKey: input.apiKey } : {}),
   };
   if (input.id !== undefined) {
+    const [saved] = await db
+      .select({
+        provider: knowledgeModels.provider,
+        model: knowledgeModels.model,
+      })
+      .from(knowledgeModels)
+      .where(
+        and(
+          eq(knowledgeModels.serverId, serverId),
+          eq(knowledgeModels.id, input.id),
+        ),
+      );
+    const another = saved && writerLabel(saved) !== writerLabel(input);
     await db
       .update(knowledgeModels)
       .set({
         ...values,
+        ...(another ? { rewriteFrom: [] } : {}),
         unavailableUntil: null,
         lastError: null,
         updatedAt: new Date(),
@@ -158,6 +196,35 @@ export async function setKnowledgeModelEnabled(
     );
 }
 
+/**
+ * Have a model replace a writer's notes, as it gets to them and any that
+ * writer adds later, or stop. Refused when it would replace its own,
+ * directly or round a loop.
+ */
+export async function setKnowledgeModelRewrite(
+  serverId: number,
+  id: number,
+  from: string,
+  on: boolean,
+) {
+  await db.transaction(async (tx) => {
+    const rows = await tx
+      .select()
+      .from(knowledgeModels)
+      .where(eq(knowledgeModels.serverId, serverId));
+    const model = rows.find((r) => r.id === id);
+    if (!model) return;
+    const rest = model.rewriteFrom.filter((l) => l !== from);
+    if (on && rewriteLoops(rows, from, writerLabel(model))) {
+      throw new Error("A model cannot replace its own notes, even in a loop");
+    }
+    await tx
+      .update(knowledgeModels)
+      .set({ rewriteFrom: on ? [...rest, from] : rest, updatedAt: new Date() })
+      .where(eq(knowledgeModels.id, id));
+  });
+}
+
 /** Swap a model with its neighbour above (-1) or below (1). */
 export async function moveKnowledgeModel(
   serverId: number,
@@ -187,19 +254,21 @@ export async function moveKnowledgeModel(
 /** The list as a backup keeps it: no keys, no counts. */
 export async function exportKnowledgeModels(serverId: number) {
   return (await listKnowledgeModels(serverId)).map(
-    ({ name, enabled, provider, baseUrl, model }) => ({
+    ({ name, enabled, provider, baseUrl, model, rewriteFrom }) => ({
       name,
       enabled,
       provider,
       baseUrl,
       model,
+      rewriteFrom,
     }),
   );
 }
 
 /**
  * Restore a backup's list in place of the server's, keys to be entered again
- * (an older backup's prices and budgets are ignored).
+ * (an older backup's prices and budgets are ignored), less any rewrites that
+ * would loop.
  */
 export async function replaceKnowledgeModels(
   serverId: number,
@@ -209,6 +278,7 @@ export async function replaceKnowledgeModels(
     provider: string;
     baseUrl: string | null;
     model: string;
+    rewriteFrom?: string[];
   }[],
 ) {
   await db.transaction(async (tx) => {
@@ -217,7 +287,7 @@ export async function replaceKnowledgeModels(
       .where(eq(knowledgeModels.serverId, serverId));
     if (models.length === 0) return;
     await tx.insert(knowledgeModels).values(
-      models.map((m, position) => ({
+      withoutLoops(models).map((m, position) => ({
         serverId,
         position,
         name: m.name ?? null,
@@ -225,6 +295,7 @@ export async function replaceKnowledgeModels(
         provider: m.provider,
         baseUrl: m.baseUrl,
         model: m.model,
+        rewriteFrom: m.rewriteFrom,
       })),
     );
   });

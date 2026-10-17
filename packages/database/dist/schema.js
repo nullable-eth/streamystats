@@ -447,6 +447,8 @@ exports.knowledgeModels = (0, pg_core_1.pgTable)("knowledge_models", {
     baseUrl: (0, pg_core_1.text)("base_url"),
     apiKey: (0, pg_core_1.text)("api_key"),
     model: (0, pg_core_1.text)("model").notNull(),
+    // Writers ("provider:model") whose notes it replaces, as asked in the settings.
+    rewriteFrom: (0, pg_core_1.text)("rewrite_from").array().notNull().default([]),
     // Out of credit, rate limited, or down: not tried again until then.
     unavailableUntil: (0, pg_core_1.timestamp)("unavailable_until", { withTimezone: true }),
     lastError: (0, pg_core_1.text)("last_error"),
