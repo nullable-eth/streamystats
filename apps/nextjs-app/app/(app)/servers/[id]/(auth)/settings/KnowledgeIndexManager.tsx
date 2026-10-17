@@ -292,7 +292,8 @@ export function KnowledgeIndexManager({
               Without subtitles only the title and description are searchable.
               They are checked again daily, so subtitles added later (by a
               subtitle downloader, for example) are picked up. Image-based and
-              forced-only subtitles cannot be read.
+              forced-only subtitles (do not contain full transcript) cannot be
+              used.
             </p>
             <MissingList missing={status.missing} />
           </section>
