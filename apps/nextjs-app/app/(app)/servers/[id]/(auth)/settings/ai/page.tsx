@@ -1,6 +1,7 @@
 "use server";
 
 import { redirect } from "next/navigation";
+import { AutoRefresh } from "@/components/AutoRefresh";
 import { Container } from "@/components/Container";
 import { getKnowledgeIndexStatus } from "@/lib/db/knowledge-index";
 import { getServer } from "@/lib/db/server";
@@ -21,6 +22,7 @@ export default async function AISettings(props: {
 
   return (
     <Container className="flex flex-col">
+      <AutoRefresh />
       <h1 className="text-3xl font-bold mb-8">AI Recommendations</h1>
 
       <div className="space-y-8">

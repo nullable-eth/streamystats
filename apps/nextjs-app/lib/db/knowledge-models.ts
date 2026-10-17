@@ -62,6 +62,25 @@ export async function listNoteWriters(
   );
 }
 
+/** The synopsis written last, and by whom: whether synopses are coming in. */
+export async function latestSynopsis(
+  serverId: number,
+): Promise<{ at: string; by: string | null } | null> {
+  const [row] = await db
+    .select({ at: itemTexts.updatedAt, by: itemTexts.writtenBy })
+    .from(itemTexts)
+    .where(
+      and(
+        eq(itemTexts.serverId, serverId),
+        eq(itemTexts.kind, "scenes"),
+        eq(itemTexts.status, "ready"),
+      ),
+    )
+    .orderBy(desc(itemTexts.updatedAt))
+    .limit(1);
+  return row ? { at: row.at.toISOString(), by: row.by } : null;
+}
+
 export async function listKnowledgeModels(
   serverId: number,
 ): Promise<KnowledgeModelPublic[]> {

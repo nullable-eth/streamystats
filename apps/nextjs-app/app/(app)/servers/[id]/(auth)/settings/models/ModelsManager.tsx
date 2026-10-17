@@ -1,5 +1,6 @@
 "use client";
 
+import { formatDistanceToNow } from "date-fns";
 import {
   ArrowDown,
   ArrowUp,
@@ -139,6 +140,7 @@ export function ModelsManager({
   embedding,
   knowledgeModels,
   writers,
+  latest,
 }: {
   serverId: number;
   chat: Configured | null;
@@ -146,6 +148,8 @@ export function ModelsManager({
   knowledgeModels: KnowledgeModelPublic[];
   /** Who wrote the current synopses, and how many each. */
   writers: { label: string; titles: number }[];
+  /** The synopsis written last. */
+  latest: { at: string; by: string | null } | null;
 }) {
   const router = useRouter();
   const [editing, setEditing] = useState<Editing | null>(null);
@@ -385,6 +389,16 @@ export function ModelsManager({
               </Row>
             ))}
           </ol>
+          {latest && (
+            <p
+              className="text-sm text-muted-foreground"
+              suppressHydrationWarning
+            >
+              Latest synopsis written{" "}
+              {formatDistanceToNow(new Date(latest.at), { addSuffix: true })}
+              {latest.by && ` by ${writerName(latest.by)}`}.
+            </p>
+          )}
           <details className="text-sm text-muted-foreground">
             <summary className="cursor-pointer select-none">
               Which models work
