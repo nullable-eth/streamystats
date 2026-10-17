@@ -2,7 +2,10 @@
 
 import { redirect } from "next/navigation";
 import { Container } from "@/components/Container";
-import { listKnowledgeModels } from "@/lib/db/knowledge-models";
+import {
+  listKnowledgeModels,
+  listNoteWriters,
+} from "@/lib/db/knowledge-models";
 import { getServer } from "@/lib/db/server";
 import { ModelsManager } from "./ModelsManager";
 
@@ -46,6 +49,7 @@ export default async function AIModelsSettings(props: {
             : null
         }
         knowledgeModels={await listKnowledgeModels(server.id)}
+        writers={await listNoteWriters(server.id)}
       />
     </Container>
   );

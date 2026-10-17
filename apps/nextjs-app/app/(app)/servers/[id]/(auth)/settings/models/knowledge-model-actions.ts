@@ -7,6 +7,7 @@ import {
   removeKnowledgeModel,
   saveKnowledgeModel,
   setKnowledgeModelEnabled,
+  setKnowledgeModelRewrite,
 } from "@/lib/db/knowledge-models";
 import { type ChatAIConfig, testChatConnection } from "@/lib/db/server";
 import { isUserAdmin } from "@/lib/db/users";
@@ -42,6 +43,17 @@ export async function setKnowledgeModelEnabledAction(
 ) {
   await requireAdmin(serverId);
   await setKnowledgeModelEnabled(serverId, id, enabled);
+  refresh(serverId);
+}
+
+export async function setKnowledgeModelRewriteAction(
+  serverId: number,
+  id: number,
+  from: string,
+  on: boolean,
+) {
+  await requireAdmin(serverId);
+  await setKnowledgeModelRewrite(serverId, id, from, on);
   refresh(serverId);
 }
 

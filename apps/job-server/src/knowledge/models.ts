@@ -6,14 +6,17 @@ import { type ChatSettings, type Scene, type TitleInfo, writePlot } from "./syno
 
 /**
  * The models the knowledge index writes with, in the order the server lists
- * them: a title goes to the first one not resting after a failure of its own
- * and on to the next if it fails, so several accounts, a free tier or a local
- * model can share the work. With none listed, the AI Chat model writes.
+ * them: a title without notes goes to the first one not resting after a
+ * failure of its own and on to the next if it fails, so several accounts, a
+ * free tier or a local model can share the work. With none listed, the AI
+ * Chat model writes.
  */
 export interface KnowledgeModel extends ChatSettings {
   /** null: the AI Chat model, standing in when none is listed. */
   id: number | null;
   unavailableUntil: Date | null;
+  /** Writers whose notes it replaces, as asked in the settings. */
+  rewriteFrom: string[];
 }
 
 /** How long a rejected key, unknown model or empty account rests. */
@@ -38,39 +41,32 @@ export async function getKnowledgeModels(serverId: number): Promise<KnowledgeMod
     .where(eq(servers.id, serverId))
     .limit(1);
   if (!s?.provider || !s.model) return [];
-  return [{ ...s, provider: s.provider, model: s.model, id: null, unavailableUntil: null }];
+  return [{ ...s, provider: s.provider, model: s.model, id: null, unavailableUntil: null, rewriteFrom: [] }];
 }
 
-/**
- * Whose notes the best usable model (at `best`) rewrites: those by a model
- * listed below it (not by another account's copy of the same model listed
- * above it). Whose it keeps even when stale: those by a model listed above it,
- * until that model is back.
- */
-export function ranking(models: ChatSettings[], best: number) {
-  if (best < 0) return { upgradeFrom: [], keepFrom: [] };
-  const own = modelLabel(models[best]);
-  const above = new Set(models.slice(0, best).map(modelLabel));
-  above.delete(own);
-  const below = new Set(models.slice(best + 1).map(modelLabel));
-  return { upgradeFrom: [...below].filter((l) => l !== own && !above.has(l)), keepFrom: [...above] };
-}
+/** Writers whose notes the models replace, never their own. */
+export const rewritesOf = (models: KnowledgeModel[]) =>
+  [...new Set(models.flatMap((m) => m.rewriteFrom.filter((l) => l !== modelLabel(m))))];
 
 /**
- * Whether a title's notes are to be written: none yet, by a model in
- * `upgradeFrom`, or from an older transcript unless a model in `keepFrom`
- * wrote them. Their source is "transcript hash[:plot hash]"; a Wikipedia plot
- * found since they were written does not make them stale.
+ * Which of `models` (the usable ones, in order) write a title's notes. None
+ * yet: any, in order. Notes by a writer a model was asked to replace: those
+ * models. Notes from an older transcript: the model that wrote them, or any
+ * when no writer was recorded. Otherwise none: the list's order never
+ * replaces notes already written. Their source is "transcript hash[:plot
+ * hash]"; a Wikipedia plot found since does not make them stale.
  */
-export function notesDue(
+export function writersFor(
   previous: { status: string; source: string | null; writtenBy: string | null } | undefined,
   transcriptHash: string,
-  { upgradeFrom, keepFrom }: { upgradeFrom: string[]; keepFrom: string[] }
-): boolean {
-  if (previous?.status !== "ready") return true;
-  if (previous.writtenBy && upgradeFrom.includes(previous.writtenBy)) return true;
-  const stale = previous.source?.split(":")[0] !== transcriptHash;
-  return stale && !(previous.writtenBy && keepFrom.includes(previous.writtenBy));
+  models: KnowledgeModel[]
+): KnowledgeModel[] {
+  if (previous?.status !== "ready") return models;
+  const by = previous.writtenBy;
+  const replacing = models.filter((m) => by !== null && by !== modelLabel(m) && m.rewriteFrom.includes(by));
+  if (replacing.length > 0) return replacing;
+  if (previous.source?.split(":")[0] === transcriptHash) return [];
+  return by === null ? models : models.filter((m) => modelLabel(m) === by);
 }
 
 /** Not resting after a failure of its own. */

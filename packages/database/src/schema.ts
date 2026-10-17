@@ -593,6 +593,8 @@ export const knowledgeModels = pgTable(
     baseUrl: text("base_url"),
     apiKey: text("api_key"),
     model: text("model").notNull(),
+    // Writers ("provider:model") whose notes it replaces, as asked in the settings.
+    rewriteFrom: text("rewrite_from").array().notNull().default([]),
     // Out of credit, rate limited, or down: not tried again until then.
     unavailableUntil: timestamp("unavailable_until", { withTimezone: true }),
     lastError: text("last_error"),

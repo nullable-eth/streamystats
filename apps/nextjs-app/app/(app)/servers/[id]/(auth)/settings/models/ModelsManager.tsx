@@ -1,6 +1,14 @@
 "use client";
 
-import { ArrowDown, ArrowUp, Pencil, Plus, Trash2 } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowUp,
+  Pencil,
+  Plus,
+  Replace,
+  Trash2,
+  X,
+} from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { type ReactNode, useState, useTransition } from "react";
@@ -25,14 +33,17 @@ import {
 } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import type { KnowledgeModelPublic } from "@/lib/db/knowledge-models";
+import { writerLabel } from "@/lib/knowledge-rewrites";
 import { clearChatConfigAction } from "../chat/actions";
 import {
   moveKnowledgeModelAction,
   removeKnowledgeModelAction,
   setKnowledgeModelEnabledAction,
+  setKnowledgeModelRewriteAction,
 } from "./knowledge-model-actions";
 import { type Editing, ModelDialog, type ModelUse, USES } from "./ModelDialog";
 import { detectPreset, type SavedModel } from "./model-fields";
+import { RewriteDialog } from "./RewriteDialog";
 
 interface Configured extends SavedModel {
   hasApiKey: boolean;
@@ -124,14 +135,18 @@ export function ModelsManager({
   chat,
   embedding,
   knowledgeModels,
+  writers,
 }: {
   serverId: number;
   chat: Configured | null;
   embedding: (Configured & { dimensions: number | null }) | null;
   knowledgeModels: KnowledgeModelPublic[];
+  /** Who wrote the current notes, and for how many titles. */
+  writers: { label: string; titles: number }[];
 }) {
   const router = useRouter();
   const [editing, setEditing] = useState<Editing | null>(null);
+  const [rewriting, setRewriting] = useState<KnowledgeModelPublic | null>(null);
   const [opened, setOpened] = useState(0);
   const [clearingChat, setClearingChat] = useState(false);
   const [pending, startTransition] = useTransition();
@@ -149,6 +164,15 @@ export function ModelsManager({
         toast.error(failure);
       }
     });
+
+  const listedName = (m: KnowledgeModelPublic) =>
+    m.name || nameOf("knowledge", m);
+  /** A writer as the list shows it, or as its notes record it when not listed. */
+  const writerName = (label: string) => {
+    const listed = knowledgeModels.find((m) => writerLabel(m) === label);
+    return listed ? listedName(listed) : label;
+  };
+  const left = new Map(writers.map((w) => [w.label, w.titles]));
 
   const replaces: ModelUse[] = [
     ...(chat ? (["chat"] as const) : []),
@@ -227,7 +251,7 @@ export function ModelsManager({
 
         <Section
           title="Knowledge index"
-          about="Writes each title's scene notes and synopsis. Tried in order: a title goes to the first model that is not resting, and to the next if it fails. A rate-limited model rests until its provider says the limit resets; one without credit, with a rejected key, or down rests a while. Notes written by a model lower in the list are rewritten by a higher one once it is back, and never the other way round."
+          about="Writes each title's scene notes and synopsis. A title without notes goes to the first model in the list that is not resting, and to the next if it fails. A rate-limited model rests until its provider says the limit resets; one without credit, with a rejected key, or down rests a while. The order never replaces notes already written: they are rewritten when their subtitles change, by the model that wrote them, or by a model you ask to replace that model's notes."
         >
           {knowledgeModels.length === 0 && (
             <p className="text-sm">None listed: the chat model writes.</p>
@@ -237,7 +261,7 @@ export function ModelsManager({
               <Row
                 key={m.id}
                 off={!m.enabled}
-                title={`${i + 1}. ${m.name || nameOf("knowledge", m)}${m.enabled ? "" : " (off)"}`}
+                title={`${i + 1}. ${listedName(m)}${m.enabled ? "" : " (off)"}`}
                 actions={
                   <>
                     <IconButton
@@ -280,6 +304,13 @@ export function ModelsManager({
                     >
                       <Pencil className="h-4 w-4" />
                     </IconButton>
+                    <IconButton
+                      label="Replace another model's notes"
+                      disabled={pending}
+                      onClick={() => setRewriting(m)}
+                    >
+                      <Replace className="h-4 w-4" />
+                    </IconButton>
                     <Switch
                       className="mx-1 self-center"
                       aria-label={m.enabled ? "Turn off" : "Turn on"}
@@ -314,6 +345,32 @@ export function ModelsManager({
                   {m.titles.toLocaleString()}{" "}
                   {m.titles === 1 ? "title" : "titles"} written
                 </p>
+                {m.rewriteFrom.map((from) => (
+                  <p key={from} className="flex items-center gap-1 text-sm">
+                    <span className="break-all">
+                      Replacing {writerName(from)}&apos;s notes:{" "}
+                      {(left.get(from) ?? 0).toLocaleString()} left
+                    </span>
+                    <IconButton
+                      label="Stop replacing them"
+                      disabled={pending}
+                      onClick={() =>
+                        run(
+                          () =>
+                            setKnowledgeModelRewriteAction(
+                              serverId,
+                              m.id,
+                              from,
+                              false,
+                            ),
+                          "Failed to stop",
+                        )
+                      }
+                    >
+                      <X className="h-4 w-4" />
+                    </IconButton>
+                  </p>
+                ))}
                 {m.restingUntil && (
                   <p className="text-sm text-amber-600 dark:text-amber-400 break-all">
                     Resting until {new Date(m.restingUntil).toLocaleString()}
@@ -403,6 +460,30 @@ export function ModelsManager({
           editing={editing}
           replaces={replaces}
           onClose={() => setEditing(null)}
+        />
+      )}
+
+      {rewriting && (
+        <RewriteDialog
+          model={rewriting}
+          name={listedName(rewriting)}
+          models={knowledgeModels}
+          writers={writers}
+          writerName={writerName}
+          onClose={() => setRewriting(null)}
+          onConfirm={(from) => {
+            setRewriting(null);
+            run(
+              () =>
+                setKnowledgeModelRewriteAction(
+                  serverId,
+                  rewriting.id,
+                  from,
+                  true,
+                ),
+              "Failed to ask for the rewrite",
+            );
+          }}
         />
       )}
 

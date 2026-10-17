@@ -9,7 +9,7 @@ mock.module("./synopsis", () => ({
   ...synopsis,
   writePlot: async (chat: { model: string }) => answers.get(chat.model)?.() ?? { scenes: [], synopsis: "ok" },
 }));
-const { isUsable, messageOf, notesDue, ranking, restFor, writePlotWithModels } = await import("./models");
+const { isUsable, messageOf, restFor, rewritesOf, writePlotWithModels, writersFor } = await import("./models");
 const { durationMs, waitAsked } = await import("./retry");
 
 const now = new Date("2026-10-15T12:00:00Z");
@@ -20,6 +20,7 @@ const model = (name: string, extra = {}) => ({
   apiKey: null,
   model: name,
   unavailableUntil: null as Date | null,
+  rewriteFrom: [] as string[],
   ...extra,
 });
 const httpError = (status: number, data: unknown, headers = {}) =>
@@ -173,36 +174,42 @@ describe("messageOf", () => {
   });
 });
 
-describe("whose notes stand", () => {
-  const listed = ["claude", "gemma", "qwen"].map((m) => model(m));
+describe("who writes a title's notes", () => {
   const label = (m: string) => `openai-compatible:${m}`;
-
-  test("the best usable model upgrades those below it and keeps those above it", () => {
-    expect(ranking(listed, 0)).toEqual({ upgradeFrom: [label("gemma"), label("qwen")], keepFrom: [] });
-    expect(ranking(listed, 1)).toEqual({ upgradeFrom: [label("qwen")], keepFrom: [label("claude")] });
-    expect(ranking(listed, -1)).toEqual({ upgradeFrom: [], keepFrom: [] });
-    // Another account's copy of the best model, listed above or below it, is neither.
-    expect(ranking([model("claude"), model("gemma"), model("claude")], 2)).toEqual({ upgradeFrom: [], keepFrom: [label("gemma")] });
-  });
-
+  const claude = model("claude", { rewriteFrom: [label("gemma")] });
+  const [gemma, qwen] = [model("gemma"), model("qwen")];
+  const usable = [qwen, gemma, claude];
   const notes = (writtenBy: string | null, source = "t1") => ({ status: "ready", source, writtenBy });
-  const whenGemmaIsBest = ranking(listed, 1);
+  const names = (models: { model: string }[]) => models.map((m) => m.model);
 
-  test("missing notes and a lesser model's are written", () => {
-    expect(notesDue(undefined, "t1", whenGemmaIsBest)).toBe(true);
-    expect(notesDue({ status: "missing", source: null, writtenBy: null }, "t1", whenGemmaIsBest)).toBe(true);
-    expect(notesDue(notes(label("qwen")), "t1", whenGemmaIsBest)).toBe(true);
+  test("missing notes: any, in the list's order", () => {
+    expect(names(writersFor(undefined, "t1", usable))).toEqual(["qwen", "gemma", "claude"]);
+    expect(names(writersFor({ status: "missing", source: null, writtenBy: null }, "t1", usable))).toEqual(["qwen", "gemma", "claude"]);
   });
 
-  test("a plot found since does not make notes stale", () => {
-    expect(notesDue(notes(label("gemma"), "t1"), "t1", whenGemmaIsBest)).toBe(false);
-    expect(notesDue(notes(label("claude"), "t1:p1"), "t1", whenGemmaIsBest)).toBe(false);
+  test("the list's order never replaces notes already written", () => {
+    expect(writersFor(notes(label("claude")), "t1", usable)).toEqual([]);
+    expect(writersFor(notes(label("qwen")), "t1", [claude, gemma, qwen])).toEqual([]);
+    // A plot found since does not make them stale.
+    expect(writersFor(notes(label("claude"), "t1:p1"), "t1", usable)).toEqual([]);
   });
 
-  test("notes from an older transcript are rewritten, unless a better model wrote them", () => {
-    expect(notesDue(notes(label("gemma"), "t0"), "t1", whenGemmaIsBest)).toBe(true);
-    expect(notesDue(notes(null, "t0:p1"), "t1", whenGemmaIsBest)).toBe(true);
-    expect(notesDue(notes(label("claude"), "t0"), "t1", whenGemmaIsBest)).toBe(false);
-    expect(notesDue(notes(label("claude"), "t0"), "t1", ranking(listed, 0))).toBe(true);
+  test("notes by a writer a model was asked to replace: that model", () => {
+    expect(names(writersFor(notes(label("gemma")), "t1", usable))).toEqual(["claude"]);
+    expect(names(writersFor(notes(label("gemma"), "t0"), "t1", usable))).toEqual(["claude"]);
+    // Resting (not among the usable): left as they are.
+    expect(writersFor(notes(label("gemma")), "t1", [qwen, gemma])).toEqual([]);
+  });
+
+  test("never its own notes, whatever it was asked", () => {
+    const self = model("claude", { rewriteFrom: [label("claude")] });
+    expect(writersFor(notes(label("claude")), "t1", [self])).toEqual([]);
+    expect(rewritesOf([self, claude])).toEqual([label("gemma")]);
+  });
+
+  test("notes from an older transcript: the model that wrote them, or any when none was recorded", () => {
+    expect(names(writersFor(notes(label("qwen"), "t0"), "t1", usable))).toEqual(["qwen"]);
+    expect(writersFor(notes(label("sonnet"), "t0:p1"), "t1", usable)).toEqual([]);
+    expect(names(writersFor(notes(null, "t0"), "t1", usable))).toEqual(["qwen", "gemma", "claude"]);
   });
 });
