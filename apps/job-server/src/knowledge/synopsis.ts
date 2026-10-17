@@ -1,4 +1,5 @@
 import axios from "axios";
+import { MAX_EMBED_CHARS, splitToFit } from "./fit";
 import { withRetries } from "./retry";
 
 /**
@@ -53,25 +54,28 @@ export interface Scene {
 const plainEndpoints = new Set<string>();
 
 /**
- * The synopsis as search windows: the whole of it, for the story as a whole,
- * and each paragraph on its own, so a single plot point (a twist in the last
- * scene) is not drowned out by the rest. Each starts with the title, which a
- * paragraph on its own rarely names.
+ * The synopsis (or a Wikipedia plot) as search windows: the whole of it, for
+ * the story as a whole, and each paragraph on its own, so a single plot point
+ * (a twist in the last scene) is not drowned out by the rest. Each starts with
+ * the title, which a paragraph on its own rarely names, and fits the embedding
+ * model (see MAX_EMBED_CHARS): one too long to embed whole is embedded by
+ * paragraph only, and a paragraph too long in pieces.
  */
 export function synopsisWindows(title: string, synopsis: string): string[] {
   const whole = synopsis.trim();
   if (!whole) return [];
+  const room = MAX_EMBED_CHARS - title.length - 2;
   const paragraphs = whole
     .split(/\n\s*\n/)
-    .map((p) => p.trim())
-    .filter(Boolean);
-  const windows = paragraphs.length > 1 ? [whole, ...paragraphs] : [whole];
+    .flatMap((p) => splitToFit(p, room));
+  const windows = whole.length > room ? paragraphs : paragraphs.length > 1 ? [whole, ...paragraphs] : [whole];
   return windows.map((w) => `${title}: ${w}`);
 }
 
-/** Each scene's notes as a search window of its own, with its times. */
+/** Each scene's notes as a search window of its own, with its times (in pieces, should one not fit). */
 export function sceneWindows(title: string, scenes: Scene[]): Scene[] {
-  return scenes.map((s) => ({ ...s, text: `${title}: ${s.text}` }));
+  const room = MAX_EMBED_CHARS - title.length - 2;
+  return scenes.flatMap((s) => splitToFit(s.text, room).map((text) => ({ ...s, text: `${title}: ${text}` })));
 }
 
 /**

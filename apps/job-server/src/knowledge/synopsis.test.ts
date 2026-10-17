@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { MAX_EMBED_CHARS } from "./fit";
 import {
   characterNames,
   formatScenes,
@@ -26,6 +27,16 @@ describe("synopsisWindows", () => {
   test("one paragraph is one window; nothing is none", () => {
     expect(synopsisWindows("T", " One paragraph. ")).toEqual(["T: One paragraph."]);
     expect(synopsisWindows("T", "  ")).toEqual([]);
+  });
+
+  test("every window fits the embedding model: a plot too long whole goes by paragraph, in pieces", () => {
+    const paragraph = "He runs. ".repeat(600).trim();
+    const windows = synopsisWindows("T", `${paragraph}\n\n${paragraph}`);
+    expect(windows.every((w) => w.length <= MAX_EMBED_CHARS && w.startsWith("T: He runs."))).toBe(true);
+    expect(windows).toHaveLength(2);
+    const long = "He runs. ".repeat(1_000).trim();
+    expect(synopsisWindows("T", long).length).toBe(2);
+    expect(sceneWindows("T", [{ startMs: 0, endMs: 9, text: long }]).every((w) => w.text.length <= MAX_EMBED_CHARS && w.startMs === 0)).toBe(true);
   });
 });
 

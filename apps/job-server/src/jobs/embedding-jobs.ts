@@ -11,6 +11,7 @@ import {
 import axios from "axios";
 import { and, eq, sql } from "drizzle-orm";
 import OpenAI from "openai";
+import { MAX_EMBED_CHARS } from "../knowledge/fit";
 import type { PgBossJob } from "../types/job-status";
 import { sleep } from "../utils/sleep";
 import { TIMEOUT_CONFIG } from "./config";
@@ -35,7 +36,6 @@ interface GenerateItemEmbeddingsJobData {
 }
 
 // Default config values
-const DEFAULT_MAX_TEXT_LENGTH = 8000;
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_RATE_LIMIT_DELAY = 500;
 const DEFAULT_EMBEDDING_DIMENSIONS = 1536;
@@ -300,7 +300,7 @@ async function prepareEpisodeTextForEmbedding(item: Item): Promise<string> {
   if (genres.length) parts.push(`Genres: ${genres.join(", ")}`);
   if (item.tags?.length) parts.push(`Tags: ${item.tags.join(", ")}`);
 
-  return parts.join("\n").substring(0, DEFAULT_MAX_TEXT_LENGTH);
+  return parts.join("\n").substring(0, MAX_EMBED_CHARS);
 }
 
 /**
@@ -401,7 +401,7 @@ async function prepareTextForEmbedding(item: Item, serverId: number): Promise<st
     // Ignore errors fetching people
   }
 
-  return parts.join("\n").substring(0, DEFAULT_MAX_TEXT_LENGTH);
+  return parts.join("\n").substring(0, MAX_EMBED_CHARS);
 }
 
 /**

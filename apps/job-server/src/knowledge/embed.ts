@@ -3,6 +3,7 @@ import axios from "axios";
 import { eq } from "drizzle-orm";
 import OpenAI from "openai";
 import { TIMEOUT_CONFIG } from "../jobs/config";
+import { trimToFit } from "./fit";
 
 /**
  * Batch text embedding with the server's configured embedding provider, the
@@ -65,10 +66,48 @@ function vectors(raw: unknown, expected: number): number[][] {
   });
 }
 
-export async function embedTexts(
-  settings: EmbeddingSettings,
-  texts: string[]
-): Promise<number[][]> {
+/** How embedding servers say an input is longer than they take (llama.cpp, OpenAI, Ollama, Voyage, Gemini). */
+const TOO_LONG = /too (large|long)|context length|maximum.*tokens|token limit|exceeds|input length/i;
+const tooLong = (error: unknown) => {
+  const body = axios.isAxiosError(error) ? JSON.stringify(error.response?.data ?? "") : "";
+  return TOO_LONG.test(`${error instanceof Error ? error.message : String(error)} ${body}`);
+};
+/** The longest text each endpoint took after rejecting a longer one: later texts are cut to it first. */
+const fits = new Map<string, number>();
+/** Shorter than this, a rejected text is not too long: something else is wrong. */
+const MIN_FIT_CHARS = 200;
+
+/**
+ * Vectors for texts, in order. A text the endpoint rejects as too long is cut
+ * in half until it is taken, so one long text never fails the rest; the
+ * length taken is kept for the endpoint's later texts.
+ */
+export async function embedTexts(settings: EmbeddingSettings, texts: string[]): Promise<number[][]> {
+  const endpoint = `${settings.provider} ${settings.baseUrl} ${settings.model}`;
+  const max = fits.get(endpoint);
+  const fitted = max ? texts.map((t) => trimToFit(t, max)) : texts;
+  try {
+    return await requestVectors(settings, fitted);
+  } catch (error) {
+    if (!tooLong(error)) throw error;
+  }
+  const vectors: number[][] = [];
+  for (let text of fitted) {
+    for (let cut = false; ; cut = true) {
+      try {
+        vectors.push(...(await requestVectors(settings, [text])));
+        if (cut) fits.set(endpoint, Math.min(fits.get(endpoint) ?? Number.POSITIVE_INFINITY, text.length));
+        break;
+      } catch (error) {
+        if (!tooLong(error) || text.length < MIN_FIT_CHARS) throw error;
+        text = trimToFit(text, Math.floor(text.length / 2));
+      }
+    }
+  }
+  return vectors;
+}
+
+async function requestVectors(settings: EmbeddingSettings, texts: string[]): Promise<number[][]> {
   const { provider, baseUrl, apiKey, model, dimensions } = settings;
   const timeout = TIMEOUT_CONFIG.DEFAULT;
   const bearer = apiKey ? { Authorization: `Bearer ${apiKey}` } : {};
