@@ -149,6 +149,8 @@ const plotBasis = (transcriptHash: string, reference: ItemText | undefined) =>
  * or, with Wikipedia plots on, a plot never looked up, missing for a month
  * (an article may have been written since) or three months old. Notes whose writing
  * failed wait a day; titles already taken this run (`taken`) wait for the next.
+ * First those whose notes were asked for next ("wanted", from a title's page),
+ * then those never looked at, then the newest.
  */
 async function dueItems(
   serverId: number,
@@ -187,7 +189,7 @@ async function dueItems(
             AND (s.id IS NULL OR s.checked_at < now() - interval '1 day'))
         OR ${referenceDue}
       )
-    ORDER BY (t.id IS NULL) DESC, i.date_created DESC NULLS LAST
+    ORDER BY (s.status IS NOT DISTINCT FROM 'wanted') DESC, (t.id IS NULL) DESC, i.date_created DESC NULLS LAST
     LIMIT ${ITEMS_PER_QUERY}
   `);
   return Array.from(rows);

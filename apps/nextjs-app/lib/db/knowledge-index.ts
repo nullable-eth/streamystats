@@ -235,6 +235,80 @@ export async function getKnowledgeIndexStatus(
   };
 }
 
+/** Where a movie's or episode's synopsis stands, or a series' episodes'. */
+export interface SynopsisQueue {
+  /** The knowledge index is on. */
+  enabled: boolean;
+  written: number;
+  /** Asked to be written next. */
+  next: number;
+  /** Subtitles read, waiting in the queue. */
+  waiting: number;
+  /** No readable subtitles: none can be written. */
+  noSubtitles: number;
+}
+
+/** The movie or episode itself, or a series' episodes, in the library. */
+const queueScope = (serverId: number, itemId: string) => sql`
+  ${items.serverId} = ${serverId} AND ${items.deletedAt} IS NULL
+  AND ((${items.id} = ${itemId} AND ${items.type} IN ('Movie', 'Episode'))
+    OR (${items.seriesId} = ${itemId} AND ${items.type} = 'Episode'))`;
+
+export async function getSynopsisQueue(
+  serverId: number,
+  itemId: string,
+): Promise<SynopsisQueue> {
+  const [[row], [server]] = await Promise.all([
+    db.execute<Omit<SynopsisQueue, "enabled">>(sql`
+      SELECT
+        count(*) FILTER (WHERE s.status = 'ready')::int AS written,
+        count(*) FILTER (WHERE s.status = 'wanted')::int AS next,
+        count(*) FILTER (WHERE t.status = 'ready'
+          AND s.status IS DISTINCT FROM 'ready' AND s.status IS DISTINCT FROM 'wanted')::int AS waiting,
+        count(*) FILTER (WHERE t.status IS DISTINCT FROM 'ready'
+          AND s.status IS DISTINCT FROM 'ready')::int AS "noSubtitles"
+      FROM ${items}
+      LEFT JOIN ${itemTexts} t ON t.item_id = ${items.id} AND t.kind = 'transcript'
+      LEFT JOIN ${itemTexts} s ON s.item_id = ${items.id} AND s.kind = 'scenes'
+      WHERE ${queueScope(serverId, itemId)}
+    `),
+    db
+      .select({ enabled: servers.knowledgeIndexEnabled })
+      .from(servers)
+      .where(eq(servers.id, serverId)),
+  ]);
+  return {
+    enabled: server?.enabled ?? false,
+    written: row?.written ?? 0,
+    next: row?.next ?? 0,
+    waiting: row?.waiting ?? 0,
+    noSubtitles: row?.noSubtitles ?? 0,
+  };
+}
+
+/**
+ * Put a movie's or episode's synopsis, or a series' episodes' still to be
+ * written, at the front of the queue: the knowledge index writes them on its
+ * next pass. Those already written are left as they are. How many were asked.
+ */
+export async function writeSynopsesNext(
+  serverId: number,
+  itemId: string,
+): Promise<number> {
+  const rows = await db.execute(sql`
+    INSERT INTO ${itemTexts} (server_id, item_id, kind, status, checked_at)
+    SELECT ${serverId}, ${items.id}, 'scenes', 'wanted', 'epoch'
+    FROM ${items}
+    JOIN ${itemTexts} t ON t.item_id = ${items.id} AND t.kind = 'transcript' AND t.status = 'ready'
+    LEFT JOIN ${itemTexts} s ON s.item_id = ${items.id} AND s.kind = 'scenes'
+    WHERE ${queueScope(serverId, itemId)}
+      AND s.status IS DISTINCT FROM 'ready' AND s.status IS DISTINCT FROM 'wanted'
+    ON CONFLICT (item_id, kind) DO UPDATE SET status = 'wanted', checked_at = 'epoch'
+    RETURNING 1
+  `);
+  return Array.from(rows).length;
+}
+
 export async function setKnowledgeIndexEnabled(
   serverId: number,
   enabled: boolean,

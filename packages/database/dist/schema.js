@@ -410,7 +410,7 @@ exports.itemTexts = (0, pg_core_1.pgTable)("item_texts", {
         .notNull()
         .references(() => exports.items.id, { onDelete: "cascade" }),
     kind: (0, pg_core_1.text)("kind").notNull(), // "transcript" | "scenes" | "synopsis" | "reference"
-    status: (0, pg_core_1.text)("status").notNull(), // "ready" | "missing"
+    status: (0, pg_core_1.text)("status").notNull(), // "ready" | "missing"; scenes also "wanted": asked to be written next
     // transcript: the subtitle stream it was read from; scenes (the plot part
     // by part, each under its times) and synopsis: the transcript hash they
     // were written from, and the reference's when there was one (a change
@@ -419,7 +419,7 @@ exports.itemTexts = (0, pg_core_1.pgTable)("item_texts", {
     content: (0, pg_core_1.text)("content").notNull().default(""),
     contentHash: (0, pg_core_1.text)("content_hash"),
     // scenes and synopsis: the model that wrote them ("provider:model"), so
-    // notes from a fallback model are rewritten once a better one is back.
+    // a model can be asked to rewrite another's (knowledge_models.rewrite_from).
     writtenBy: (0, pg_core_1.text)("written_by"),
     // transcript: when each line of `content` starts, so a matched line can
     // be located to the moment it is said.

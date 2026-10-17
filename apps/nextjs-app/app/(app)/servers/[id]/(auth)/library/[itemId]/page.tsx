@@ -6,6 +6,7 @@ import {
   getItemWriters,
 } from "@/lib/db/actor-types";
 import { getItemDetails, getSeasonsAndEpisodes } from "@/lib/db/items";
+import { getSynopsisQueue } from "@/lib/db/knowledge-index";
 import { getServer } from "@/lib/db/server";
 import type { SeriesRecommendationItem } from "@/lib/db/similar-series-statistics";
 import { getSimilarSeriesForItem } from "@/lib/db/similar-series-statistics";
@@ -22,6 +23,7 @@ import { ItemHeader } from "./ItemHeader";
 import { ItemMetadata } from "./ItemMetadata";
 import { SeasonsAndEpisodes } from "./SeasonsAndEpisodes";
 import { SimilarItemsList } from "./SimilarItemsList";
+import { SynopsisQueue } from "./SynopsisQueue";
 
 async function getItemPlayedStatus(
   serverUrl: string,
@@ -108,6 +110,13 @@ export default async function ItemDetailsPage({
         ])
       : [[], [], []];
 
+  // Admins see where the synopsis stands and can move it up the queue.
+  const synopsisQueue =
+    isAdmin &&
+    ["Movie", "Episode", "Series"].includes(itemDetails.item.type ?? "")
+      ? await getSynopsisQueue(server.id, itemId)
+      : null;
+
   return (
     <Container className="flex flex-col">
       <div className="space-y-6 pb-10">
@@ -126,6 +135,14 @@ export default async function ItemDetailsPage({
           serverId={id}
           itemId={itemId}
         />
+        {synopsisQueue && (
+          <SynopsisQueue
+            serverId={server.id}
+            itemId={itemId}
+            series={itemDetails.item.type === "Series"}
+            queue={synopsisQueue}
+          />
+        )}
         {(itemDetails.item.type === "Movie" ||
           itemDetails.item.type === "Series") && (
           <CastSection
