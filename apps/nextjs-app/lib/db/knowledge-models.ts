@@ -6,7 +6,7 @@ import {
   rewriteLoops,
   withoutLoops,
   writerLabel,
-} from "@/lib/knowledge-rewrites";
+} from "@/lib/knowledge-writers";
 import type { ChatAIConfig, ChatProvider } from "./server";
 
 /**

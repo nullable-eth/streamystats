@@ -33,7 +33,7 @@ import {
 } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
 import type { KnowledgeModelPublic } from "@/lib/db/knowledge-models";
-import { writerLabel } from "@/lib/knowledge-rewrites";
+import { defaultParallel, writerLabel } from "@/lib/knowledge-writers";
 import { clearChatConfigAction } from "../chat/actions";
 import {
   moveKnowledgeModelAction,
@@ -41,13 +41,7 @@ import {
   setKnowledgeModelEnabledAction,
   setKnowledgeModelRewriteAction,
 } from "./knowledge-model-actions";
-import {
-  defaultParallel,
-  type Editing,
-  ModelDialog,
-  type ModelUse,
-  USES,
-} from "./ModelDialog";
+import { type Editing, ModelDialog, type ModelUse, USES } from "./ModelDialog";
 import { detectPreset, type SavedModel } from "./model-fields";
 import { RewriteDialog } from "./RewriteDialog";
 
@@ -147,7 +141,7 @@ export function ModelsManager({
   chat: Configured | null;
   embedding: (Configured & { dimensions: number | null }) | null;
   knowledgeModels: KnowledgeModelPublic[];
-  /** Who wrote the current notes, and for how many titles. */
+  /** Who wrote the current synopses, and how many each. */
   writers: { label: string; titles: number }[];
 }) {
   const router = useRouter();
@@ -173,7 +167,7 @@ export function ModelsManager({
 
   const listedName = (m: KnowledgeModelPublic) =>
     m.name || nameOf("knowledge", m);
-  /** A writer as the list shows it, or as its notes record it when not listed. */
+  /** A writer as the list shows it, or as its synopses record it when not listed. */
   const writerName = (label: string) => {
     const listed = knowledgeModels.find((m) => writerLabel(m) === label);
     return listed ? listedName(listed) : label;
@@ -257,7 +251,7 @@ export function ModelsManager({
 
         <Section
           title="Knowledge index"
-          about="Writes each title's scene notes and synopsis. A title without notes goes to the first model in the list that is not resting, and to the next if it fails. A rate-limited model rests until its provider says the limit resets; one without credit, with a rejected key, or down rests a while. The order never replaces notes already written: they are rewritten when their subtitles change, by the model that wrote them, or by a model you ask to replace that model's notes."
+          about="Writes the synopsis of each movie and episode. One without a synopsis goes to the first model in the list that is not resting, and to the next if that fails. A rate-limited model rests until its provider says the limit resets; one without credit, with a rejected key, or down rests a while. The order never replaces a synopsis already written: it is rewritten when the subtitles change, by the model that wrote it, or by a model you ask to rewrite that model's synopses."
         >
           {knowledgeModels.length === 0 && (
             <p className="text-sm">None listed: the chat model writes.</p>
@@ -312,7 +306,7 @@ export function ModelsManager({
                       <Pencil className="h-4 w-4" />
                     </IconButton>
                     <IconButton
-                      label="Replace another model's notes"
+                      label="Rewrite another model's synopses"
                       disabled={pending}
                       onClick={() => setRewriting(m)}
                     >
@@ -350,13 +344,13 @@ export function ModelsManager({
                 <p className="text-sm text-muted-foreground">
                   {m.name && `${nameOf("knowledge", m)} · `}
                   {m.titles.toLocaleString()}{" "}
-                  {m.titles === 1 ? "title" : "titles"} written ·{" "}
+                  {m.titles === 1 ? "synopsis" : "synopses"} written ·{" "}
                   {m.parallelRequests ?? defaultParallel(m.provider)} at once
                 </p>
                 {m.rewriteFrom.map((from) => (
                   <p key={from} className="flex items-center gap-1 text-sm">
                     <span className="break-all">
-                      Replacing {writerName(from)}&apos;s notes:{" "}
+                      Rewriting {writerName(from)}&apos;s synopses:{" "}
                       {(left.get(from) ?? 0).toLocaleString()} left
                     </span>
                     <IconButton
@@ -393,16 +387,16 @@ export function ModelsManager({
               Which models work
             </summary>
             <p className="mt-2">
-              Each title&apos;s whole transcript goes in one request, so a model
-              needs a long context window, 64k tokens or more: a feature
-              film&apos;s subtitles alone run to some 30k. Large hosted models
-              such as Claude are the most accurate; a local model of around 30B
-              parameters works, but gets more speakers and timings wrong; small
-              models and short context windows do not write usable notes. With
-              Ollama, raise the context length (OLLAMA_CONTEXT_LENGTH), whose
-              default cuts long transcripts off. Free models, such as
-              OpenRouter&apos;s, work too: when their quota runs out they rest
-              until it resets, and the next model takes over.
+              A movie&apos;s or episode&apos;s whole subtitles go in one
+              request, so a model needs a long context window, 64k tokens or
+              more: a feature film&apos;s subtitles alone run to some 30k. Large
+              hosted models such as Claude are the most accurate; a local model
+              of around 30B parameters works, but gets more of who says what
+              wrong; small models and short context windows do not write usable
+              synopses. With Ollama, raise the context length
+              (OLLAMA_CONTEXT_LENGTH), whose default cuts long subtitles off.
+              Free models, such as OpenRouter&apos;s, work too: when their quota
+              runs out they rest until it resets, and the next model takes over.
             </p>
           </details>
         </Section>
@@ -411,7 +405,7 @@ export function ModelsManager({
           title="Embeddings"
           about={
             <>
-              Turns titles, plots and transcripts into vectors for
+              Turns titles, synopses and subtitles into vectors for
               recommendations, the knowledge index and search. What gets
               embedded is set in{" "}
               <Link

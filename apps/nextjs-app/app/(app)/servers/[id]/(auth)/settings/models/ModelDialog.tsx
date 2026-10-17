@@ -24,6 +24,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
+import { defaultParallel } from "@/lib/knowledge-writers";
 import {
   type ChatProvider,
   saveChatConfigAction,
@@ -64,19 +65,15 @@ export const USES: Record<
     label: "Knowledge index",
     presets: CHAT_PRESETS,
     about:
-      "Writes each title's scene notes and synopsis. A title without notes goes to the first listed model that is not resting; one that is rate limited or out of credit rests until it can be used again.",
+      "Writes the synopsis of each movie and episode. One without a synopsis goes to the first listed model that is not resting; one that is rate limited or out of credit rests until it can be used again.",
   },
   embedding: {
     label: "Embeddings",
     presets: EMBEDDING_PRESETS,
     about:
-      "Turns titles, plots and transcripts into vectors for search and recommendations. One at a time.",
+      "Turns titles, synopses and subtitles into vectors for search and recommendations. One at a time.",
   },
 };
-
-/** Requests a knowledge index model is sent at once unless set, as the job sends them. */
-export const defaultParallel = (provider: string) =>
-  provider === "anthropic" || provider === "gemini" ? 4 : 1;
 
 /** The model being added or changed. */
 export interface Editing {
@@ -256,13 +253,13 @@ export function ModelDialog({
                 onChange={(e) => setParallel(e.target.value)}
               />
               <p className="text-xs text-muted-foreground">
-                Titles it writes at the same time. Empty:{" "}
+                Synopses it writes at the same time. Empty:{" "}
                 {defaultParallel(settings.provider)} for this provider (4 for
                 Anthropic and Gemini, 1 for others). For a local server, match
                 its parallel slots (llama.cpp --parallel, OLLAMA_NUM_PARALLEL),
-                each with the whole context a title needs: llama.cpp divides its
-                context size among them. Requests beyond what it takes wait on
-                the server and can time out.
+                each with the whole context a synopsis needs: llama.cpp divides
+                its context size among them. Requests beyond what it takes wait
+                on the server and can time out.
               </p>
             </div>
           )}

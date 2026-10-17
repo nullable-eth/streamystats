@@ -19,14 +19,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import type { KnowledgeModelPublic } from "@/lib/db/knowledge-models";
-import { rewriteLoops, writerLabel } from "@/lib/knowledge-rewrites";
+import { rewriteLoops, writerLabel } from "@/lib/knowledge-writers";
 
 const titles = (n: number) =>
-  `${n.toLocaleString()} ${n === 1 ? "title" : "titles"}`;
+  `${n.toLocaleString()} ${n === 1 ? "synopsis" : "synopses"}`;
 
 /**
- * Ask a knowledge index model to replace another writer's notes, showing how
- * many titles that rewrites before anything is asked.
+ * Ask a knowledge index model to rewrite another model's synopses, showing
+ * how many that is before anything is asked.
  */
 export function RewriteDialog({
   model,
@@ -59,20 +59,20 @@ export function RewriteDialog({
     <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="sm:max-w-lg">
         <DialogHeader>
-          <DialogTitle>Replace another model&apos;s notes</DialogTitle>
+          <DialogTitle>Rewrite another model&apos;s synopses</DialogTitle>
           <DialogDescription>
-            {name} rewrites the titles whose notes the model you pick wrote, one
-            request per title, as the knowledge index gets to them, and any that
-            model writes later, until you stop it. Each title keeps its notes
-            until they are replaced.
+            {name} rewrites the synopses the model you pick wrote, one request
+            each, as the knowledge index gets to them, and any that model writes
+            later, until you stop it. Each keeps its synopsis until the new one
+            is written.
           </DialogDescription>
         </DialogHeader>
 
         {choices.length === 0 ? (
-          <p className="text-sm">No other model&apos;s notes to replace.</p>
+          <p className="text-sm">No other model&apos;s synopses to rewrite.</p>
         ) : (
           <div className="space-y-2">
-            <Label htmlFor="rewrite-from">Notes written by</Label>
+            <Label htmlFor="rewrite-from">Synopses written by</Label>
             <Select value={from} onValueChange={setFrom}>
               <SelectTrigger id="rewrite-from">
                 <SelectValue placeholder="Pick a model" />

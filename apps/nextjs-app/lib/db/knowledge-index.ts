@@ -4,38 +4,80 @@ import {
   db,
   items,
   itemTexts,
+  jobResults,
   KNOWLEDGE_ITEM_TYPES,
   knowledgeModels,
   servers,
 } from "@streamystats/database";
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { type MissingSummary, summarizeMissing } from "@/lib/knowledge-missing";
+import { defaultParallel } from "@/lib/knowledge-writers";
+import { listKnowledgeModels } from "./knowledge-models";
 
+/**
+ * Where a server's movies and episodes stand in the knowledge index, for the
+ * selected types. Each is in one of four tiers, by what search knows of it:
+ * a synopsis written with a Wikipedia plot, one written from the subtitles
+ * alone, the subtitles alone (the synopsis still to be written), or neither.
+ */
 export interface KnowledgeTypeStatus {
   type: (typeof KNOWLEDGE_ITEM_TYPES)[number];
   enabled: boolean;
-  /** Items of this type in the library. */
+  /** In the library. */
   total: number;
-  /** Looked at by the job so far (any outcome). */
-  checked: number;
-  transcripts: number;
-  synopses: number;
-  /** Plots fetched from Wikipedia. */
-  references: number;
-  /** Checked, but no full text subtitle: the subtitle downloader's to-do list. */
-  missing: number;
+  /** A synopsis, and a Wikipedia plot. */
+  best: number;
+  /** A synopsis without a Wikipedia plot. */
+  good: number;
+  /** Subtitles read; the synopsis still to be written. */
+  dialogue: number;
+  /** No subtitles read: not yet, or none readable. */
+  titleOnly: number;
+  /** Not read yet. */
+  unread: number;
+  /** Read, but no readable full-dialogue subtitles: checked again daily. */
+  noSubtitles: number;
+  /** Synopses whose writing failed in the last day: tried again a day later. */
+  failed: number;
+  /** Synopses a model was asked to replace (in AI Models), still to be rewritten. */
+  rewrites: number;
+  /** Not looked up on Wikipedia yet. */
+  wikipediaPending: number;
+}
+
+/** A model that writes synopses, as the job will use it. */
+export interface KnowledgeWriter {
+  name: string;
+  atOnce: number;
+  /** ISO time it rests until after a failure of its own. */
+  restingUntil: string | null;
+  lastError: string | null;
 }
 
 export interface KnowledgeIndexStatus {
   enabled: boolean;
   embeddingsConfigured: boolean;
-  chatConfigured: boolean;
   /** Plots are fetched from Wikipedia. */
   wikipedia: boolean;
   byType: KnowledgeTypeStatus[];
+  /** Who writes synopses, in order: the models turned on, or the chat model when none are listed. */
+  writers: KnowledgeWriter[];
+  /** The latest run, or the one running now. */
+  lastRun: {
+    at: string;
+    running: boolean;
+    synopses: number;
+    subtitles: number;
+    plots: number;
+    errors: number;
+    lastError: string | null;
+  } | null;
   /** Enabled items with no full text subtitle, grouped by series and movie. */
   missing: MissingSummary;
 }
+
+/** How long a run may last (the job's budget): a run logged since then may still be going. */
+const RUN_MS = 90 * 60_000;
 
 export async function getKnowledgeIndexStatus(
   serverId: number,
@@ -47,7 +89,7 @@ export async function getKnowledgeIndexStatus(
       wikipedia: servers.knowledgeWikipedia,
       embeddingModel: servers.embeddingModel,
       chatModel: servers.chatModel,
-      knowledgeModels: sql<number>`(SELECT count(*)::int FROM ${knowledgeModels} WHERE ${knowledgeModels.serverId} = ${servers.id})`,
+      chatName: servers.chatName,
     })
     .from(servers)
     .where(eq(servers.id, serverId))
@@ -60,23 +102,45 @@ export async function getKnowledgeIndexStatus(
     inArray(items.type, [...KNOWLEDGE_ITEM_TYPES]),
   );
 
-  const [totals, counts, missingRows] = await Promise.all([
-    db
-      .select({ type: items.type, n: sql<number>`count(*)::int` })
-      .from(items)
-      .where(inLibrary)
-      .groupBy(items.type),
+  const [tiers, models, [run], missingRows] = await Promise.all([
+    db.execute<Omit<KnowledgeTypeStatus, "enabled"> & { type: string }>(sql`
+      SELECT ${items.type} AS type,
+        count(*)::int AS total,
+        count(*) FILTER (WHERE s.status = 'ready' AND r.status = 'ready')::int AS best,
+        count(*) FILTER (WHERE s.status = 'ready' AND r.status IS DISTINCT FROM 'ready')::int AS good,
+        count(*) FILTER (WHERE s.status IS DISTINCT FROM 'ready' AND t.status = 'ready')::int AS dialogue,
+        count(*) FILTER (WHERE s.status IS DISTINCT FROM 'ready' AND t.status IS DISTINCT FROM 'ready')::int AS "titleOnly",
+        count(*) FILTER (WHERE t.id IS NULL)::int AS unread,
+        count(*) FILTER (WHERE t.status <> 'ready')::int AS "noSubtitles",
+        count(*) FILTER (WHERE t.status = 'ready' AND s.status <> 'ready'
+                         AND s.checked_at > now() - interval '1 day')::int AS failed,
+        count(*) FILTER (WHERE s.status = 'ready' AND s.written_by IN (
+          SELECT unnest(m.rewrite_from) FROM ${knowledgeModels} m
+          WHERE m.server_id = ${serverId} AND m.enabled))::int AS rewrites,
+        count(*) FILTER (WHERE r.id IS NULL)::int AS "wikipediaPending"
+      FROM ${items}
+      LEFT JOIN ${itemTexts} t ON t.item_id = ${items.id} AND t.kind = 'transcript'
+      LEFT JOIN ${itemTexts} s ON s.item_id = ${items.id} AND s.kind = 'scenes'
+      LEFT JOIN ${itemTexts} r ON r.item_id = ${items.id} AND r.kind = 'reference'
+      WHERE ${inLibrary}
+      GROUP BY ${items.type}
+    `),
+    listKnowledgeModels(serverId),
     db
       .select({
-        type: items.type,
-        kind: itemTexts.kind,
-        status: itemTexts.status,
-        n: sql<number>`count(*)::int`,
+        status: jobResults.status,
+        result: jobResults.result,
+        createdAt: jobResults.createdAt,
       })
-      .from(itemTexts)
-      .innerJoin(items, eq(items.id, itemTexts.itemId))
-      .where(inLibrary)
-      .groupBy(items.type, itemTexts.kind, itemTexts.status),
+      .from(jobResults)
+      .where(
+        and(
+          eq(jobResults.jobName, "knowledge-index-sync"),
+          sql`${jobResults.result}->>'serverId' = ${String(serverId)}`,
+        ),
+      )
+      .orderBy(desc(jobResults.createdAt))
+      .limit(1),
     enabledTypes.length === 0
       ? Promise.resolve([])
       : db
@@ -105,33 +169,68 @@ export async function getKnowledgeIndexStatus(
           ),
   ]);
 
-  const count = (type: string, kind: string, status?: string) =>
-    counts
-      .filter(
-        (c) =>
-          c.type === type &&
-          c.kind === kind &&
-          (status === undefined || c.status === status),
-      )
-      .reduce((sum, c) => sum + c.n, 0);
+  const rows = Array.from(tiers);
+  const empty = {
+    total: 0,
+    best: 0,
+    good: 0,
+    dialogue: 0,
+    titleOnly: 0,
+    unread: 0,
+    noSubtitles: 0,
+    failed: 0,
+    rewrites: 0,
+    wikipediaPending: 0,
+  };
+  const writers: KnowledgeWriter[] =
+    models.length > 0
+      ? models
+          .filter((m) => m.enabled)
+          .map((m) => ({
+            name: m.name || m.model,
+            atOnce: m.parallelRequests ?? defaultParallel(m.provider),
+            restingUntil: m.restingUntil,
+            lastError: m.lastError,
+          }))
+      : server?.chatModel
+        ? [
+            {
+              name: server.chatName || server.chatModel,
+              atOnce: 1,
+              restingUntil: null,
+              lastError: null,
+            },
+          ]
+        : [];
+  const result = (run?.result ?? {}) as Record<string, unknown>;
+  const number = (key: string) =>
+    typeof result[key] === "number" ? (result[key] as number) : 0;
 
   return {
     enabled: server?.enabled ?? false,
     embeddingsConfigured: Boolean(server?.embeddingModel),
-    chatConfigured: Boolean(server?.knowledgeModels || server?.chatModel),
     wikipedia: server?.wikipedia ?? false,
     byType: KNOWLEDGE_ITEM_TYPES.map((type) => ({
+      ...empty,
+      ...rows.find((r) => r.type === type),
       type,
       enabled: enabledTypes.includes(type),
-      total: totals.find((t) => t.type === type)?.n ?? 0,
-      checked: count(type, "transcript"),
-      transcripts: count(type, "transcript", "ready"),
-      // Written together with the scene notes; a synopsis from before scene
-      // notes is rewritten with them.
-      synopses: count(type, "scenes", "ready"),
-      references: count(type, "reference", "ready"),
-      missing: count(type, "transcript", "missing"),
     })),
+    writers,
+    lastRun: run
+      ? {
+          at: run.createdAt.toISOString(),
+          running:
+            run.status === "processing" &&
+            Date.now() - run.createdAt.getTime() < RUN_MS,
+          synopses: number("synopses"),
+          subtitles: number("indexed"),
+          plots: number("references"),
+          errors: number("errors"),
+          lastError:
+            typeof result.lastError === "string" ? result.lastError : null,
+        }
+      : null,
     missing: summarizeMissing(missingRows),
   };
 }
@@ -157,7 +256,7 @@ export async function setKnowledgeItemTypes(serverId: number, types: string[]) {
 
 /**
  * Whether plots are fetched from Wikipedia. Turned off, the plots fetched so
- * far go too: the synopses written with them are rewritten without.
+ * far go too; synopses already written with them stay as they are.
  */
 export async function setKnowledgeWikipedia(
   serverId: number,

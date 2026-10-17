@@ -1,9 +1,13 @@
 /**
- * Asking a knowledge index model to replace another writer's scene notes
- * (the job's writersFor). A writer is "provider:model", as notes record it.
+ * The models that write synopses, as the job treats them (see the job's
+ * knowledge/models.ts). A writer is "provider:model", as synopses record it.
  */
 export const writerLabel = (m: { provider: string; model: string }) =>
   `${m.provider}:${m.model}`;
+
+/** Requests a model is sent at once unless set: 4 to Anthropic and Gemini, 1 to others. */
+export const defaultParallel = (provider: string) =>
+  provider === "anthropic" || provider === "gemini" ? 4 : 1;
 
 interface Rewriting {
   provider: string;
