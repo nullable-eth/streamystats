@@ -1362,7 +1362,7 @@ export function createChatTools(
 
     getPlotSynopsis: tool({
       description:
-        "Get the full plot synopsis (spoilers included) of a movie, or of one episode of a series in the library. For a series, it defaults to the series' last episode; pass season to get that season's last episode, or season and episode for a specific one, or position 'first'. Use it to answer how something ends, whether a series or season ends on a cliffhanger, or to recap an episode before the user resumes a show. Only reveal endings when the user asked about them.",
+        "Get the full plot synopsis (spoilers included) of a movie, or of one episode of a series in the library. For a series, it defaults to the series' last episode; pass season to get that season's last episode, or season and episode for a specific one, or position 'first'. Use it to answer how something ends, whether a series or season ends on a cliffhanger, or to recap an episode before the user resumes a show. It is for you to answer from: tell the user only what they asked to know (whether it ends on a cliffhanger is a yes or no, not the ending).",
       inputSchema: z.object({
         title: z.string().describe("Movie or series name"),
         season: z.number().optional().describe("Season number"),
