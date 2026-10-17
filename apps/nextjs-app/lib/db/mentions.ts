@@ -9,6 +9,7 @@ import {
 } from "@streamystats/database";
 import { and, eq, inArray, isNull, type SQL, sql } from "drizzle-orm";
 import { getStatisticsExclusions } from "./exclusions";
+import { anyWording } from "./full-text";
 
 export interface TitleMention {
   itemId: string;
@@ -59,7 +60,7 @@ export async function titlesMentioning({
     inArray(items.type, types),
   ];
   if (itemLibraryExclusion) visible.push(itemLibraryExclusion);
-  const query = sql`websearch_to_tsquery('english', ${phrase})`;
+  const query = anyWording(phrase);
 
   const rows = await db.execute<{
     id: string;
