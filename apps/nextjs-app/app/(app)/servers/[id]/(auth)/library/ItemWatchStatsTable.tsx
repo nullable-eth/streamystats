@@ -46,6 +46,7 @@ import { formatDuration } from "@/lib/utils";
 import { Poster } from "../dashboard/Poster";
 import LibraryDropdown from "./LibraryDropdown";
 import { SynopsisCell } from "./SynopsisCell";
+import { TypeDropdown } from "./TypeDropdown";
 
 export interface ItemWatchStatsTableProps {
   server: ServerPublic;
@@ -339,6 +340,7 @@ export function ItemWatchStatsTable({
           onChange={(event) => setSearchInput(event.target.value)}
           className="max-w-sm mr-auto"
         />
+        <TypeDropdown />
         <LibraryDropdown libraries={libraries} />
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
