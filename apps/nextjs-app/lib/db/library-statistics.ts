@@ -289,9 +289,10 @@ export const getLibraryItemsWithStats = async ({
       orderClause = desc(sql`COALESCE(SUM(${sessions.playDuration}), 0)`);
   }
 
-  // Get paginated results
+  // Get paginated results. Ties (most series have no watch time of their own,
+  // it is on their episodes) are broken by name and id, so pages don't overlap.
   const results = await baseQuery
-    .orderBy(orderClause)
+    .orderBy(orderClause, asc(items.name), asc(items.id))
     .limit(perPage)
     .offset(offset);
 
