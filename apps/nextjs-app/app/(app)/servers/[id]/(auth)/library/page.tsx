@@ -10,6 +10,7 @@ import {
 } from "@/lib/db/library-statistics";
 import { getServer } from "@/lib/db/server";
 import { getViewerUserId, isUserAdmin } from "@/lib/db/users";
+import { libraryItemType } from "@/lib/library-item-types";
 import { ItemWatchStatsTable } from "./ItemWatchStatsTable";
 import { LibraryStatisticsCards } from "./LibraryStatisticsCards";
 
@@ -22,7 +23,7 @@ export default async function DashboardPage({
     page: string;
     search: string;
     sort_by: string;
-    type: "Movie" | "Episode" | "Series";
+    type: string;
     sort_order: string;
     libraries: string;
   }>;
@@ -56,7 +57,7 @@ export default async function DashboardPage({
       page,
       sortOrder: sort_order,
       sortBy: sort_by,
-      type,
+      type: libraryItemType(type),
       search,
       libraryIds,
       withSynopses: isAdmin,
@@ -67,7 +68,7 @@ export default async function DashboardPage({
     <Container>
       <PageTitle
         title="Library"
-        subtitle="Search for any movie or episode on your server."
+        subtitle="Search for any movie, series or episode on your server."
       />
       <LibraryStatisticsCards
         data={perLibraryStats}
