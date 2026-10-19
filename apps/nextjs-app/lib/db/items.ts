@@ -14,6 +14,7 @@ import {
   count,
   desc,
   eq,
+  gt,
   inArray,
   isNotNull,
   isNull,
@@ -704,7 +705,7 @@ export const getSeriesEpisodeStats = async ({
       and(
         eq(items.type, "Episode"),
         eq(items.seriesId, itemId),
-        isNotNull(items.parentIndexNumber),
+        gt(items.parentIndexNumber, 0),
         isNotNull(items.indexNumber),
       ),
     );
@@ -787,7 +788,7 @@ export const getSeasonsAndEpisodes = async ({
       and(
         eq(items.type, "Episode"),
         eq(items.seriesId, seriesId),
-        isNotNull(items.parentIndexNumber),
+        gt(items.parentIndexNumber, 0),
         isNotNull(items.indexNumber),
       ),
     )
@@ -902,7 +903,7 @@ export const getAlmostDoneSeries = async ({
         eq(items.type, "Episode"),
         isNull(items.deletedAt),
         inArray(items.seriesId, watchedSeriesIds),
-        isNotNull(items.parentIndexNumber),
+        gt(items.parentIndexNumber, 0),
         isNotNull(items.indexNumber),
         ...(itemLibraryExclusion ? [itemLibraryExclusion] : []),
       ),

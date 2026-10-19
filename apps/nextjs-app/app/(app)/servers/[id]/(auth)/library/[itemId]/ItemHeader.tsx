@@ -135,7 +135,7 @@ export function ItemHeader({
                 <div className="space-y-2">
                   <div className="flex gap-4 text-sm text-muted-foreground">
                     {item.seasonName && <span>{item.seasonName}</span>}
-                    {item.indexNumber && (
+                    {item.indexNumber != null && (
                       <span>Episode {item.indexNumber}</span>
                     )}
                   </div>

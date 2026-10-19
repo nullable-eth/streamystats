@@ -701,8 +701,8 @@ export function createChatTools(
             const seasonId =
               item.item?.seasonId || item.session.seasonId || null;
             const seasonName = item.item?.seasonName || null;
-            const episodeNumber = item.item?.indexNumber || null;
-            const seasonNumber = item.item?.parentIndexNumber || null;
+            const episodeNumber = item.item?.indexNumber ?? null;
+            const seasonNumber = item.item?.parentIndexNumber ?? null;
 
             return {
               itemName: item.item?.name || item.session.itemName || "Unknown",
@@ -728,9 +728,9 @@ export function createChatTools(
               seasonNumber,
               ...(seriesName && {
                 displayName: `${seriesName}${
-                  seasonNumber && episodeNumber
+                  seasonNumber !== null && episodeNumber !== null
                     ? ` - S${seasonNumber}E${episodeNumber}`
-                    : seasonNumber
+                    : seasonNumber !== null
                       ? ` - Season ${seasonNumber}`
                       : ""
                 } - ${item.item?.name || item.session.itemName || "Unknown"}`,

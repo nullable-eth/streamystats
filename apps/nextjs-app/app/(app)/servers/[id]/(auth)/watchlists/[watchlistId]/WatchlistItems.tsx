@@ -348,8 +348,8 @@ export function WatchlistItems({
                 {item.seriesName && (
                   <div className="text-sm text-neutral-500 transition-colors duration-200 group-hover:text-primary/80">
                     {item.seriesName}
-                    {item.parentIndexNumber &&
-                      item.indexNumber &&
+                    {item.parentIndexNumber != null &&
+                      item.indexNumber != null &&
                       ` • S${item.parentIndexNumber}E${item.indexNumber}`}
                   </div>
                 )}
