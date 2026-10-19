@@ -8,6 +8,7 @@ import {
   Server,
 } from "@streamystats/database";
 import { JellyfinClient, MinimalJellyfinItem } from "../client";
+import { moveKnowledgeTexts } from "../../knowledge/move";
 import { formatSyncLogLine } from "./sync-log";
 
 export interface CleanupMetrics {
@@ -23,6 +24,7 @@ export interface CleanupMetrics {
   sessionsMigrated: number;
   hiddenRecommendationsDeleted: number;
   hiddenRecommendationsMigrated: number;
+  knowledgeTextsMigrated: number;
   apiRequests: number;
   databaseOperations: number;
   errors: number;
@@ -78,6 +80,7 @@ export async function cleanupDeletedItems(
     sessionsMigrated: 0,
     hiddenRecommendationsDeleted: 0,
     hiddenRecommendationsMigrated: 0,
+    knowledgeTextsMigrated: 0,
     apiRequests: 0,
     databaseOperations: 0,
     errors: 0,
@@ -470,6 +473,7 @@ export async function cleanupDeletedItems(
         sessionsMigrated: metrics.sessionsMigrated,
         hiddenRecsDeleted: metrics.hiddenRecommendationsDeleted,
         hiddenRecsMigrated: metrics.hiddenRecommendationsMigrated,
+        knowledgeTextsMigrated: metrics.knowledgeTextsMigrated,
         peakMemoryMB: metrics.peakMemoryMB,
         phase: "complete",
       })
@@ -725,7 +729,7 @@ function matchItem(
 }
 
 /**
- * Migrate sessions and hidden recommendations from old item ID to new item ID
+ * Migrate sessions, hidden recommendations and knowledge index texts from old item ID to new item ID
  */
 async function migrateItem(
   oldItemId: string,
@@ -751,6 +755,10 @@ async function migrateItem(
     .returning({ id: hiddenRecommendations.id });
 
   metrics.hiddenRecommendationsMigrated += migratedRecs.length;
+
+  // Migrate knowledge index texts, so a moved or renamed file keeps its synopsis
+  metrics.databaseOperations++;
+  metrics.knowledgeTextsMigrated += await moveKnowledgeTexts(oldItemId, newItemId);
 
   // Soft delete the old item
   metrics.databaseOperations++;
