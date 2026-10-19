@@ -72,9 +72,16 @@ export function summarizeMissing(rows: MissingRow[]): MissingSummary {
   const names = new Set([...bySeries.keys(), ...unnumbered.keys()]);
   const series = [...names].map((name) => {
     const seasons = bySeries.get(name) ?? new Map<number, number[]>();
+    // Specials (season 0) after the seasons, by the name Sonarr and Jellyfin give them.
+    const order = (season: number) =>
+      season === 0 ? Number.MAX_SAFE_INTEGER : season;
     const parts = [...seasons.entries()]
-      .sort(([a], [b]) => a - b)
-      .map(([season, episodes]) => `S${pad(season)}${episodeRanges(episodes)}`);
+      .sort(([a], [b]) => order(a) - order(b))
+      .map(([season, episodes]) =>
+        season === 0
+          ? `Specials ${episodeRanges(episodes)}`
+          : `S${pad(season)}${episodeRanges(episodes)}`,
+      );
     const extra = unnumbered.get(name) ?? 0;
     if (extra > 0) parts.push(`${extra} without episode numbers`);
     const count =

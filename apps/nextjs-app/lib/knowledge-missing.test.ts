@@ -82,4 +82,18 @@ describe("summarizeMissing", () => {
       episodes: "S01E01 · 1 without episode numbers",
     });
   });
+
+  test("specials (season 0) are named and come after the seasons", () => {
+    const { series } = summarizeMissing([
+      ep("Show", 0, 2),
+      ep("Show", 2, 4),
+      ep("Show", 0, 1),
+      ep("Show", 1, 1),
+    ]);
+    expect(series[0]).toEqual({
+      name: "Show",
+      count: 4,
+      episodes: "S01E01 · S02E04 · Specials E01–E02",
+    });
+  });
 });
