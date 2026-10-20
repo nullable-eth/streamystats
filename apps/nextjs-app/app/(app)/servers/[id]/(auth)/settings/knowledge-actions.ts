@@ -7,6 +7,7 @@ import {
   setKnowledgeWikipedia,
 } from "@/lib/db/knowledge-index";
 import { isUserAdmin } from "@/lib/db/users";
+import { startKnowledgeRun } from "@/lib/knowledge-run";
 
 export async function setKnowledgeIndexEnabledAction(
   serverId: number,
@@ -17,6 +18,7 @@ export async function setKnowledgeIndexEnabledAction(
   }
   await setKnowledgeIndexEnabled(serverId, enabled);
   revalidatePath(`/servers/${serverId}/settings/ai`);
+  if (enabled) await startKnowledgeRun(serverId);
 }
 
 export async function setKnowledgeItemTypesAction(
@@ -28,6 +30,7 @@ export async function setKnowledgeItemTypesAction(
   }
   await setKnowledgeItemTypes(serverId, types);
   revalidatePath(`/servers/${serverId}/settings/ai`);
+  if (types.length > 0) await startKnowledgeRun(serverId);
 }
 
 export async function setKnowledgeWikipediaAction(
@@ -39,4 +42,5 @@ export async function setKnowledgeWikipediaAction(
   }
   await setKnowledgeWikipedia(serverId, enabled);
   revalidatePath(`/servers/${serverId}/settings/ai`);
+  if (enabled) await startKnowledgeRun(serverId);
 }

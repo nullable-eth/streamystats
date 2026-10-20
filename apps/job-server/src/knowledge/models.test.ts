@@ -9,7 +9,9 @@ mock.module("./synopsis", () => ({
   ...synopsis,
   writePlot: async (chat: { model: string }) => answers.get(chat.model)?.() ?? { scenes: [], synopsis: "ok" },
 }));
-const { inSlot, isUsable, messageOf, parallelOf, restFor, rewritesOf, writePlotWithModels, writersFor } = await import("./models");
+const { inSlot, isUsable, messageOf, parallelOf, restFor, rewritesOf, WriteFailure, writePlotWithModels, writersFor } = await import(
+  "./models"
+);
 const { durationMs, waitAsked } = await import("./retry");
 
 const now = new Date("2026-10-15T12:00:00Z");
@@ -155,11 +157,51 @@ describe("writePlotWithModels", () => {
     expect(small.unavailableUntil).toBeNull();
   });
 
-  test("resting models are skipped; none left fails the title", async () => {
+  test("resting models are skipped; none left fails the title, which stays due", async () => {
     const resting = model("b", { unavailableUntil: new Date(Date.now() + 60_000) });
-    await expect(writePlotWithModels([resting], { title: "T", overview: null, characters: [] }, [])).rejects.toThrow(
-      "No knowledge index model is usable"
-    );
+    const write = writePlotWithModels([resting], { title: "T", overview: null, characters: [] }, []);
+    await expect(write).rejects.toThrow("No knowledge index model is usable");
+    await expect(write).rejects.toMatchObject({ titlesFault: false });
+  });
+
+  test("a rate limit is the model's: the title stays due", async () => {
+    answers.set("busy", () => {
+      throw httpError(429, {});
+    });
+    const write = writePlotWithModels([model("busy")], { title: "T", overview: null, characters: [] }, []);
+    await expect(write).rejects.toBeInstanceOf(WriteFailure);
+    await expect(write).rejects.toMatchObject({ titlesFault: false });
+  });
+
+  /** Each title as the job writes it: the model read afresh, how its failure counts. */
+  const titlesFaults = async (name: string, titles: number) => {
+    const faults: boolean[] = [];
+    for (let i = 0; i < titles; i++) {
+      try {
+        await writePlotWithModels([model(name)], { title: `T${i}`, overview: null, characters: [] }, []);
+        faults.push(false);
+      } catch (error) {
+        faults.push((error as InstanceType<typeof WriteFailure>).titlesFault);
+      }
+    }
+    return faults;
+  };
+
+  test("a model failing every title is broken: the third failure in a row rests it, and the titles after aren't blamed", async () => {
+    answers.set("broken", () => {
+      throw httpError(400, { error: { message: "Unsupported parameter: temperature" } });
+    });
+    expect(await titlesFaults("broken", 4)).toEqual([true, true, false, false]);
+  });
+
+  test("a title it writes clears the count", async () => {
+    let calls = 0;
+    answers.set("flaky", () => {
+      if (++calls === 3) return { scenes: [], synopsis: "ok" };
+      throw new Error("Chat model returned an empty or too-short synopsis");
+    });
+    // fail, fail, write, fail: the last is the first in a row again.
+    expect(await titlesFaults("flaky", 4)).toEqual([true, true, false, true]);
   });
 });
 
