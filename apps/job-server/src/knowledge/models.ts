@@ -24,7 +24,32 @@ export interface KnowledgeModel extends ChatSettings {
 /** How long a rejected key, unknown model or empty account rests. */
 const REST_MS = 60 * 60_000;
 /** How long a busy or unreachable model rests, and a rate-limited one that does not say. */
-const SHORT_REST_MS = 15 * 60_000;
+export const SHORT_REST_MS = 15 * 60_000;
+/**
+ * Titles in a row a model may fail on what look like the titles' own accounts
+ * (a bad request, an answer that can't be read, a timeout) before the failures
+ * count as the model's: one failing every title is broken, not the titles.
+ */
+const STRIKES = 3;
+/** Per model: its title failures in a row (and, for the AI Chat model, when its rest ends). */
+const strikes = new Map<string, number>();
+const chatBenchedUntil = new Map<string, number>();
+const keyOf = (model: KnowledgeModel) => (model.id === null ? `chat:${modelLabel(model)}` : `id:${model.id}`);
+
+/**
+ * No model wrote the title. `titlesFault`: every model tried failed on the
+ * title's account, so the title waits before it is tried again; otherwise the
+ * models were resting or failed on their own (a rate limit, a server error,
+ * a model failing every title), and the title stays due for when one is back.
+ */
+export class WriteFailure extends Error {
+  constructor(
+    readonly cause: unknown,
+    readonly titlesFault: boolean
+  ) {
+    super(cause instanceof Error ? cause.message : String(cause));
+  }
+}
 
 /** Requests a hosted API is sent at once unless set; a local server is sent one. */
 const HOSTED_PARALLEL = 4;
@@ -158,6 +183,8 @@ export async function writePlotWithModels(
   parts: Scene[]
 ): Promise<{ scenes: Scene[]; synopsis: string; model: KnowledgeModel }> {
   let lastError: unknown = new Error("No knowledge index model is usable: all are resting");
+  let tried = false;
+  let modelsFault = false;
   for (const model of models) {
     if (!isUsable(model)) continue;
     const written = await inSlot(model, async (waited) => {
@@ -171,30 +198,59 @@ export async function writePlotWithModels(
         if (!isUsable(model)) return null;
       }
       try {
-        return { ...(await writePlot(model, info, parts)), model };
+        const plot = await writePlot(model, info, parts);
+        strikes.delete(keyOf(model));
+        return { ...plot, model };
       } catch (error) {
         lastError = error;
-        await restAfter(model, error);
+        tried = true;
+        if (await restAfter(model, error)) modelsFault = true;
         return null;
       }
     });
     if (written) return written;
   }
-  throw lastError;
+  throw new WriteFailure(lastError, tried && !modelsFault);
 }
 
-/** Rest a model after a failure of its own (see restFor); a title's failure leaves it be. */
-async function restAfter(model: KnowledgeModel, error: unknown) {
+/** Whether the model is resting now, by its saved rest: settings may have lifted it since. */
+async function resting(model: KnowledgeModel): Promise<boolean> {
+  if (model.id === null) return (chatBenchedUntil.get(keyOf(model)) ?? 0) > Date.now();
+  const [row] = await db
+    .select({ until: knowledgeModels.unavailableUntil })
+    .from(knowledgeModels)
+    .where(eq(knowledgeModels.id, model.id));
+  return !!row?.until && row.until.getTime() > Date.now();
+}
+
+/**
+ * Rest a model after a failure of its own (see restFor). A title's failure
+ * leaves it be, unless it is the model's STRIKES-th in a row. Returns whether
+ * the failure was the model's: it rested, or was already resting (another
+ * title's request benched it while this one was in flight).
+ */
+async function restAfter(model: KnowledgeModel, error: unknown): Promise<boolean> {
+  const key = keyOf(model);
+  if (await resting(model)) return true;
   const failure = await failureOf(error);
-  const rest = restFor(failure);
-  if (rest === null) return;
+  let rest = restFor(failure);
+  let said = `${failure.status ?? "no answer"}: ${messageOf(failure.body)}`;
+  if (rest === null) {
+    const inRow = (strikes.get(key) ?? 0) + 1;
+    strikes.set(key, inRow);
+    if (inRow < STRIKES) return false;
+    rest = SHORT_REST_MS;
+    said = `failed ${inRow} titles in a row, the last with ${said}`;
+  }
+  strikes.delete(key);
   model.unavailableUntil = new Date(Date.now() + rest);
-  if (model.id === null) return;
+  if (model.id === null) {
+    chatBenchedUntil.set(key, model.unavailableUntil.getTime());
+    return true;
+  }
   await db
     .update(knowledgeModels)
-    .set({
-      unavailableUntil: model.unavailableUntil,
-      lastError: `${failure.status ?? "no answer"}: ${messageOf(failure.body)}`.slice(0, 500),
-    })
+    .set({ unavailableUntil: model.unavailableUntil, lastError: said.slice(0, 500) })
     .where(eq(knowledgeModels.id, model.id));
+  return true;
 }

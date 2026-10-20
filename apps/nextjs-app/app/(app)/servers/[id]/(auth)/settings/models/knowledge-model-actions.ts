@@ -11,6 +11,7 @@ import {
 } from "@/lib/db/knowledge-models";
 import { type ChatAIConfig, testChatConnection } from "@/lib/db/server";
 import { isUserAdmin } from "@/lib/db/users";
+import { startKnowledgeRun } from "@/lib/knowledge-run";
 
 async function requireAdmin(serverId: number) {
   if (!(await isUserAdmin(serverId))) {
@@ -28,6 +29,7 @@ export async function saveKnowledgeModelAction(
   await requireAdmin(serverId);
   await saveKnowledgeModel(serverId, input);
   refresh(serverId);
+  await startKnowledgeRun(serverId);
 }
 
 export async function removeKnowledgeModelAction(serverId: number, id: number) {
@@ -44,6 +46,7 @@ export async function setKnowledgeModelEnabledAction(
   await requireAdmin(serverId);
   await setKnowledgeModelEnabled(serverId, id, enabled);
   refresh(serverId);
+  if (enabled) await startKnowledgeRun(serverId);
 }
 
 export async function setKnowledgeModelRewriteAction(
@@ -55,6 +58,7 @@ export async function setKnowledgeModelRewriteAction(
   await requireAdmin(serverId);
   await setKnowledgeModelRewrite(serverId, id, from, on);
   refresh(serverId);
+  if (on) await startKnowledgeRun(serverId);
 }
 
 export async function moveKnowledgeModelAction(

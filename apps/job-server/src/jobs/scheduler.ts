@@ -701,6 +701,17 @@ class SyncScheduler {
    * Manually trigger full sync for a specific server.
    * Cancels any existing full sync jobs for this server before starting.
    */
+  /**
+   * Start a knowledge index run now, as a model is turned on or titles are
+   * asked for next, rather than at the next scheduled one. With a run going,
+   * it queues behind it (that run reads the settings again as it goes).
+   */
+  async triggerServerKnowledgeSync(serverId: number): Promise<void> {
+    const boss = await getJobQueue();
+    await boss.send(KNOWLEDGE_INDEX_JOB_NAME, { serverId }, SEND_OPTIONS.DAY);
+    console.log(`[scheduler] trigger=knowledge-sync serverId=${serverId}`);
+  }
+
   async triggerServerFullSync(serverId: number): Promise<void> {
     try {
       const cancelledCount = await cancelJobsByName(

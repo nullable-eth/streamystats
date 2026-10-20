@@ -31,6 +31,8 @@ import {
   modelLabel,
   parallelOf,
   rewritesOf,
+  SHORT_REST_MS,
+  WriteFailure,
   writePlotWithModels,
   writersFor,
 } from "../knowledge/models";
@@ -471,10 +473,14 @@ async function indexSynopsis(
     }
     await db.update(items).set({ processed: false }).where(eq(items.id, item.id));
   } catch (error) {
-    // Back off a day rather than retrying failing models every run; notes
-    // already there stay until replaced, and keep when they were written.
-    if (previous) await db.update(itemTexts).set({ checkedAt: new Date() }).where(eq(itemTexts.id, previous.id));
-    else await saveText(serverId, item.id, "scenes", { status: "missing" });
+    // A title the models failed on its own account waits a day rather than
+    // being retried every run; notes already there stay until replaced, and
+    // keep when they were written. One the models couldn't take (resting, rate
+    // limited, failing every title) stays due for when one is back.
+    if (!(error instanceof WriteFailure) || error.titlesFault) {
+      if (previous) await db.update(itemTexts).set({ checkedAt: new Date() }).where(eq(itemTexts.id, previous.id));
+      else await saveText(serverId, item.id, "scenes", { status: "missing" });
+    }
     throw error;
   }
 
@@ -573,6 +579,7 @@ export async function knowledgeIndexJob(job: PgBossJob<ServerIdJobData>) {
     // while the last ones are still being written (see runPool).
     const taken = new Set<string>();
     let concurrency = 1;
+    const inTime = () => Date.now() - startTime < RUN_BUDGET_MS;
     const indexItem = async (item: DueItem) => {
       try {
         counts[await indexTranscript(serverId, client, embedding, languages, item)]++;
@@ -594,18 +601,26 @@ export async function knowledgeIndexJob(job: PgBossJob<ServerIdJobData>) {
     };
     const fetchTitles = async (): Promise<DueItem[]> => {
       // Read again each fetch (and each title, above): models rest, settings change.
-      const usable = (await getKnowledgeModels(serverId)).filter((m) => isUsable(m));
+      let listed = await getKnowledgeModels(serverId);
+      let usable = listed.filter((m) => isUsable(m));
       // As many at once as the model taking most; each model is sent no more
       // requests at once than it takes (see parallelOf).
       concurrency = Math.max(1, ...usable.map(parallelOf));
-      const batch = await dueItems(
-        serverId,
-        server.knowledgeItemTypes,
-        usable,
-        withReferences,
-        taken,
-        Math.max(ITEMS_PER_QUERY, concurrency)
-      );
+      const due = (models: KnowledgeModel[]) =>
+        dueItems(serverId, server.knowledgeItemTypes, models, withReferences, taken, Math.max(ITEMS_PER_QUERY, concurrency));
+      let batch = await due(usable);
+      // Nothing due only because the models are resting a short while (busy,
+      // rate limited): wait for one rather than end the run, looking again
+      // every half minute (one turned back on in the settings comes back then).
+      while (batch.length === 0 && usable.length < listed.length && inTime()) {
+        const back = Math.min(...listed.filter((m) => !isUsable(m)).map((m) => m.unavailableUntil?.getTime() ?? 0));
+        if (back - Date.now() > SHORT_REST_MS || (await due(listed)).length === 0) break;
+        await new Promise((resolve) => setTimeout(resolve, Math.min(30_000, Math.max(1_000, back - Date.now()))));
+        listed = await getKnowledgeModels(serverId);
+        usable = listed.filter((m) => isUsable(m));
+        concurrency = Math.max(1, ...usable.map(parallelOf));
+        batch = await due(usable);
+      }
       for (const item of batch) taken.add(item.id);
       const lookUp = batch.filter((item) => item.reference_due);
       if (lookUp.length > 0) {
@@ -626,12 +641,7 @@ export async function knowledgeIndexJob(job: PgBossJob<ServerIdJobData>) {
       return batch;
     };
     // Titles left when the run's time is up stay due for the next run.
-    await runPool({
-      fetch: fetchTitles,
-      work: indexItem,
-      size: () => concurrency,
-      inTime: () => Date.now() - startTime < RUN_BUDGET_MS,
-    });
+    await runPool({ fetch: fetchTitles, work: indexItem, size: () => concurrency, inTime });
     await logJobResult(job.id, KNOWLEDGE_INDEX_JOB_NAME, "completed", { serverId, ...counts, lastError }, Date.now() - startTime);
     console.info(`[knowledge] serverId=${serverId} action=done ${JSON.stringify(counts)}`);
     return counts;
