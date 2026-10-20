@@ -133,7 +133,6 @@ export function KnowledgeIndexManager({
           )}
 
           <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
-            <span className="text-muted-foreground">Include</span>
             {status.byType.map((t) => (
               <div key={t.type} className="flex items-center gap-2">
                 <Switch
