@@ -32,6 +32,8 @@ const SEND_OPTIONS = {
   MEDIUM: { expireInSeconds: 3600, retryLimit: 1, retryDelay: 60, heartbeatSeconds: HEARTBEAT_SECONDS },
   LONG: { expireInSeconds: 7200, retryLimit: 1, retryDelay: 300, heartbeatSeconds: HEARTBEAT_SECONDS },
   EXTENDED: { expireInSeconds: 14400, retryLimit: 1, retryDelay: 300, heartbeatSeconds: HEARTBEAT_SECONDS },
+  // Runs as long as work is due (the knowledge index); the heartbeat still fails it quickly if its worker dies.
+  DAY: { expireInSeconds: 86400, retryLimit: 1, retryDelay: 300, heartbeatSeconds: HEARTBEAT_SECONDS },
 } as const;
 
 /**
@@ -84,7 +86,7 @@ const SCHEDULER_JOB_CONFIG: Record<JobKey, {
   "knowledge-sync": {
     pgBossName: KNOWLEDGE_INDEX_JOB_NAME,
     buildData: (serverId) => ({ serverId }),
-    sendOptions: SEND_OPTIONS.LONG,
+    sendOptions: SEND_OPTIONS.DAY,
   },
   "full-sync": {
     pgBossName: JELLYFIN_JOB_NAMES.FULL_SYNC,

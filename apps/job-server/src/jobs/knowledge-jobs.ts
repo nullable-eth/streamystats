@@ -49,8 +49,13 @@ import { logJobResult } from "./job-logger";
 
 export const KNOWLEDGE_INDEX_JOB_NAME = "knowledge-index-sync";
 
-/** Leave room under the queue's 2h expiry; the next run continues. */
-const RUN_BUDGET_MS = 90 * 60_000;
+/**
+ * A run goes on while titles are due, so the threads stay busy instead of
+ * draining at a cut-off; it stops an hour short of the job's 24h expiry
+ * (SEND_OPTIONS.DAY in scheduler.ts) to finish the titles in flight. The
+ * 15-minute schedule keeps a next run queued, which starts as this one ends.
+ */
+const RUN_BUDGET_MS = 23 * 60 * 60_000;
 const ITEMS_PER_QUERY = 25;
 const EMBED_BATCH = 32;
 const MAX_TRACKS_TRIED = 3;
