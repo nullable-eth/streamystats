@@ -34,6 +34,7 @@ import {
   writePlotWithModels,
   writersFor,
 } from "../knowledge/models";
+import { runPool } from "../knowledge/pool";
 import {
   characterNames,
   formatScenes,
@@ -157,7 +158,8 @@ async function dueItems(
   types: readonly string[],
   usable: KnowledgeModel[],
   withReferences: boolean,
-  taken: Set<string>
+  taken: Set<string>,
+  limit = ITEMS_PER_QUERY
 ): Promise<DueItem[]> {
   const allowed: readonly string[] = KNOWLEDGE_ITEM_TYPES;
   const selected = types.filter((t) => allowed.includes(t));
@@ -190,7 +192,7 @@ async function dueItems(
         OR ${referenceDue}
       )
     ORDER BY (s.status IS NOT DISTINCT FROM 'wanted') DESC, (t.id IS NULL) DESC, i.date_created DESC NULLS LAST
-    LIMIT ${ITEMS_PER_QUERY}
+    LIMIT ${limit}
   `);
   return Array.from(rows);
 }
@@ -561,15 +563,44 @@ export async function knowledgeIndexJob(job: PgBossJob<ServerIdJobData>) {
       }
     }
 
+    // Titles go to a pool of workers that keeps as many requests in flight as
+    // the models take, fetching the next titles (with their Wikipedia plots)
+    // while the last ones are still being written (see runPool).
     const taken = new Set<string>();
-    while (Date.now() - startTime < RUN_BUDGET_MS) {
-      // Read again each batch (and each title, below): models rest, settings change.
+    let concurrency = 1;
+    const indexItem = async (item: DueItem) => {
+      try {
+        counts[await indexTranscript(serverId, client, embedding, languages, item)]++;
+        // A run for a local model can take hours: a model turned off or
+        // resting since it began is not tried.
+        const current = (await getKnowledgeModels(serverId)).filter((m) => isUsable(m));
+        if (await indexSynopsis(serverId, current, embedding, item)) {
+          counts.synopses++;
+        }
+      } catch (error) {
+        counts.errors++;
+        lastError = `${titleOf(item)}: ${errorText(error)}`;
+        console.warn(`[knowledge] serverId=${serverId} item=${item.id} error=${lastError}`);
+        // Never let one bad item stall the queue: stamp it as checked so it
+        // waits for the next re-check instead of coming straight back.
+        const transcript = await getText(item.id, "transcript");
+        await saveText(serverId, item.id, "transcript", { status: transcript?.status ?? "error" });
+      }
+    };
+    const fetchTitles = async (): Promise<DueItem[]> => {
+      // Read again each fetch (and each title, above): models rest, settings change.
       const usable = (await getKnowledgeModels(serverId)).filter((m) => isUsable(m));
-      // Enough titles at once for the model taking most; each model is sent
-      // no more requests at once than it takes (see parallelOf).
-      const concurrency = Math.max(1, ...usable.map(parallelOf));
-      const batch = await dueItems(serverId, server.knowledgeItemTypes, usable, withReferences, taken);
-      if (batch.length === 0) break;
+      // As many at once as the model taking most; each model is sent no more
+      // requests at once than it takes (see parallelOf).
+      concurrency = Math.max(1, ...usable.map(parallelOf));
+      const batch = await dueItems(
+        serverId,
+        server.knowledgeItemTypes,
+        usable,
+        withReferences,
+        taken,
+        Math.max(ITEMS_PER_QUERY, concurrency)
+      );
       for (const item of batch) taken.add(item.id);
       const lookUp = batch.filter((item) => item.reference_due);
       if (lookUp.length > 0) {
@@ -581,38 +612,21 @@ export async function knowledgeIndexJob(job: PgBossJob<ServerIdJobData>) {
           counts.errors++;
           lastError = `Wikipedia plots: ${errorText(error)}`;
           console.warn(`[knowledge] serverId=${serverId} error=${lastError}`);
-          break;
+          return [];
         }
       }
-      const indexItem = async (item: DueItem) => {
-        try {
-          counts[await indexTranscript(serverId, client, embedding, languages, item)]++;
-          // A batch for a local model can take hours: a model turned off or
-          // resting since it began is not tried.
-          const current = (await getKnowledgeModels(serverId)).filter((m) => isUsable(m));
-          if (await indexSynopsis(serverId, current, embedding, item)) {
-            counts.synopses++;
-          }
-        } catch (error) {
-          counts.errors++;
-          lastError = `${titleOf(item)}: ${errorText(error)}`;
-          console.warn(`[knowledge] serverId=${serverId} item=${item.id} error=${lastError}`);
-          // Never let one bad item stall the queue: stamp it as checked so it
-          // waits for the next re-check instead of coming straight back.
-          const transcript = await getText(item.id, "transcript");
-          await saveText(serverId, item.id, "transcript", { status: transcript?.status ?? "error" });
-        }
-      };
-      // `concurrency` workers taking titles off the batch while the run has time;
-      // titles left over stay due for the next run.
-      const inTime = () => Date.now() - startTime < RUN_BUDGET_MS;
-      await Promise.all(
-        Array.from({ length: concurrency }, async () => {
-          for (let item = batch.shift(); item && inTime(); item = batch.shift()) await indexItem(item);
-        })
-      );
-      await logJobResult(job.id, KNOWLEDGE_INDEX_JOB_NAME, "processing", { serverId, ...counts, lastError }, Date.now() - startTime);
-    }
+      if (batch.length > 0) {
+        await logJobResult(job.id, KNOWLEDGE_INDEX_JOB_NAME, "processing", { serverId, ...counts, lastError }, Date.now() - startTime);
+      }
+      return batch;
+    };
+    // Titles left when the run's time is up stay due for the next run.
+    await runPool({
+      fetch: fetchTitles,
+      work: indexItem,
+      size: () => concurrency,
+      inTime: () => Date.now() - startTime < RUN_BUDGET_MS,
+    });
     await logJobResult(job.id, KNOWLEDGE_INDEX_JOB_NAME, "completed", { serverId, ...counts, lastError }, Date.now() - startTime);
     console.info(`[knowledge] serverId=${serverId} action=done ${JSON.stringify(counts)}`);
     return counts;
