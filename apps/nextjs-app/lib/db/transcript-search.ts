@@ -132,6 +132,10 @@ export async function searchTextWindows({
   // remembered line ranked by its words is often a few places down, under
   // titles that use the same words apart. Only with two words or more that
   // count; one is no phrase, and the word ranking has it already.
+  // Among titles that say it, the earliest first: a line said word for word
+  // in several is mostly a famous one the later titles quote ("We're gonna
+  // need a bigger boat" in a dozen films and episodes after Jaws), or a
+  // catchphrase, first said in the episode that coined it.
   const exactRanking = async () => {
     if (kind !== "transcript") return [];
     const phrase = anyWording(query, "phraseto_tsquery");
@@ -146,7 +150,13 @@ export async function searchTextWindows({
           sql`${itemTextChunks.searchVector} @@ ${phrase}`,
         ),
       )
-      .orderBy(desc(sql`ts_rank_cd(${itemTextChunks.searchVector}, ${phrase})`))
+      .orderBy(
+        // Undated titles last (ascending puts nulls last).
+        asc(
+          sql`coalesce(${items.premiereDate}, make_date(${items.productionYear}, 1, 1))`,
+        ),
+        desc(sql`ts_rank_cd(${itemTextChunks.searchVector}, ${phrase})`),
+      )
       .limit(pool);
   };
 
