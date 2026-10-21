@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.itemPeopleRelations = exports.peopleRelations = exports.watchlistItemsRelations = exports.watchlistsRelations = exports.hiddenRecommendationsRelations = exports.anomalyEventsRelations = exports.userFingerprintsRelations = exports.activityLocationsRelations = exports.sessionsRelations = exports.itemsRelations = exports.activitiesRelations = exports.usersRelations = exports.librariesRelations = exports.serverJobConfigurationsRelations = exports.serversRelations = exports.watchlistItems = exports.watchlists = exports.itemPeople = exports.people = exports.anomalyEvents = exports.userFingerprints = exports.activityLocations = exports.userItemRatings = exports.userRecommendationProfiles = exports.hiddenRecommendations = exports.activityLogCursors = exports.activeSessions = exports.sessions = exports.itemTextChunks = exports.knowledgeModels = exports.itemTexts = exports.mediaSources = exports.items = exports.serverJobConfigurations = exports.jobResults = exports.activities = exports.users = exports.libraries = exports.servers = void 0;
+exports.itemPeopleRelations = exports.peopleRelations = exports.watchlistItemsRelations = exports.watchlistsRelations = exports.hiddenRecommendationsRelations = exports.anomalyEventsRelations = exports.userFingerprintsRelations = exports.activityLocationsRelations = exports.sessionsRelations = exports.itemsRelations = exports.activitiesRelations = exports.usersRelations = exports.librariesRelations = exports.serverJobConfigurationsRelations = exports.serversRelations = exports.watchlistItems = exports.watchlists = exports.itemPeople = exports.people = exports.anomalyEvents = exports.userFingerprints = exports.activityLocations = exports.userItemRatings = exports.userRecommendationProfiles = exports.hiddenRecommendations = exports.activityLogCursors = exports.activeSessions = exports.sessions = exports.itemTextChunks = exports.knowledgeRefusals = exports.knowledgeModels = exports.itemTexts = exports.mediaSources = exports.items = exports.serverJobConfigurations = exports.jobResults = exports.activities = exports.users = exports.libraries = exports.servers = void 0;
 const pg_core_1 = require("drizzle-orm/pg-core");
 const drizzle_orm_1 = require("drizzle-orm");
 // Custom vector type that supports variable dimensions
@@ -410,7 +410,9 @@ exports.itemTexts = (0, pg_core_1.pgTable)("item_texts", {
         .notNull()
         .references(() => exports.items.id, { onDelete: "cascade" }),
     kind: (0, pg_core_1.text)("kind").notNull(), // "transcript" | "scenes" | "synopsis" | "reference"
-    status: (0, pg_core_1.text)("status").notNull(), // "ready" | "missing"; scenes also "wanted": asked to be written next
+    // "ready" | "missing"; scenes also "wanted" (asked to be written next) and
+    // "declined" (every model tried refused it: see knowledge_refusals)
+    status: (0, pg_core_1.text)("status").notNull(),
     // transcript: the subtitle stream it was read from; scenes (the plot part
     // by part, each under its times) and synopsis: the transcript hash they
     // were written from, and the reference's when there was one (a change
@@ -457,6 +459,19 @@ exports.knowledgeModels = (0, pg_core_1.pgTable)("knowledge_models", {
     createdAt: (0, pg_core_1.timestamp)("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: (0, pg_core_1.timestamp)("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [(0, pg_core_1.index)("knowledge_models_server_idx").on(table.serverId, table.position)]);
+// Models that declined to write a title's notes: the provider's content filter
+// refused it (a usage-policy block, say). The title is not sent to that model
+// again; any other model may still write it.
+exports.knowledgeRefusals = (0, pg_core_1.pgTable)("knowledge_refusals", {
+    itemId: (0, pg_core_1.text)("item_id")
+        .notNull()
+        .references(() => exports.items.id, { onDelete: "cascade" }),
+    // The model, as written_by names it ("provider:model").
+    model: (0, pg_core_1.text)("model").notNull(),
+    // What the provider said, shortened.
+    reason: (0, pg_core_1.text)("reason"),
+    refusedAt: (0, pg_core_1.timestamp)("refused_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [(0, pg_core_1.primaryKey)({ columns: [table.itemId, table.model] })]);
 // Searchable windows of an item's texts, each with an embedding (HNSW index
 // created per dimension at runtime, as for items.embedding) and a generated
 // tsvector for exact-wording search. Transcript windows are up to two

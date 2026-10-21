@@ -551,7 +551,9 @@ export const itemTexts = pgTable(
       .notNull()
       .references(() => items.id, { onDelete: "cascade" }),
     kind: text("kind").notNull(), // "transcript" | "scenes" | "synopsis" | "reference"
-    status: text("status").notNull(), // "ready" | "missing"; scenes also "wanted": asked to be written next
+    // "ready" | "missing"; scenes also "wanted" (asked to be written next) and
+    // "declined" (every model tried refused it: see knowledge_refusals)
+    status: text("status").notNull(),
     // transcript: the subtitle stream it was read from; scenes (the plot part
     // by part, each under its times) and synopsis: the transcript hash they
     // were written from, and the reference's when there was one (a change
@@ -604,6 +606,24 @@ export const knowledgeModels = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [index("knowledge_models_server_idx").on(table.serverId, table.position)]
+);
+
+// Models that declined to write a title's notes: the provider's content filter
+// refused it (a usage-policy block, say). The title is not sent to that model
+// again; any other model may still write it.
+export const knowledgeRefusals = pgTable(
+  "knowledge_refusals",
+  {
+    itemId: text("item_id")
+      .notNull()
+      .references(() => items.id, { onDelete: "cascade" }),
+    // The model, as written_by names it ("provider:model").
+    model: text("model").notNull(),
+    // What the provider said, shortened.
+    reason: text("reason"),
+    refusedAt: timestamp("refused_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.itemId, table.model] })]
 );
 
 // Searchable windows of an item's texts, each with an embedding (HNSW index
@@ -1356,6 +1376,7 @@ export type NewItem = typeof items.$inferInsert;
 
 export type ItemText = typeof itemTexts.$inferSelect;
 export type KnowledgeModel = typeof knowledgeModels.$inferSelect;
+export type KnowledgeRefusal = typeof knowledgeRefusals.$inferSelect;
 export type ItemTextChunk = typeof itemTextChunks.$inferSelect;
 
 export type MediaSource = typeof mediaSources.$inferSelect;

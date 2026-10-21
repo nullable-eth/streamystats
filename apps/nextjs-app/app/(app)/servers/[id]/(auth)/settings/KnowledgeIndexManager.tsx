@@ -94,6 +94,8 @@ export function KnowledgeIndexManager({
   const sum = (key: Exclude<keyof KnowledgeTypeStatus, "type" | "enabled">) =>
     selected.reduce((n, t) => n + t[key], 0);
   const total = sum("total");
+  // Those every model declined wait for one that hasn't: not in the queue.
+  const toWrite = sum("dialogue") - sum("declined");
   const models = `/servers/${serverId}/settings/models`;
 
   return (
@@ -233,14 +235,27 @@ export function KnowledgeIndexManager({
               </p>
             )}
             <ul className="space-y-2">
-              {sum("dialogue") > 0 && (
+              {toWrite > 0 && (
                 <li>
                   <span className="font-medium">
-                    {count(sum("dialogue"), "synopsis", "synopses")} to write.
+                    {count(toWrite, "synopsis", "synopses")} to write.
                   </span>{" "}
                   <Writers writers={status.writers} models={models} />
                   {sum("failed") > 0 &&
                     ` ${count(sum("failed"), "failed", "failed")} in the last day and ${sum("failed") === 1 ? "is" : "are"} tried again a day later.`}
+                </li>
+              )}
+              {sum("declined") > 0 && (
+                <li>
+                  <span className="font-medium">
+                    {count(sum("declined"), "declined", "declined")}
+                  </span>{" "}
+                  by every model that writes synopses: the provider's content
+                  filter refused {sum("declined") === 1 ? "it" : "them"} (a
+                  usage-policy block, for example). They stay searchable by
+                  their dialogue, and are not sent to those models again; a
+                  model that hasn't declined them, such as a local one, writes
+                  them once it is turned on.
                 </li>
               )}
               {sum("rewrites") > 0 && (
@@ -271,7 +286,7 @@ export function KnowledgeIndexManager({
                   to look up on Wikipedia.
                 </li>
               )}
-              {sum("dialogue") + sum("rewrites") + sum("unread") === 0 && (
+              {toWrite + sum("rewrites") + sum("unread") === 0 && (
                 <li>
                   Nothing waiting: new movies and episodes are picked up on the
                   next run.

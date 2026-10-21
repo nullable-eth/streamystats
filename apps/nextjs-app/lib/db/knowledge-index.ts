@@ -48,6 +48,11 @@ export interface KnowledgeTypeStatus {
   noSubtitles: number;
   /** Synopses whose writing failed in the last day: tried again a day later. */
   failed: number;
+  /**
+   * Subtitles read, but every model that writes synopses declined it (its
+   * provider's content filter refused): waits for a model that hasn't.
+   */
+  declined: number;
   /** Synopses a model was asked to replace (in AI Models), still to be rewritten. */
   rewrites: number;
   /** Not looked up on Wikipedia yet. */
@@ -121,8 +126,9 @@ export async function getKnowledgeIndexStatus(
         count(*) FILTER (WHERE s.status IS DISTINCT FROM 'ready' AND t.status IS DISTINCT FROM 'ready')::int AS "titleOnly",
         count(*) FILTER (WHERE t.id IS NULL)::int AS unread,
         count(*) FILTER (WHERE t.status <> 'ready')::int AS "noSubtitles",
-        count(*) FILTER (WHERE t.status = 'ready' AND s.status <> 'ready'
+        count(*) FILTER (WHERE t.status = 'ready' AND s.status <> 'ready' AND s.status <> 'declined'
                          AND s.checked_at > now() - interval '1 day')::int AS failed,
+        count(*) FILTER (WHERE t.status = 'ready' AND s.status = 'declined')::int AS declined,
         count(*) FILTER (WHERE s.status = 'ready' AND s.written_by IN (
           SELECT unnest(m.rewrite_from) FROM ${knowledgeModels} m
           WHERE m.server_id = ${serverId} AND m.enabled))::int AS rewrites,
@@ -188,6 +194,7 @@ export async function getKnowledgeIndexStatus(
     unread: 0,
     noSubtitles: 0,
     failed: 0,
+    declined: 0,
     rewrites: 0,
     wikipediaPending: 0,
   };
@@ -253,6 +260,8 @@ export interface SynopsisQueue {
   next: number;
   /** Subtitles read, waiting in the queue. */
   waiting: number;
+  /** Every model that writes synopses declined it (a content filter). */
+  declined: number;
   /** No readable subtitles: none can be written. */
   noSubtitles: number;
 }
@@ -268,6 +277,8 @@ export type SynopsisState = {
   next: number;
   /** Subtitles read, the synopsis waiting in the queue. */
   waiting: number;
+  /** Every model that writes synopses declined it (a content filter). */
+  declined: number;
 };
 
 /** A movie, episode or series (by the id given), and its episodes in the library. */
@@ -279,11 +290,13 @@ const itemAndEpisodes = (x: SQL, id: SQL | Column) => sql`
 /**
  * How far an item's synopsis is, to sort by: 0 waiting, 1 next in the queue,
  * 2 written, 3 written with a Wikipedia plot; a series', its episodes'
- * average. Null without subtitles, when none can be written.
+ * average. Null without subtitles, or declined by every model: when none can
+ * be written.
  */
 export const synopsisProgress = (id: SQL | Column) => sql`(
   SELECT avg(CASE WHEN s.status = 'ready' AND r.status = 'ready' THEN 3 WHEN s.status = 'ready' THEN 2
-                  WHEN s.status = 'wanted' THEN 1 WHEN t.status = 'ready' THEN 0 END)
+                  WHEN s.status = 'wanted' THEN 1 WHEN s.status = 'declined' THEN NULL
+                  WHEN t.status = 'ready' THEN 0 END)
   FROM ${items} x
   LEFT JOIN ${itemTexts} t ON t.item_id = x.id AND t.kind = 'transcript'
   LEFT JOIN ${itemTexts} s ON s.item_id = x.id AND s.kind = 'scenes'
@@ -301,8 +314,9 @@ export async function getSynopsisStates(
       count(*) FILTER (WHERE s.status = 'ready')::int AS written,
       count(*) FILTER (WHERE s.status = 'ready' AND r.status = 'ready')::int AS best,
       count(*) FILTER (WHERE s.status = 'wanted')::int AS next,
-      count(*) FILTER (WHERE t.status = 'ready'
-        AND s.status IS DISTINCT FROM 'ready' AND s.status IS DISTINCT FROM 'wanted')::int AS waiting
+      count(*) FILTER (WHERE t.status = 'ready' AND s.status IS DISTINCT FROM 'ready'
+        AND s.status IS DISTINCT FROM 'wanted' AND s.status IS DISTINCT FROM 'declined')::int AS waiting,
+      count(*) FILTER (WHERE t.status = 'ready' AND s.status = 'declined')::int AS declined
     FROM ${items} o
     JOIN ${items} x ON ${itemAndEpisodes(sql`x`, sql`o.id`)}
     LEFT JOIN ${itemTexts} t ON t.item_id = x.id AND t.kind = 'transcript'
@@ -329,8 +343,9 @@ export async function getSynopsisQueue(
       SELECT
         count(*) FILTER (WHERE s.status = 'ready')::int AS written,
         count(*) FILTER (WHERE s.status = 'wanted')::int AS next,
-        count(*) FILTER (WHERE t.status = 'ready'
-          AND s.status IS DISTINCT FROM 'ready' AND s.status IS DISTINCT FROM 'wanted')::int AS waiting,
+        count(*) FILTER (WHERE t.status = 'ready' AND s.status IS DISTINCT FROM 'ready'
+          AND s.status IS DISTINCT FROM 'wanted' AND s.status IS DISTINCT FROM 'declined')::int AS waiting,
+        count(*) FILTER (WHERE t.status = 'ready' AND s.status = 'declined')::int AS declined,
         count(*) FILTER (WHERE t.status IS DISTINCT FROM 'ready'
           AND s.status IS DISTINCT FROM 'ready')::int AS "noSubtitles"
       FROM ${items}
@@ -348,6 +363,7 @@ export async function getSynopsisQueue(
     written: row?.written ?? 0,
     next: row?.next ?? 0,
     waiting: row?.waiting ?? 0,
+    declined: row?.declined ?? 0,
     noSubtitles: row?.noSubtitles ?? 0,
   };
 }
@@ -355,7 +371,8 @@ export async function getSynopsisQueue(
 /**
  * Put a movie's or episode's synopsis, or a series' episodes' still to be
  * written, at the front of the queue: the knowledge index writes them on its
- * next pass. Those already written are left as they are. How many were asked.
+ * next pass. Those already written are left as they are, and so are those every
+ * model declined (they wait for a model that hasn't). How many were asked.
  */
 export async function writeSynopsesNext(
   serverId: number,
@@ -369,6 +386,7 @@ export async function writeSynopsesNext(
     LEFT JOIN ${itemTexts} s ON s.item_id = ${items.id} AND s.kind = 'scenes'
     WHERE ${queueScope(serverId, itemId)}
       AND s.status IS DISTINCT FROM 'ready' AND s.status IS DISTINCT FROM 'wanted'
+      AND s.status IS DISTINCT FROM 'declined'
     ON CONFLICT (item_id, kind) DO UPDATE SET status = 'wanted', checked_at = 'epoch'
     RETURNING 1
   `);

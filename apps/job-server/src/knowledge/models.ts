@@ -2,7 +2,7 @@ import { db, knowledgeModels, servers } from "@streamystats/database";
 import axios from "axios";
 import { asc, eq } from "drizzle-orm";
 import { MAX_WAIT_MS, waitAsked } from "./retry";
-import { type ChatSettings, type Scene, type TitleInfo, writePlot } from "./synopsis";
+import { type ChatSettings, RefusalError, refusalIn, type Scene, type TitleInfo, writePlot } from "./synopsis";
 
 /**
  * The models the knowledge index writes with, in the order the server lists
@@ -41,14 +41,25 @@ const keyOf = (model: KnowledgeModel) => (model.id === null ? `chat:${modelLabel
  * title's account, so the title waits before it is tried again; otherwise the
  * models were resting or failed on their own (a rate limit, a server error,
  * a model failing every title), and the title stays due for when one is back.
+ * `declined`: every model declined it (see RefusalError), now or before, so it
+ * waits for a model that hasn't.
  */
 export class WriteFailure extends Error {
   constructor(
     readonly cause: unknown,
-    readonly titlesFault: boolean
+    readonly titlesFault: boolean,
+    readonly declined = false
   ) {
     super(cause instanceof Error ? cause.message : String(cause));
   }
+}
+
+/** What writePlotWithModels needs to know of a title's refusals, and how to keep a new one. */
+export interface Refusals {
+  /** Models ("provider:model") that declined the title before: not asked again. */
+  by: ReadonlySet<string>;
+  /** Keep a model's refusal, so it is not asked again. */
+  record: (model: KnowledgeModel, reason: string) => Promise<void>;
 }
 
 /** Requests a hosted API is sent at once unless set; a local server is sent one. */
@@ -175,18 +186,31 @@ export function messageOf(body: string): string {
  * A title's scene notes and synopsis from the first usable model that writes
  * them, once it has a request free (see parallelOf). A model that fails moves
  * the title on to the next; one that failed on its own account (see restFor)
- * also rests, so the titles after it skip it.
+ * also rests, so the titles after it skip it. One that declines the title
+ * (its provider's content filter refused it) neither rests nor counts a
+ * strike: the refusal is kept, and the model is not asked about the title again.
  */
 export async function writePlotWithModels(
   models: KnowledgeModel[],
   info: TitleInfo,
-  parts: Scene[]
+  parts: Scene[],
+  refusals?: Refusals
 ): Promise<{ scenes: Scene[]; synopsis: string; model: KnowledgeModel }> {
   let lastError: unknown = new Error("No knowledge index model is usable: all are resting");
   let tried = false;
   let modelsFault = false;
+  let skippedResting = false;
+  let failedOtherwise = false;
+  let declinedBy = 0;
   for (const model of models) {
-    if (!isUsable(model)) continue;
+    if (refusals?.by.has(modelLabel(model))) {
+      declinedBy++;
+      continue;
+    }
+    if (!isUsable(model)) {
+      skippedResting = true;
+      continue;
+    }
     const written = await inSlot(model, async (waited) => {
       // Another title's request may have rested it meanwhile.
       if (waited && model.id !== null) {
@@ -195,7 +219,10 @@ export async function writePlotWithModels(
           .from(knowledgeModels)
           .where(eq(knowledgeModels.id, model.id));
         model.unavailableUntil = now?.until ?? null;
-        if (!isUsable(model)) return null;
+        if (!isUsable(model)) {
+          skippedResting = true;
+          return null;
+        }
       }
       try {
         const plot = await writePlot(model, info, parts);
@@ -204,13 +231,28 @@ export async function writePlotWithModels(
       } catch (error) {
         lastError = error;
         tried = true;
-        if (await restAfter(model, error)) modelsFault = true;
+        const failure = await failureOf(error);
+        const refusal = error instanceof RefusalError ? error.message : refusalIn(failure.body);
+        if (refusal !== null) {
+          declinedBy++;
+          if (!(error instanceof RefusalError)) lastError = new RefusalError(refusal);
+          try {
+            await refusals?.record(model, refusal);
+          } catch (recordError) {
+            console.warn(`[knowledge] could not keep ${modelLabel(model)}'s refusal: ${recordError}`);
+          }
+          return null;
+        }
+        failedOtherwise = true;
+        if (await restAfter(model, failure)) modelsFault = true;
         return null;
       }
     });
     if (written) return written;
   }
-  throw new WriteFailure(lastError, tried && !modelsFault);
+  const declined = declinedBy > 0 && !failedOtherwise && !skippedResting;
+  if (declined && !tried) lastError = new RefusalError("every model that writes synopses declined it before");
+  throw new WriteFailure(lastError, declined || (tried && !modelsFault), declined);
 }
 
 /** Whether the model is resting now, by its saved rest: settings may have lifted it since. */
@@ -229,10 +271,12 @@ async function resting(model: KnowledgeModel): Promise<boolean> {
  * the failure was the model's: it rested, or was already resting (another
  * title's request benched it while this one was in flight).
  */
-async function restAfter(model: KnowledgeModel, error: unknown): Promise<boolean> {
+async function restAfter(
+  model: KnowledgeModel,
+  failure: Awaited<ReturnType<typeof failureOf>>
+): Promise<boolean> {
   const key = keyOf(model);
   if (await resting(model)) return true;
-  const failure = await failureOf(error);
   let rest = restFor(failure);
   let said = `${failure.status ?? "no answer"}: ${messageOf(failure.body)}`;
   if (rest === null) {

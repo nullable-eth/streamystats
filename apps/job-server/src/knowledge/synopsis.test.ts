@@ -1,11 +1,16 @@
 import { describe, expect, test } from "bun:test";
 import { MAX_EMBED_CHARS } from "./fit";
 import {
+  anthropicText,
   characterNames,
   formatScenes,
+  geminiText,
+  openAiText,
   parseScenes,
   parseWholeTitle,
   readEvents,
+  RefusalError,
+  refusalIn,
   sceneWindows,
   synopsisWindows,
   transcriptParts,
@@ -158,5 +163,62 @@ describe("readEvents", () => {
       return "";
     });
     await expect(read).rejects.toThrow("Overloaded");
+  });
+});
+
+describe("refusals", () => {
+  // As the cluster's Claude Code wrapper returns a usage-policy block: a 502 whose body holds the CLI's result.
+  const claudeCode = JSON.stringify({
+    error: {
+      message:
+        'claude exited 1: {"type":"result","subtype":"success","is_error":true,"api_error_status":null,"result":"API Error: Claude Code is unable to respond to this request, which appears to violate our Usage Policy (https://www.anthropic.com/legal/aup). This request triggered restrictions on content related to the development of high-yield explosives"}',
+    },
+  });
+
+  test("an error body that says a content filter refused it", () => {
+    expect(refusalIn(claudeCode)).toContain("Usage Policy");
+    expect(refusalIn('{"error":{"code":"content_policy_violation","message":"Your request was rejected"}}')).not.toBeNull();
+    expect(
+      refusalIn("The response was filtered due to the prompt triggering Azure OpenAI's content management policy.")
+    ).not.toBeNull();
+  });
+
+  test("other failures are not refusals", () => {
+    expect(refusalIn('{"error":{"message":"Your credit balance is too low"}}')).toBeNull();
+    expect(refusalIn("prompt is too long: 250000 tokens > 200000 maximum")).toBeNull();
+    expect(refusalIn("Bad Gateway")).toBeNull();
+    expect(refusalIn("")).toBeNull();
+  });
+
+  test("Claude's refusal stop in a stream", async () => {
+    async function* chunks() {
+      yield 'data: {"type":"content_block_delta","delta":{"text":"Jamie "}}\n\n';
+      yield 'data: {"type":"message_delta","delta":{"stop_reason":"refusal"}}\n\n';
+    }
+    await expect(readEvents(chunks(), anthropicText)).rejects.toBeInstanceOf(RefusalError);
+  });
+
+  test("an ordinary end of a Claude stream is not one", async () => {
+    async function* chunks() {
+      yield 'data: {"type":"content_block_delta","delta":{"text":"Adam builds a rig."}}\n\n';
+      yield 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n';
+    }
+    expect(await readEvents(chunks(), anthropicText)).toBe("Adam builds a rig.");
+  });
+
+  test("Gemini's safety stop and blocked prompt", () => {
+    expect(() => geminiText({ candidates: [{ finishReason: "SAFETY" }] })).toThrow(RefusalError);
+    expect(() => geminiText({ promptFeedback: { blockReason: "PROHIBITED_CONTENT" } })).toThrow(RefusalError);
+    expect(geminiText({ candidates: [{ content: { parts: [{ text: "ok" }] }, finishReason: "STOP" }] })).toBe("ok");
+  });
+
+  test("OpenAI-compatible refusal and content-filter stop", () => {
+    expect(() => openAiText({ choices: [{ message: { content: null, refusal: "I can't help with that." } }] })).toThrow(
+      RefusalError
+    );
+    expect(() => openAiText({ choices: [{ message: { content: "" }, finish_reason: "content_filter" }] })).toThrow(
+      RefusalError
+    );
+    expect(openAiText({ choices: [{ message: { content: "notes" }, finish_reason: "stop" }] })).toBe("notes");
   });
 });
