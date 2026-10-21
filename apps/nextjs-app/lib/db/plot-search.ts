@@ -2,6 +2,8 @@ import "server-only";
 
 import { db, items, libraries } from "@streamystats/database";
 import { and, asc, eq, inArray, isNull, type SQL, sql } from "drizzle-orm";
+import { rerank } from "@/lib/ai/rerank";
+import { reorderByPassages } from "@/lib/rerank-order";
 import { getItemEmbeddingComparison } from "./embedding-comparison";
 import { getStatisticsExclusions } from "./exclusions";
 import { locateMoment } from "./moments";
@@ -11,12 +13,17 @@ import {
   itemResultColumns,
   toItemResult,
 } from "./search-result";
+import { getRerankerConfig } from "./server";
 import { fuseByBestRank, type TranscriptMatch } from "./transcript-rank";
 import { searchTextWindows } from "./transcript-search";
 
 export type PlotSearchType = "Movie" | "Series" | "Episode";
 
 const POOL = 50;
+/** Titles a reranker, when one is set, reorders: the fused top ones. */
+const RERANK_TOP = 20;
+/** A passage as the reranker reads it: about one window. */
+const PASSAGE_CHARS = 1500;
 /** For a remembered line, the place in another ranking that counts as first in the dialogue. */
 const LINE_WEIGHT = 3;
 /** Speech: quotation marks, a question or exclamation, or talk of me and you. */
@@ -125,10 +132,17 @@ export async function searchByPlot({
     )}
   `);
   const byId = new Map([...rows].map((row) => [row.id, row]));
-  const results = fused
-    .flatMap(({ id, score }) => {
+  const scores = new Map(fused.map((f) => [f.id, f.score]));
+  const order = await rerankTop(
+    serverId,
+    query,
+    fused.map((f) => f.id),
+    [byPlot, byReference, byDialogue],
+  );
+  const results = order
+    .flatMap((id) => {
       const row = byId.get(id);
-      return row ? [toItemResult(row, score)] : [];
+      return row ? [toItemResult(row, scores.get(id) ?? 0)] : [];
     })
     .slice(0, limit);
 
@@ -160,4 +174,61 @@ export async function searchByPlot({
       };
     }),
   );
+}
+
+/**
+ * The fused order with its top RERANK_TOP titles reordered by the server's
+ * reranker, when one is set (AI Models): a cross-encoder reads the query
+ * together with each title's best passages (its matching windows in the
+ * plot, Wikipedia and dialogue rankings, or else the start of its synopsis
+ * or its overview) and scores each pair, which finds a plot point stated in
+ * other words than the query's where vectors placed apart miss it. Each
+ * title goes by its best passage. Without a reranker, or when it fails or
+ * is slow, the fused order stands.
+ */
+async function rerankTop(
+  serverId: number,
+  query: string,
+  order: string[],
+  matchLists: TranscriptMatch[][],
+): Promise<string[]> {
+  const reranker = await getRerankerConfig({ serverId });
+  if (!reranker || order.length < 2) return order;
+  const head = new Set(order.slice(0, RERANK_TOP));
+  const passages: { id: string; text: string }[] = [];
+  for (const list of matchLists) {
+    for (const match of list) {
+      if (!head.has(match.itemId)) continue;
+      for (const moment of match.moments) {
+        passages.push({
+          id: match.itemId,
+          text: moment.text.slice(0, PASSAGE_CHARS),
+        });
+      }
+    }
+  }
+  const bare = [...head].filter((id) => !passages.some((p) => p.id === id));
+  if (bare.length > 0) {
+    const texts = await db.execute<{ id: string; text: string | null }>(sql`
+      SELECT ${items.id} AS id,
+             coalesce(left(s.content, ${PASSAGE_CHARS}), ${items.overview}, ${items.name}) AS text
+      FROM ${items}
+      LEFT JOIN item_texts s ON s.item_id = ${items.id} AND s.kind = 'synopsis' AND s.status = 'ready'
+      WHERE ${inArray(items.id, bare)}`);
+    for (const t of texts)
+      if (t.text) passages.push({ id: t.id, text: t.text });
+  }
+  try {
+    const scores = await rerank(
+      reranker,
+      query,
+      passages.map((p) => p.text),
+    );
+    return reorderByPassages(order, RERANK_TOP, passages, scores);
+  } catch (error) {
+    console.warn(
+      `[plot-search] reranker failed, keeping the fused order: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return order;
+  }
 }

@@ -47,10 +47,15 @@ import {
   ModelFields,
   type ModelSettings,
   type Presets,
+  RERANKER_PRESETS,
   type SavedModel,
 } from "./model-fields";
+import {
+  saveRerankerConfigAction,
+  testRerankerAction,
+} from "./reranker-actions";
 
-export type ModelUse = "chat" | "knowledge" | "embedding";
+export type ModelUse = "chat" | "knowledge" | "embedding" | "reranker";
 
 export const USES: Record<
   ModelUse,
@@ -72,6 +77,12 @@ export const USES: Record<
     presets: EMBEDDING_PRESETS,
     about:
       "Turns titles, synopses and subtitles into vectors for search and recommendations. One at a time.",
+  },
+  reranker: {
+    label: "Reranker",
+    presets: RERANKER_PRESETS,
+    about:
+      "Optional. Reorders plot search's top titles by reading the query with each title's best passages (a cross-encoder, such as bge-reranker-v2-m3). One at a time.",
   },
 };
 
@@ -155,6 +166,8 @@ export function ModelDialog({
           provider: settings.provider as EmbeddingProvider,
           dimensions,
         });
+      } else if (use === "reranker") {
+        await saveRerankerConfigAction(serverId, config());
       } else {
         const atOnce = Number.parseInt(parallel, 10);
         await saveKnowledgeModelAction(serverId, {
@@ -179,9 +192,11 @@ export function ModelDialog({
     try {
       const chat = { ...config(), provider: settings.provider as ChatProvider };
       const result =
-        use === "knowledge"
-          ? await testKnowledgeModelAction(serverId, chat, editing.id)
-          : await testChatConnectionAction(serverId, chat);
+        use === "reranker"
+          ? await testRerankerAction(serverId, config())
+          : use === "knowledge"
+            ? await testKnowledgeModelAction(serverId, chat, editing.id)
+            : await testChatConnectionAction(serverId, chat);
       (result.success ? toast.success : toast.error)(result.message);
     } catch {
       toast.error("Failed to test connection");

@@ -143,6 +143,15 @@ export const servers = pgTable(
     chatName: text("chat_name"),
     embeddingName: text("embedding_name"),
 
+    // Optional reranker: a cross-encoder plot search asks to reorder its top
+    // titles, reading the query and each title's best passages together. Any
+    // service with a Jina/Cohere-style /rerank: llama.cpp (--reranking),
+    // Infinity, TEI, vLLM, Jina, Cohere.
+    rerankerBaseUrl: text("reranker_base_url"),
+    rerankerApiKey: text("reranker_api_key"),
+    rerankerModel: text("reranker_model"),
+    rerankerName: text("reranker_name"),
+
     // Sync status tracking
     syncStatus: text("sync_status").notNull().default("pending"), // pending, syncing, completed, failed
     syncProgress: text("sync_progress").notNull().default("not_started"), // not_started, users, libraries, items, activities, completed

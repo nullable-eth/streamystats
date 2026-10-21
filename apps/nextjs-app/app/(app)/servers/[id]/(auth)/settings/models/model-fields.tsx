@@ -185,6 +185,42 @@ export const EMBEDDING_PRESETS: Presets = {
   },
 };
 
+/**
+ * Rerankers: a cross-encoder plot search asks to reorder its top titles. Any
+ * service with a Jina/Cohere-style /rerank under the address.
+ */
+export const RERANKER_PRESETS: Presets = {
+  "llama-cpp": {
+    name: "llama.cpp (self-hosted)",
+    baseUrl: "http://localhost:8080/v1",
+    defaultModel: "bge-reranker-v2-m3",
+    requiresApiKey: false,
+    provider: "openai-compatible",
+    local: true,
+  },
+  jina: {
+    name: "Jina AI",
+    baseUrl: "https://api.jina.ai/v1",
+    defaultModel: "jina-reranker-v2-base-multilingual",
+    requiresApiKey: true,
+    provider: "openai-compatible",
+  },
+  cohere: {
+    name: "Cohere",
+    baseUrl: "https://api.cohere.com/v2",
+    defaultModel: "rerank-v3.5",
+    requiresApiKey: true,
+    provider: "openai-compatible",
+  },
+  custom: {
+    name: "Custom",
+    baseUrl: "",
+    defaultModel: "",
+    requiresApiKey: false,
+    provider: "openai-compatible",
+  },
+};
+
 /** The preset a saved model matches: by provider where it has its own API, else by address. */
 export function detectPreset(
   presets: Presets,

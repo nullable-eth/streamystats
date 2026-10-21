@@ -51,6 +51,17 @@ export default async function AIModelsSettings(props: {
               }
             : null
         }
+        reranker={
+          server.rerankerBaseUrl && server.rerankerModel
+            ? {
+                provider: null,
+                baseUrl: server.rerankerBaseUrl,
+                model: server.rerankerModel,
+                hasApiKey: server.hasRerankerApiKey,
+                name: server.rerankerName,
+              }
+            : null
+        }
         knowledgeModels={await listKnowledgeModels(server.id)}
         writers={await listNoteWriters(server.id)}
         latest={await latestSynopsis(server.id)}

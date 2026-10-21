@@ -45,6 +45,7 @@ import {
 import { type Editing, ModelDialog, type ModelUse, USES } from "./ModelDialog";
 import { detectPreset, type SavedModel } from "./model-fields";
 import { RewriteDialog } from "./RewriteDialog";
+import { clearRerankerConfigAction } from "./reranker-actions";
 
 interface Configured extends SavedModel {
   hasApiKey: boolean;
@@ -138,6 +139,7 @@ export function ModelsManager({
   serverId,
   chat,
   embedding,
+  reranker,
   knowledgeModels,
   writers,
   latest,
@@ -145,6 +147,7 @@ export function ModelsManager({
   serverId: number;
   chat: Configured | null;
   embedding: (Configured & { dimensions: number | null }) | null;
+  reranker: Configured | null;
   knowledgeModels: KnowledgeModelPublic[];
   /** Who wrote the current synopses, and how many each. */
   writers: { label: string; titles: number }[];
@@ -184,6 +187,7 @@ export function ModelsManager({
   const replaces: ModelUse[] = [
     ...(chat ? (["chat"] as const) : []),
     ...(embedding ? (["embedding"] as const) : []),
+    ...(reranker ? (["reranker"] as const) : []),
   ];
 
   return (
@@ -468,6 +472,57 @@ export function ModelsManager({
             <p className="text-sm">
               None: recommendations, search and the knowledge index need one.
             </p>
+          )}
+        </Section>
+
+        <Section
+          title="Reranker"
+          about="Optional. Plot search finds candidates by meaning and by words; a reranker (a cross-encoder, such as bge-reranker-v2-m3) then reads the query with each of the top titles' best passages and puts the one that answers it first, which catches a plot point told in other words than the query's."
+        >
+          {reranker ? (
+            <ul>
+              <Row
+                title={reranker.name || nameOf("reranker", reranker)}
+                actions={
+                  <>
+                    <IconButton
+                      label="Edit"
+                      disabled={pending}
+                      onClick={() =>
+                        open({
+                          use: "reranker",
+                          adding: false,
+                          saved: reranker,
+                          hasSavedKey: reranker.hasApiKey,
+                          name: reranker.name,
+                        })
+                      }
+                    >
+                      <Pencil className="h-4 w-4" />
+                    </IconButton>
+                    <IconButton
+                      label="Remove"
+                      disabled={pending}
+                      onClick={() =>
+                        run(
+                          () => clearRerankerConfigAction(serverId),
+                          "Failed to remove the reranker",
+                        )
+                      }
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </IconButton>
+                  </>
+                }
+              >
+                <p className="text-sm text-muted-foreground break-all">
+                  {reranker.name && `${nameOf("reranker", reranker)} · `}
+                  {reranker.baseUrl}
+                </p>
+              </Row>
+            </ul>
+          ) : (
+            <p className="text-sm">None: plot search keeps its own order.</p>
           )}
         </Section>
       </CardContent>
