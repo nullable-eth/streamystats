@@ -210,13 +210,89 @@ export function parseWholeTitle(answer: string, parts: Scene[]): { scenes: Scene
   return { scenes, synopsis };
 }
 
-/** The fields of Anthropic's and Gemini's stream events that carry text. */
-type StreamEvent = {
+/**
+ * The provider would not write this title: its content filter refused it (a
+ * usage-policy block, a safety stop). The title's doing, but for that model
+ * only: another model may write it, and this one is not asked again.
+ */
+export class RefusalError extends Error {
+  constructor(reason: string) {
+    super(`The model declined to write it: ${reason}`);
+    this.name = "RefusalError";
+  }
+}
+
+/**
+ * How providers say a content filter refused a request, in an error's body:
+ * a usage-policy block (Claude Code's "appears to violate our Usage Policy"),
+ * OpenAI's content_policy_violation and content_filter, Azure's "content
+ * management policy", Gemini's PROHIBITED_CONTENT.
+ */
+const REFUSED = /usage polic|content[ _-]?(?:management[ _-]?)?polic|content[ _-]?filter|prohibited[ _-]?content/i;
+
+/** Stop reasons that mean the provider's filter cut the answer off (Gemini's finishReason and blockReason). */
+const FILTER_STOPS = new Set(["SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "IMAGE_SAFETY"]);
+
+/** The refusal in an error body, shortened to the words around it, or null when it says no such thing. */
+export function refusalIn(body: string): string | null {
+  const text = body.replace(/\\"/g, '"').replace(/\s+/g, " ");
+  const at = text.search(REFUSED);
+  if (at < 0) return null;
+  const start = Math.max(0, text.lastIndexOf(".", at) + 1, at - 160);
+  return text.slice(start, at + 60).replace(/^[\s"{:,]+/, "").trim();
+}
+
+/** A failed request's body when it is already read (not a stream still to read). */
+function readBody(error: unknown): string {
+  if (!axios.isAxiosError(error) || !error.response) return "";
+  const data: unknown = error.response.data;
+  if (typeof data === "string") return data;
+  if (data && typeof (data as { pipe?: unknown }).pipe === "function") return "";
+  return JSON.stringify(data ?? "");
+}
+
+/** The fields of Anthropic's and Gemini's stream events that carry text, or say why it stopped. */
+export type StreamEvent = {
   type?: string;
   error?: { message?: string };
-  delta?: { text?: unknown };
-  candidates?: { content?: { parts?: { text?: unknown }[] } }[];
+  delta?: { text?: unknown; stop_reason?: unknown };
+  candidates?: { content?: { parts?: { text?: unknown }[] }; finishReason?: unknown }[];
+  promptFeedback?: { blockReason?: unknown };
 };
+
+/** An Anthropic stream event's text. Claude's own safety stop ends the answer with stop reason "refusal". */
+export function anthropicText(event: StreamEvent): string {
+  if (event.type === "error") throw new Error(event.error?.message ?? "Stream error");
+  if (event.type === "message_delta" && event.delta?.stop_reason === "refusal") {
+    throw new RefusalError("the answer stopped with stop reason refusal");
+  }
+  return event.type === "content_block_delta" && typeof event.delta?.text === "string" ? event.delta.text : "";
+}
+
+/** A Gemini stream event's text; a blocked prompt or a safety stop is a refusal. */
+export function geminiText(event: StreamEvent): string {
+  const blocked = event.promptFeedback?.blockReason;
+  if (typeof blocked === "string" && blocked) throw new RefusalError(`the prompt was blocked (${blocked})`);
+  const stop = event.candidates?.[0]?.finishReason;
+  if (typeof stop === "string" && FILTER_STOPS.has(stop)) {
+    throw new RefusalError(`the answer stopped with finish reason ${stop}`);
+  }
+  const parts = event.candidates?.[0]?.content?.parts ?? [];
+  return parts.map((p) => (typeof p.text === "string" ? p.text : "")).join("");
+}
+
+/** An OpenAI-compatible answer's text; a refusal message or a content-filter stop is a refusal. */
+export function openAiText(data: unknown): string {
+  const choice = (data as { choices?: { message?: { content?: unknown; refusal?: unknown }; finish_reason?: unknown }[] })
+    ?.choices?.[0];
+  const refusal = choice?.message?.refusal;
+  if (typeof refusal === "string" && refusal) throw new RefusalError(refusal.slice(0, 200));
+  if (choice?.finish_reason === "content_filter") {
+    throw new RefusalError("the answer stopped with finish reason content_filter");
+  }
+  const content = choice?.message?.content;
+  return typeof content === "string" ? content : "";
+}
 
 /** The text of a server-sent event stream, each event's `data` read by `text`. */
 export async function readEvents(
@@ -256,10 +332,18 @@ async function complete(chat: ChatSettings, prompt: string): Promise<string> {
   try {
     return await withRetries(() => send(chat, prompt, hinted));
   } catch (error) {
+    // A refusal is not about the hints: sending it again would only be refused again.
+    const refusal = error instanceof RefusalError ? null : refusalIn(readBody(error));
+    if (refusal !== null) throw new RefusalError(refusal);
     const status = axios.isAxiosError(error) ? error.response?.status : undefined;
     if (!hinted || (status !== 400 && status !== 422)) throw error;
     plainEndpoints.add(endpoint);
-    return withRetries(() => send(chat, prompt, false));
+    try {
+      return await withRetries(() => send(chat, prompt, false));
+    } catch (retryError) {
+      const retryRefusal = retryError instanceof RefusalError ? null : refusalIn(readBody(retryError));
+      throw retryRefusal === null ? retryError : new RefusalError(retryRefusal);
+    }
   }
 }
 
@@ -285,12 +369,7 @@ async function send(chat: ChatSettings, prompt: string, hinted: boolean): Promis
           timeout: TIMEOUT_MS,
         }
       );
-      return readEvents(res.data, (event) => {
-        if (event.type === "error") throw new Error(event.error?.message ?? "Stream error");
-        return event.type === "content_block_delta" && typeof event.delta?.text === "string"
-          ? event.delta.text
-          : "";
-      });
+      return readEvents(res.data, anthropicText);
     }
     case "gemini": {
       const name = chat.model.startsWith("models/") ? chat.model : `models/${chat.model}`;
@@ -302,10 +381,7 @@ async function send(chat: ChatSettings, prompt: string, hinted: boolean): Promis
         },
         { headers: { "x-goog-api-key": chat.apiKey ?? "" }, responseType: "stream", timeout: TIMEOUT_MS }
       );
-      return readEvents(res.data, (event) => {
-        const parts = event.candidates?.[0]?.content?.parts ?? [];
-        return parts.map((p) => (typeof p.text === "string" ? p.text : "")).join("");
-      });
+      return readEvents(res.data, geminiText);
     }
     default: {
       // "openai-compatible" and "ollama" (its OpenAI-compatible /v1 API).
@@ -319,8 +395,7 @@ async function send(chat: ChatSettings, prompt: string, hinted: boolean): Promis
         },
         { headers: chat.apiKey ? { Authorization: `Bearer ${chat.apiKey}` } : {}, timeout: TIMEOUT_MS }
       );
-      const content: unknown = res.data?.choices?.[0]?.message?.content;
-      return typeof content === "string" ? content : "";
+      return openAiText(res.data);
     }
   }
 }

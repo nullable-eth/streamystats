@@ -17,6 +17,11 @@ const STAGES = {
     "bg-amber-400",
     "Subtitles read; the synopsis is waiting in the queue",
   ],
+  declined: [
+    "Declined",
+    "bg-orange-500",
+    "Every model that writes synopses declined it (its content filter refused); its dialogue is searchable",
+  ],
   none: [
     "No subtitles",
     "bg-muted-foreground/40",
@@ -52,7 +57,9 @@ export function SynopsisCell({
           ? STAGES.next
           : state.waiting > 0
             ? STAGES.waiting
-            : STAGES.none;
+            : state.declined > 0
+              ? STAGES.declined
+              : STAGES.none;
   const writeNext = () =>
     startTransition(async () => {
       try {

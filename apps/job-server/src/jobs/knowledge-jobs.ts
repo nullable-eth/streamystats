@@ -6,6 +6,7 @@ import {
   items,
   type ItemText,
   KNOWLEDGE_ITEM_TYPES,
+  knowledgeRefusals,
   servers,
 } from "@streamystats/database";
 import { and, eq, sql } from "drizzle-orm";
@@ -157,6 +158,9 @@ const plotBasis = (transcriptHash: string, reference: ItemText | undefined) =>
  * or, with Wikipedia plots on, a plot never looked up, missing for a month
  * (an article may have been written since) or three months old. Notes whose writing
  * failed wait a day; titles already taken this run (`taken`) wait for the next.
+ * Notes go only to a usable model that hasn't declined the title (see
+ * knowledge_refusals): one every model declined ("declined") waits for a
+ * model that hasn't, and is due as soon as one is turned on.
  * First those whose notes were asked for next ("wanted", from a title's page),
  * then those never looked at, then the newest.
  */
@@ -174,6 +178,9 @@ async function dueItems(
   const replaced = rewritesOf(usable);
   const rewrite = replaced.length > 0 ? sql`s.written_by IN ${replaced}` : sql`false`;
   const fresh = sql`i.id <> ALL(${sql.param([...taken])}::text[])`;
+  const notDeclinedByAll = sql`EXISTS (
+    SELECT 1 FROM unnest(${sql.param(usable.map(modelLabel))}::text[]) AS u(label)
+    WHERE NOT EXISTS (SELECT 1 FROM knowledge_refusals kr WHERE kr.item_id = i.id AND kr.model = u.label))`;
   const referenceDue = sql`(${withReferences} AND (r.id IS NULL
     OR r.checked_at < now() - CASE WHEN r.status = 'ready' THEN interval '90 days' ELSE interval '30 days' END))`;
   const rows = await db.execute<DueItem>(sql`
@@ -195,7 +202,8 @@ async function dueItems(
         OR (t.status = 'ready' AND t.cue_starts_ms IS NULL)
         OR (${usable.length > 0} AND t.status = 'ready'
             AND (s.id IS NULL OR s.status <> 'ready' OR ${rewrite})
-            AND (s.id IS NULL OR s.checked_at < now() - interval '1 day'))
+            AND (s.id IS NULL OR s.status = 'declined' OR s.checked_at < now() - interval '1 day')
+            AND ${notDeclinedByAll})
         OR ${referenceDue}
       )
     ORDER BY (s.status IS NOT DISTINCT FROM 'wanted') DESC, (t.id IS NULL) DESC, i.date_created DESC NULLS LAST
@@ -211,6 +219,15 @@ async function getText(itemId: string, kind: string): Promise<ItemText | undefin
     .where(and(eq(itemTexts.itemId, itemId), eq(itemTexts.kind, kind)))
     .limit(1);
   return row;
+}
+
+/** The models ("provider:model") that declined to write the title's notes. */
+async function refusalsOf(itemId: string): Promise<Set<string>> {
+  const rows = await db
+    .select({ model: knowledgeRefusals.model })
+    .from(knowledgeRefusals)
+    .where(eq(knowledgeRefusals.itemId, itemId));
+  return new Set(rows.map((r) => r.model));
 }
 
 async function saveText(
@@ -447,6 +464,7 @@ async function indexSynopsis(
 
   const title = titleOf(item);
   const saved: PlotText[] = [];
+  const refusals = await refusalsOf(item.id);
   try {
     const { scenes, synopsis, model } = await writePlotWithModels(
       writers,
@@ -456,7 +474,21 @@ async function indexSynopsis(
         characters: await charactersOf(item),
         reference: reference?.status === "ready" ? reference.content : null,
       },
-      transcriptParts(transcript.content.split("\n"), transcript.cueStartsMs)
+      transcriptParts(transcript.content.split("\n"), transcript.cueStartsMs),
+      {
+        by: refusals,
+        record: async (model, reason) => {
+          const label = modelLabel(model);
+          console.warn(`[knowledge] serverId=${serverId} item=${item.id} declined by ${label}: ${title}: ${reason}`);
+          await db
+            .insert(knowledgeRefusals)
+            .values({ itemId: item.id, model: label, reason: reason.slice(0, 500) })
+            .onConflictDoUpdate({
+              target: [knowledgeRefusals.itemId, knowledgeRefusals.model],
+              set: { reason: reason.slice(0, 500), refusedAt: new Date() },
+            });
+        },
+      }
     );
     for (const [kind, content] of [
       ["scenes", formatScenes(scenes)],
@@ -473,13 +505,26 @@ async function indexSynopsis(
     }
     await db.update(items).set({ processed: false }).where(eq(items.id, item.id));
   } catch (error) {
+    // Every model declined it: it waits, as "declined", for a model that
+    // hasn't, and is not counted as an error. Notes already there stay.
+    if (error instanceof WriteFailure && error.declined) {
+      if (previous?.status === "ready") {
+        await db.update(itemTexts).set({ checkedAt: new Date() }).where(eq(itemTexts.id, previous.id));
+      } else {
+        await saveText(serverId, item.id, "scenes", { status: "declined" });
+      }
+      return false;
+    }
     // A title the models failed on its own account waits a day rather than
     // being retried every run; notes already there stay until replaced, and
     // keep when they were written. One the models couldn't take (resting, rate
     // limited, failing every title) stays due for when one is back.
     if (!(error instanceof WriteFailure) || error.titlesFault) {
-      if (previous) await db.update(itemTexts).set({ checkedAt: new Date() }).where(eq(itemTexts.id, previous.id));
-      else await saveText(serverId, item.id, "scenes", { status: "missing" });
+      if (previous && previous.status !== "declined") {
+        await db.update(itemTexts).set({ checkedAt: new Date() }).where(eq(itemTexts.id, previous.id));
+      } else {
+        await saveText(serverId, item.id, "scenes", { status: "missing" });
+      }
     }
     throw error;
   }

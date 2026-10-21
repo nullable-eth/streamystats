@@ -205,6 +205,96 @@ describe("writePlotWithModels", () => {
   });
 });
 
+describe("refusals", () => {
+  const info = { title: "MythBusters S2009E06", overview: null, characters: [] };
+  const usagePolicy = () =>
+    httpError(502, {
+      error: {
+        message:
+          'claude exited 1: {"is_error":true,"result":"API Error: Claude Code is unable to respond to this request, which appears to violate our Usage Policy (https://www.anthropic.com/legal/aup)."}',
+      },
+    });
+  const keeper = (by: string[] = []) => {
+    const kept: string[] = [];
+    return {
+      kept,
+      refusals: {
+        by: new Set(by),
+        record: async (m: { provider: string; model: string }) => {
+          kept.push(`${m.provider}:${m.model}`);
+        },
+      },
+    };
+  };
+
+  test("a model that declines a title neither rests nor is blamed; the next model writes it", async () => {
+    answers.set("max", () => {
+      throw usagePolicy();
+    });
+    const max = model("max");
+    const { kept, refusals } = keeper();
+    const written = await writePlotWithModels([max, model("local")], info, [], refusals);
+    expect(written.model.model).toBe("local");
+    expect(max.unavailableUntil).toBeNull();
+    expect(kept).toEqual(["openai-compatible:max"]);
+  });
+
+  test("every model declined: the title waits as declined, no model rests", async () => {
+    answers.set("max", () => {
+      throw usagePolicy();
+    });
+    const max = model("max");
+    const write = writePlotWithModels([max], info, [], keeper().refusals);
+    await expect(write).rejects.toMatchObject({ declined: true, titlesFault: true });
+    expect(max.unavailableUntil).toBeNull();
+  });
+
+  test("a model that declined the title before is not asked again", async () => {
+    let asked = 0;
+    answers.set("max", () => {
+      asked++;
+      return { scenes: [], synopsis: "ok" };
+    });
+    const write = writePlotWithModels([model("max")], info, [], keeper(["openai-compatible:max"]).refusals);
+    await expect(write).rejects.toMatchObject({ declined: true });
+    await expect(write).rejects.toThrow("declined it before");
+    expect(asked).toBe(0);
+  });
+
+  test("refusals are not strikes: a model declining title after title is not rested", async () => {
+    answers.set("strict", () => {
+      throw usagePolicy();
+    });
+    for (let i = 0; i < 4; i++) {
+      const strict = model("strict");
+      const write = writePlotWithModels([strict], { ...info, title: `T${i}` }, [], keeper().refusals);
+      await expect(write).rejects.toMatchObject({ declined: true, titlesFault: true });
+      expect(strict.unavailableUntil).toBeNull();
+    }
+  });
+
+  test("declined by one, failed otherwise by another: not declined", async () => {
+    answers.set("max", () => {
+      throw usagePolicy();
+    });
+    answers.set("small", () => {
+      throw new Error("Chat model returned no scene notes");
+    });
+    const write = writePlotWithModels([model("max"), model("small")], info, [], keeper().refusals);
+    await expect(write).rejects.toMatchObject({ declined: false, titlesFault: true });
+  });
+
+  test("a real server error still rests the model", async () => {
+    answers.set("down", () => {
+      throw httpError(502, "Bad Gateway");
+    });
+    const down = model("down");
+    const write = writePlotWithModels([down], info, [], keeper().refusals);
+    await expect(write).rejects.toMatchObject({ declined: false, titlesFault: false });
+    expect(down.unavailableUntil?.getTime()).toBeGreaterThan(Date.now());
+  });
+});
+
 describe("messageOf", () => {
   test("an error body's message, with OpenRouter's provider reason", () => {
     expect(messageOf('{"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low"}}')).toBe(
