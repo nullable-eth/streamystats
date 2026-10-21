@@ -40,8 +40,15 @@ export interface KnowledgeTypeStatus {
   good: number;
   /** Subtitles read; the synopsis still to be written. */
   dialogue: number;
-  /** No subtitles read: not yet, or none readable. */
+  /**
+   * No subtitles read, but a Wikipedia text: its article's plot, or its
+   * summary in its series' episode list. That text is searchable.
+   */
+  wikipediaOnly: number;
+  /** No subtitles read (not yet, or none readable) and no Wikipedia text. */
   titleOnly: number;
+  /** With a Wikipedia text, whatever else they have: how far Wikipedia reaches. */
+  wikipedia: number;
   /** Not read yet. */
   unread: number;
   /** Read, but no readable full-dialogue subtitles: checked again daily. */
@@ -123,7 +130,11 @@ export async function getKnowledgeIndexStatus(
         count(*) FILTER (WHERE s.status = 'ready' AND r.status = 'ready')::int AS best,
         count(*) FILTER (WHERE s.status = 'ready' AND r.status IS DISTINCT FROM 'ready')::int AS good,
         count(*) FILTER (WHERE s.status IS DISTINCT FROM 'ready' AND t.status = 'ready')::int AS dialogue,
-        count(*) FILTER (WHERE s.status IS DISTINCT FROM 'ready' AND t.status IS DISTINCT FROM 'ready')::int AS "titleOnly",
+        count(*) FILTER (WHERE s.status IS DISTINCT FROM 'ready' AND t.status IS DISTINCT FROM 'ready'
+                         AND r.status = 'ready')::int AS "wikipediaOnly",
+        count(*) FILTER (WHERE s.status IS DISTINCT FROM 'ready' AND t.status IS DISTINCT FROM 'ready'
+                         AND r.status IS DISTINCT FROM 'ready')::int AS "titleOnly",
+        count(*) FILTER (WHERE r.status = 'ready')::int AS wikipedia,
         count(*) FILTER (WHERE t.id IS NULL)::int AS unread,
         count(*) FILTER (WHERE t.status <> 'ready')::int AS "noSubtitles",
         count(*) FILTER (WHERE t.status = 'ready' AND s.status <> 'ready' AND s.status <> 'declined'
@@ -190,7 +201,9 @@ export async function getKnowledgeIndexStatus(
     best: 0,
     good: 0,
     dialogue: 0,
+    wikipediaOnly: 0,
     titleOnly: 0,
+    wikipedia: 0,
     unread: 0,
     noSubtitles: 0,
     failed: 0,
@@ -264,6 +277,8 @@ export interface SynopsisQueue {
   declined: number;
   /** No readable subtitles: none can be written. */
   noSubtitles: number;
+  /** Of those, with a Wikipedia text that is searchable. */
+  wikipedia: number;
 }
 
 /** How far a movie's or episode's synopsis is, or a series' episodes'. */
@@ -279,6 +294,8 @@ export type SynopsisState = {
   waiting: number;
   /** Every model that writes synopses declined it (a content filter). */
   declined: number;
+  /** No subtitles, but a Wikipedia text (an article's plot, an episode list's summary). */
+  wikipedia: number;
 };
 
 /** A movie, episode or series (by the id given), and its episodes in the library. */
@@ -316,7 +333,9 @@ export async function getSynopsisStates(
       count(*) FILTER (WHERE s.status = 'wanted')::int AS next,
       count(*) FILTER (WHERE t.status = 'ready' AND s.status IS DISTINCT FROM 'ready'
         AND s.status IS DISTINCT FROM 'wanted' AND s.status IS DISTINCT FROM 'declined')::int AS waiting,
-      count(*) FILTER (WHERE t.status = 'ready' AND s.status = 'declined')::int AS declined
+      count(*) FILTER (WHERE t.status = 'ready' AND s.status = 'declined')::int AS declined,
+      count(*) FILTER (WHERE t.status IS DISTINCT FROM 'ready' AND s.status IS DISTINCT FROM 'ready'
+        AND r.status = 'ready')::int AS wikipedia
     FROM ${items} o
     JOIN ${items} x ON ${itemAndEpisodes(sql`x`, sql`o.id`)}
     LEFT JOIN ${itemTexts} t ON t.item_id = x.id AND t.kind = 'transcript'
@@ -347,10 +366,13 @@ export async function getSynopsisQueue(
           AND s.status IS DISTINCT FROM 'wanted' AND s.status IS DISTINCT FROM 'declined')::int AS waiting,
         count(*) FILTER (WHERE t.status = 'ready' AND s.status = 'declined')::int AS declined,
         count(*) FILTER (WHERE t.status IS DISTINCT FROM 'ready'
-          AND s.status IS DISTINCT FROM 'ready')::int AS "noSubtitles"
+          AND s.status IS DISTINCT FROM 'ready')::int AS "noSubtitles",
+        count(*) FILTER (WHERE t.status IS DISTINCT FROM 'ready'
+          AND s.status IS DISTINCT FROM 'ready' AND r.status = 'ready')::int AS wikipedia
       FROM ${items}
       LEFT JOIN ${itemTexts} t ON t.item_id = ${items.id} AND t.kind = 'transcript'
       LEFT JOIN ${itemTexts} s ON s.item_id = ${items.id} AND s.kind = 'scenes'
+      LEFT JOIN ${itemTexts} r ON r.item_id = ${items.id} AND r.kind = 'reference'
       WHERE ${queueScope(serverId, itemId)}
     `),
     db
@@ -365,6 +387,7 @@ export async function getSynopsisQueue(
     waiting: row?.waiting ?? 0,
     declined: row?.declined ?? 0,
     noSubtitles: row?.noSubtitles ?? 0,
+    wikipedia: row?.wikipedia ?? 0,
   };
 }
 

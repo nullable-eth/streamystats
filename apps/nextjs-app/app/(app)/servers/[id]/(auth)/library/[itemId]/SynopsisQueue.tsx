@@ -27,7 +27,7 @@ export function SynopsisQueue({
 }) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
-  const { written, next, waiting, declined, noSubtitles } = queue;
+  const { written, next, waiting, declined, noSubtitles, wikipedia } = queue;
 
   const writeNext = () =>
     startTransition(async () => {
@@ -49,7 +49,7 @@ export function SynopsisQueue({
         waiting > 0 && `${waiting.toLocaleString()} waiting`,
         declined > 0 && `${declined.toLocaleString()} declined by the models`,
         noSubtitles > 0 &&
-          `${noSubtitles.toLocaleString()} without readable subtitles`,
+          `${noSubtitles.toLocaleString()} without readable subtitles${wikipedia > 0 ? ` (${wikipedia.toLocaleString()} with a Wikipedia summary)` : ""}`,
       ]
         .filter(Boolean)
         .join(" · ")
@@ -61,7 +61,9 @@ export function SynopsisQueue({
           ? "Synopsis waiting in the queue"
           : declined > 0
             ? "No synopsis: every model that writes them declined it (its content filter refused); the dialogue is searchable"
-            : "No synopsis: no readable subtitles";
+            : wikipedia > 0
+              ? "No synopsis: no readable subtitles; its Wikipedia summary is searchable"
+              : "No synopsis: no readable subtitles";
 
   return (
     <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">

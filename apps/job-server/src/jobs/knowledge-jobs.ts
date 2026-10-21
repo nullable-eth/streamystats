@@ -46,7 +46,15 @@ import {
   synopsisWindows,
   transcriptParts,
 } from "../knowledge/synopsis";
-import { articlesByImdbId, plotsOf } from "../knowledge/wikipedia";
+import {
+  articlesByImdbId,
+  type ListedEpisode,
+  listedEpisodesOf,
+  listedSummary,
+  matchListedEpisode,
+  plotsOf,
+  type SeriesIds,
+} from "../knowledge/wikipedia";
 import type { PgBossJob, ServerIdJobData } from "../types/job-status";
 import { logJobResult } from "./job-logger";
 
@@ -78,6 +86,12 @@ type ItemRow = {
 
 type DueItem = ItemRow & {
   imdb_id: string | null;
+  /** An episode's series and its ids, and when the episode first aired (YYYY-MM-DD): for its series' episode lists. */
+  series_id: string | null;
+  series_imdb_id: string | null;
+  series_tvdb_id: string | null;
+  series_tmdb_id: string | null;
+  aired: string | null;
   /** Its Wikipedia plot is to be looked up (again). */
   reference_due: boolean;
 };
@@ -186,8 +200,12 @@ async function dueItems(
   const rows = await db.execute<DueItem>(sql`
     SELECT i.id, i.name, i.type, i.series_name, i.parent_index_number,
            i.index_number, i.production_year, i.overview,
-           i.provider_ids->>'Imdb' AS imdb_id, ${referenceDue} AS reference_due
+           i.provider_ids->>'Imdb' AS imdb_id, ${referenceDue} AS reference_due,
+           i.series_id, ser.provider_ids->>'Imdb' AS series_imdb_id,
+           ser.provider_ids->>'Tvdb' AS series_tvdb_id, ser.provider_ids->>'Tmdb' AS series_tmdb_id,
+           to_char(i.premiere_date AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS aired
     FROM items i
+    LEFT JOIN items ser ON ser.id = i.series_id
     LEFT JOIN item_texts t ON t.item_id = i.id AND t.kind = 'transcript'
     LEFT JOIN item_texts s ON s.item_id = i.id AND s.kind = 'scenes'
     LEFT JOIN item_texts r ON r.item_id = i.id AND r.kind = 'reference'
@@ -390,18 +408,67 @@ async function indexPlotWindows(
   });
 }
 
+/** Series whose episode lists a run keeps, at most: the latest read. */
+const LISTS_KEPT = 200;
+
+/**
+ * A run's Wikipedia episode lists, by series: each series' lists are read once
+ * for all of its episodes the run looks up, the latest LISTS_KEPT series' kept.
+ */
+class EpisodeLists {
+  private readonly bySeries = new Map<string, ListedEpisode[]>();
+
+  async rowsFor(items: DueItem[]): Promise<Map<string, ListedEpisode[]>> {
+    const wanted = new Map<string, SeriesIds>();
+    for (const item of items) {
+      if (!item.series_id || this.bySeries.has(item.series_id)) continue;
+      wanted.set(item.series_id, { imdb: item.series_imdb_id, tvdb: item.series_tvdb_id, tmdb: item.series_tmdb_id });
+    }
+    if (wanted.size > 0) {
+      const read = await listedEpisodesOf(wanted);
+      for (const key of wanted.keys()) this.bySeries.set(key, read.get(key) ?? []);
+      for (const key of this.bySeries.keys()) {
+        if (this.bySeries.size <= LISTS_KEPT) break;
+        this.bySeries.delete(key);
+      }
+    }
+    return new Map(items.flatMap((item) => (item.series_id ? [[item.series_id, this.bySeries.get(item.series_id) ?? []]] : [])));
+  }
+}
+
 /**
  * Wikipedia plots for a batch of items, looked up together, each stored as
- * the item's "reference" text and indexed as search windows of its own. An
- * item without an English article with a Plot section is marked missing.
+ * the item's "reference" text and indexed as search windows of its own: the
+ * Plot section of its own English article, or, for an episode without one,
+ * its summary in its series' episode lists (see matchListedEpisode). An item
+ * with neither is marked missing.
  */
-async function indexReferences(serverId: number, embedding: EmbeddingSettings, batch: DueItem[]): Promise<number> {
+async function indexReferences(
+  serverId: number,
+  embedding: EmbeddingSettings,
+  batch: DueItem[],
+  episodeLists: EpisodeLists
+): Promise<number> {
   const articles = await articlesByImdbId(batch.flatMap((item) => (item.imdb_id ? [item.imdb_id] : [])));
   const plots = await plotsOf([...new Set(articles.values())]);
+  const articlePlot = (item: DueItem) => {
+    const article = item.imdb_id ? articles.get(item.imdb_id) : undefined;
+    return article ? plots.get(article) : undefined;
+  };
+  const unwritten = batch.filter((item) => item.type === "Episode" && item.series_id && !articlePlot(item));
+  const listed = unwritten.length > 0 ? await episodeLists.rowsFor(unwritten) : new Map<string, ListedEpisode[]>();
   let found = 0;
   for (const item of batch) {
-    const article = item.imdb_id ? articles.get(item.imdb_id) : undefined;
-    const plot = article ? plots.get(article) : undefined;
+    let plot = articlePlot(item) ?? null;
+    if (!plot && item.type === "Episode" && item.series_id) {
+      const rows = matchListedEpisode(listed.get(item.series_id) ?? [], {
+        season: item.parent_index_number,
+        number: item.index_number,
+        title: item.name,
+        aired: item.aired,
+      });
+      plot = listedSummary(rows);
+    }
     if (!plot) {
       const id = await saveText(serverId, item.id, "reference", { status: "missing", source: null, content: "", contentHash: null });
       await db.delete(itemTextChunks).where(eq(itemTextChunks.itemTextId, id));
@@ -623,6 +690,7 @@ export async function knowledgeIndexJob(job: PgBossJob<ServerIdJobData>) {
     // the models take, fetching the next titles (with their Wikipedia plots)
     // while the last ones are still being written (see runPool).
     const taken = new Set<string>();
+    const episodeLists = new EpisodeLists();
     let concurrency = 1;
     const inTime = () => Date.now() - startTime < RUN_BUDGET_MS;
     const indexItem = async (item: DueItem) => {
@@ -670,7 +738,7 @@ export async function knowledgeIndexJob(job: PgBossJob<ServerIdJobData>) {
       const lookUp = batch.filter((item) => item.reference_due);
       if (lookUp.length > 0) {
         try {
-          counts.references += await indexReferences(serverId, embedding, lookUp);
+          counts.references += await indexReferences(serverId, embedding, lookUp, episodeLists);
         } catch (error) {
           // Wikipedia unreachable: stop rather than write notes without the
           // plots, which they would then lack for good. The next run retries.

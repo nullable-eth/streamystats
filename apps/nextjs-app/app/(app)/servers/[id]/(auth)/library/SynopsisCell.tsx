@@ -22,6 +22,11 @@ const STAGES = {
     "bg-orange-500",
     "Every model that writes synopses declined it (its content filter refused); its dialogue is searchable",
   ],
+  wikipedia: [
+    "Wikipedia only",
+    "bg-violet-400",
+    "No subtitles, but its Wikipedia plot or episode summary is searchable",
+  ],
   none: [
     "No subtitles",
     "bg-muted-foreground/40",
@@ -59,7 +64,9 @@ export function SynopsisCell({
             ? STAGES.waiting
             : state.declined > 0
               ? STAGES.declined
-              : STAGES.none;
+              : state.wikipedia > 0
+                ? STAGES.wikipedia
+                : STAGES.none;
   const writeNext = () =>
     startTransition(async () => {
       try {
