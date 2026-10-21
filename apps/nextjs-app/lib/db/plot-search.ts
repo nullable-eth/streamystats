@@ -87,7 +87,9 @@ export async function searchByPlot({
           embedding,
           limit: POOL,
         })
-      : Promise.resolve(Object.assign([], { complete: false, exact: false }));
+      : Promise.resolve(
+          Object.assign([], { complete: false, exact: [] as string[] }),
+        );
   const [byStory, byPlot, byReference, byDialogue] = await Promise.all([
     db
       .select({ id: items.id })
@@ -106,7 +108,7 @@ export async function searchByPlot({
   // titles about the same thing, come after the dialogue's: a line dialogue
   // search puts second would otherwise land about eighth.
   const isLine =
-    byDialogue.exact || (byDialogue.complete && SPOKEN.test(query));
+    byDialogue.exact.length > 0 || (byDialogue.complete && SPOKEN.test(query));
   const fused = fuseByBestRank(
     [
       byStory.map((r) => r.id),
@@ -139,6 +141,7 @@ export async function searchByPlot({
     query,
     fused.map((f) => f.id),
     [byPlot, byReference, byDialogue],
+    new Set(byDialogue.exact),
   );
   const results = order
     .flatMap((id) => {
@@ -186,16 +189,25 @@ export async function searchByPlot({
  * other words than the query's where vectors placed apart miss it. Each
  * title goes by its best passage. Without a reranker, or when it fails or
  * is slow, the fused order stands.
+ *
+ * The `pinned` titles keep their places: those whose dialogue says the query
+ * word for word. Several titles saying a line is a line one of them made
+ * famous, which nothing in the passages tells apart; the dialogue's order
+ * (as typed, then the earliest) does.
  */
 async function rerankTop(
   serverId: number,
   query: string,
   order: string[],
   matchLists: TranscriptMatch[][],
+  pinned: ReadonlySet<string>,
 ): Promise<string[]> {
   const reranker = await getRerankerConfig({ serverId });
   if (!reranker || order.length < 2) return order;
-  const head = new Set(order.slice(0, RERANK_TOP));
+  const head = new Set(
+    order.slice(0, RERANK_TOP).filter((id) => !pinned.has(id)),
+  );
+  if (head.size < 2) return order;
   const passages: { id: string; text: string }[] = [];
   for (const list of matchLists) {
     for (const match of list) {
@@ -225,7 +237,7 @@ async function rerankTop(
       query,
       passages.map((p) => p.text),
     );
-    return reorderByPassages(order, RERANK_TOP, passages, scores);
+    return reorderByPassages(order, RERANK_TOP, passages, scores, pinned);
   } catch (error) {
     console.warn(
       `[plot-search] reranker failed, keeping the fused order: ${error instanceof Error ? error.message : String(error)}`,

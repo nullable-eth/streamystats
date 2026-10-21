@@ -23,6 +23,9 @@ const CANDIDATES = 2000;
 /** The number of windows of a kind, when it hasn't been counted yet (only the scale of the weights). */
 const UNCOUNTED_WINDOWS = 100_000;
 
+/** A stemmed word as a tsquery operand. */
+const tsquery = (term: string) => `'${term.replace(/'/g, "''")}'`;
+
 /**
  * Windows of one kind ranked by the words of a query, each weighted by how
  * rare it is among that kind's windows (an inverse document frequency, as in
@@ -37,8 +40,9 @@ const UNCOUNTED_WINDOWS = 100_000;
  * in no more than COMMON_TERM_WINDOWS windows of the kind (the common ones are
  * counted daily into item_text_common_terms; a word found more often than that
  * is set aside here too). The best CANDIDATES of them are then scored on all
- * the query's words, and a window holding every one of them scores double;
- * between equals, the one with the words closest together (ts_rank_cd).
+ * the query's words, and a window holding every one of them (in one of the
+ * query's wordings) scores double; between equals, the one with the words
+ * closest together (ts_rank_cd).
  * With no rare word ("Why so serious?" is only "serious"), `allWords` ranks:
  * the windows with every word, as Postgres ranks them.
  *
@@ -61,11 +65,13 @@ export async function rankWindowsByWords({
   limit: number;
   allWords: () => Promise<WindowRow[]>;
 }): Promise<WordRanking> {
-  const terms = Array.from(
-    await db.execute<{ term: string }>(sql`
-      SELECT DISTINCT unnest(tsvector_to_array(to_tsvector('english', w))) AS term
-      FROM unnest(${sql.param(wordings(query))}::text[]) AS w`),
-  ).map((r) => r.term);
+  // Each wording's words, as the index stems them.
+  const worded = Array.from(
+    await db.execute<{ wording: number; term: string }>(sql`
+      SELECT DISTINCT w.n::int AS wording, unnest(tsvector_to_array(to_tsvector('english', w.text))) AS term
+      FROM unnest(${sql.param(wordings(query))}::text[]) WITH ORDINALITY AS w(text, n)`),
+  );
+  const terms = [...new Set(worded.map((r) => r.term))];
   if (terms.length === 0) return { rows: [], complete: false };
 
   const counted = new Map(
@@ -84,7 +90,6 @@ export async function rankWindowsByWords({
   }
 
   const k = sql.raw(`'${kind}'`);
-  const tsquery = (term: string) => `'${term.replace(/'/g, "''")}'`;
   const rows = Array.from(
     await db.execute<WindowRow & { complete: boolean }>(sql`
       WITH hits AS (
@@ -103,6 +108,14 @@ export async function rankWindowsByWords({
         SELECT term, ln((${total}::float8 + 1) / (least(n, ${total}::float8) + 1))
         FROM unnest(${sql.param(common)}::text[], ${sql.param(common.map((t) => counted.get(t) ?? 0))}::int[]) AS t(term, n)
       ),
+      -- Each wording's words that occur in the kind at all (one in none, a
+      -- misspelling say, can't be held). Words go together by wording: "60%
+      -- of the time" is there as "sixty percent of the time", no "60" beside.
+      worded AS (
+        SELECT t.wording, t.term
+        FROM unnest(${sql.param(worded.map((r) => r.wording))}::int[], ${sql.param(worded.map((r) => r.term))}::text[]) AS t(wording, term)
+        JOIN weights USING (term)
+      ),
       candidates AS (
         SELECT h.id FROM hits h JOIN found f USING (term) JOIN weights w USING (term)
         WHERE f.n <= ${COMMON_TERM_WINDOWS}::int
@@ -111,9 +124,12 @@ export async function rankWindowsByWords({
       scored AS (
         SELECT c.id,
           (SELECT coalesce(sum(w.w), 0) FROM weights w WHERE w.term = ANY (v.lexemes)) AS score,
-          (SELECT bool_and(w.term = ANY (v.lexemes)) FROM weights w) AS complete,
+          coalesce((SELECT bool_or(g.held) FROM (
+            SELECT bool_and(wd.term = ANY (v.lexemes)) AS held FROM worded wd GROUP BY wd.wording) g), false) AS complete,
           -- Between windows with the same words: the one with them closest together.
-          ts_rank_cd(x.search_vector, (SELECT string_agg(quote_literal(w.term), ' & ') FROM weights w)::tsquery) AS near
+          coalesce(ts_rank_cd(x.search_vector, (
+            SELECT string_agg('(' || g.terms || ')', ' | ') FROM (
+              SELECT string_agg(quote_literal(wd.term), ' & ') AS terms FROM worded wd GROUP BY wd.wording) g)::tsquery), 0) AS near
         FROM candidates c
         JOIN item_text_chunks x ON x.id = c.id
         CROSS JOIN LATERAL (SELECT tsvector_to_array(x.search_vector) AS lexemes) AS v

@@ -13,7 +13,7 @@ import {
 } from "drizzle-orm";
 import { getItemEmbeddingComparison } from "./embedding-comparison";
 import { getStatisticsExclusions } from "./exclusions";
-import { anyWording } from "./full-text";
+import { anyWording, saysWordForWord } from "./full-text";
 import { rankWindowsByWords } from "./keyword-rank";
 import {
   exactFirst,
@@ -25,12 +25,13 @@ export { formatTimestamp } from "./transcript-rank";
 
 /**
  * Titles' best windows, best first; whether a window holds every word of the
- * query, and whether dialogue holds it word for word: what a remembered line
- * looks like (see plot search).
+ * query, and the titles whose dialogue says it word for word (first among
+ * the matches, in their order): what a remembered line looks like (see plot
+ * search).
  */
 export type WindowMatches = TranscriptMatch[] & {
   complete: boolean;
-  exact: boolean;
+  exact: string[];
 };
 
 /** Windows each ranking reads, at least; more when more titles are asked for. */
@@ -132,6 +133,12 @@ export async function searchTextWindows({
   // remembered line ranked by its words is often a few places down, under
   // titles that use the same words apart. Only with two words or more that
   // count; one is no phrase, and the word ranking has it already.
+  // Those saying every word as typed, stopwords too, before those the phrase
+  // query lets through with other words where the query has stopwords. Then
+  // the earliest first: a line said word for word in several titles is
+  // mostly a famous one the later titles quote ("You're gonna need a bigger
+  // boat" in a dozen films and episodes after Jaws), or a catchphrase, first
+  // said in the episode that coined it.
   const exactRanking = async () => {
     if (kind !== "transcript") return [];
     const phrase = anyWording(query, "phraseto_tsquery");
@@ -146,7 +153,14 @@ export async function searchTextWindows({
           sql`${itemTextChunks.searchVector} @@ ${phrase}`,
         ),
       )
-      .orderBy(desc(sql`ts_rank_cd(${itemTextChunks.searchVector}, ${phrase})`))
+      .orderBy(
+        desc(saysWordForWord(query, sql`${itemTextChunks.text}`)),
+        // Undated titles last (ascending puts nulls last).
+        asc(
+          sql`coalesce(${items.premiereDate}, make_date(${items.productionYear}, 1, 1))`,
+        ),
+        desc(sql`ts_rank_cd(${itemTextChunks.searchVector}, ${phrase})`),
+      )
       .limit(pool);
   };
 
@@ -156,11 +170,10 @@ export async function searchTextWindows({
     exactRanking(),
   ]);
   const fused = fuseChunkRankings([words.rows, vectors], limit);
+  const sayers = fuseChunkRankings([exact], limit);
   return Object.assign(
-    exact.length > 0
-      ? exactFirst(fuseChunkRankings([exact], limit), fused, limit)
-      : fused,
-    { complete: words.complete, exact: exact.length > 0 },
+    sayers.length > 0 ? exactFirst(sayers, fused, limit) : fused,
+    { complete: words.complete, exact: sayers.map((m) => m.itemId) },
   );
 }
 

@@ -34,4 +34,22 @@ describe("reorderByPassages", () => {
       ),
     ).toEqual(["a", "b"]);
   });
+
+  test("a pinned title keeps its place; the others are reordered around it", () => {
+    const passages = [
+      { id: "storm", text: "We're gonna need a bigger boat." },
+      { id: "clerks", text: "Salsa shark. We're gonna need a bigger boat." },
+      { id: "jaws", text: "You're going to need a bigger boat." },
+      { id: "boat", text: "A boat at sea." },
+    ];
+    expect(
+      reorderByPassages(
+        ["jaws", "boat", "clerks", "storm", "far"],
+        4,
+        passages,
+        [3, 2, 1, -4],
+        new Set(["jaws", "clerks"]),
+      ),
+    ).toEqual(["jaws", "storm", "clerks", "boat", "far"]);
+  });
 });
