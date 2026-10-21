@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.itemPeopleRelations = exports.peopleRelations = exports.watchlistItemsRelations = exports.watchlistsRelations = exports.hiddenRecommendationsRelations = exports.anomalyEventsRelations = exports.userFingerprintsRelations = exports.activityLocationsRelations = exports.sessionsRelations = exports.itemsRelations = exports.activitiesRelations = exports.usersRelations = exports.librariesRelations = exports.serverJobConfigurationsRelations = exports.serversRelations = exports.watchlistItems = exports.watchlists = exports.itemPeople = exports.people = exports.anomalyEvents = exports.userFingerprints = exports.activityLocations = exports.userItemRatings = exports.userRecommendationProfiles = exports.hiddenRecommendations = exports.activityLogCursors = exports.activeSessions = exports.sessions = exports.itemTextChunks = exports.knowledgeRefusals = exports.knowledgeModels = exports.itemTexts = exports.mediaSources = exports.items = exports.serverJobConfigurations = exports.jobResults = exports.activities = exports.users = exports.libraries = exports.servers = void 0;
+exports.itemPeopleRelations = exports.peopleRelations = exports.watchlistItemsRelations = exports.watchlistsRelations = exports.hiddenRecommendationsRelations = exports.anomalyEventsRelations = exports.userFingerprintsRelations = exports.activityLocationsRelations = exports.sessionsRelations = exports.itemsRelations = exports.activitiesRelations = exports.usersRelations = exports.librariesRelations = exports.serverJobConfigurationsRelations = exports.serversRelations = exports.watchlistItems = exports.watchlists = exports.itemPeople = exports.people = exports.anomalyEvents = exports.userFingerprints = exports.activityLocations = exports.userItemRatings = exports.userRecommendationProfiles = exports.hiddenRecommendations = exports.activityLogCursors = exports.activeSessions = exports.sessions = exports.itemTextChunks = exports.knowledgeRejectedTexts = exports.knowledgeRefusals = exports.knowledgeModels = exports.itemTexts = exports.mediaSources = exports.items = exports.serverJobConfigurations = exports.jobResults = exports.activities = exports.users = exports.libraries = exports.servers = void 0;
 const pg_core_1 = require("drizzle-orm/pg-core");
 const drizzle_orm_1 = require("drizzle-orm");
 // Custom vector type that supports variable dimensions
@@ -472,6 +472,22 @@ exports.knowledgeRefusals = (0, pg_core_1.pgTable)("knowledge_refusals", {
     reason: (0, pg_core_1.text)("reason"),
     refusedAt: (0, pg_core_1.timestamp)("refused_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [(0, pg_core_1.primaryKey)({ columns: [table.itemId, table.model] })]);
+// Texts the knowledge index must not use for a title: a subtitle track that
+// isn't the title's (another episode's, in another language, only part of
+// the dialogue) or a Wikipedia plot of another title, kept by the hash of the
+// text as read. A track or plot with the same text is passed over and the
+// next one tried; a new download with other text is read as usual.
+exports.knowledgeRejectedTexts = (0, pg_core_1.pgTable)("knowledge_rejected_texts", {
+    itemId: (0, pg_core_1.text)("item_id")
+        .notNull()
+        .references(() => exports.items.id, { onDelete: "cascade" }),
+    // "transcript" | "reference"
+    kind: (0, pg_core_1.text)("kind").notNull(),
+    contentHash: (0, pg_core_1.text)("content_hash").notNull(),
+    // Why, in a few words: "another title", "not in the library's language", "part of the dialogue".
+    reason: (0, pg_core_1.text)("reason"),
+    rejectedAt: (0, pg_core_1.timestamp)("rejected_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [(0, pg_core_1.primaryKey)({ columns: [table.itemId, table.kind, table.contentHash] })]);
 // Searchable windows of an item's texts, each with an embedding (HNSW index
 // created per dimension at runtime, as for items.embedding) and a generated
 // tsvector for exact-wording search. Transcript windows are up to two

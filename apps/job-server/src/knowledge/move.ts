@@ -3,9 +3,9 @@ import { inArray, sql } from "drizzle-orm";
 
 /**
  * Hand an item's knowledge index texts (subtitles read, synopsis, Wikipedia
- * plot), their search windows and the models' refusals to write it to the
- * item Jellyfin re-added it as, such as after the file was moved or renamed,
- * so it isn't read and written again.
+ * plot), their search windows, the models' refusals to write it and the texts
+ * it must not use to the item Jellyfin re-added it as, such as after the file
+ * was moved or renamed, so it isn't read and written again.
  * A ready text replaces one the new item has that isn't ready; one the new
  * item already has ready stays. Returns how many texts moved.
  */
@@ -29,6 +29,12 @@ export async function moveKnowledgeTexts(oldItemId: string, newItemId: string): 
       UPDATE knowledge_refusals o SET item_id = ${newItemId}
       WHERE o.item_id = ${oldItemId}
         AND NOT EXISTS (SELECT 1 FROM knowledge_refusals n WHERE n.item_id = ${newItemId} AND n.model = o.model)`);
+    // And the texts it must not use: the same files are still wrong for it.
+    await tx.execute(sql`
+      UPDATE knowledge_rejected_texts o SET item_id = ${newItemId}
+      WHERE o.item_id = ${oldItemId}
+        AND NOT EXISTS (SELECT 1 FROM knowledge_rejected_texts n
+                        WHERE n.item_id = ${newItemId} AND n.kind = o.kind AND n.content_hash = o.content_hash)`);
     return ids.length;
   });
 }

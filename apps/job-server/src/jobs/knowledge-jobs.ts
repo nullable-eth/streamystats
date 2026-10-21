@@ -7,6 +7,7 @@ import {
   type ItemText,
   KNOWLEDGE_ITEM_TYPES,
   knowledgeRefusals,
+  knowledgeRejectedTexts,
   servers,
 } from "@streamystats/database";
 import { and, eq, sql } from "drizzle-orm";
@@ -16,6 +17,7 @@ import {
   embedTexts,
   getEmbeddingSettings,
 } from "../knowledge/embed";
+import { readsAs } from "../knowledge/language";
 import {
   chunkCues,
   cleanCues,
@@ -239,6 +241,23 @@ async function getText(itemId: string, kind: string): Promise<ItemText | undefin
   return row;
 }
 
+/**
+ * Hashes of the texts of a kind the title must not use (see
+ * knowledge_rejected_texts): read, but passed over.
+ */
+async function rejectedOf(itemId: string, kind: "transcript" | "reference"): Promise<Set<string>> {
+  const rows = await db
+    .select({ contentHash: knowledgeRejectedTexts.contentHash })
+    .from(knowledgeRejectedTexts)
+    .where(and(eq(knowledgeRejectedTexts.itemId, itemId), eq(knowledgeRejectedTexts.kind, kind)));
+  return new Set(rows.map((r) => r.contentHash));
+}
+
+/** Keep a text the title must not use, so it is passed over from now on. */
+async function reject(itemId: string, kind: "transcript" | "reference", contentHash: string, reason: string) {
+  await db.insert(knowledgeRejectedTexts).values({ itemId, kind, contentHash, reason }).onConflictDoNothing();
+}
+
 /** The models ("provider:model") that declined to write the title's notes. */
 async function refusalsOf(itemId: string): Promise<Set<string>> {
   const rows = await db
@@ -268,7 +287,13 @@ async function saveText(
   return row.id;
 }
 
-/** The best full-dialogue track that really is one (forced tracks are too short). */
+/**
+ * The best full-dialogue track that really is one: not too short to be more
+ * than forced subtitles, in the library's language whatever its label says
+ * (see readsAs), and not a text the title was told not to use (see
+ * rejectedOf). A track in another language is kept as rejected, so the
+ * settings can say why the title has no transcript.
+ */
 async function readTranscript(
   client: JellyfinClient,
   itemId: string,
@@ -278,16 +303,27 @@ async function readTranscript(
   const media = await client.getPrimaryMediaSource(itemId);
   if (!media) return null;
   const candidates = rankTranscriptStreams(media.streams, media.id, languages);
+  const rejected = await rejectedOf(itemId, "transcript");
   if (
     previous?.status === "ready" &&
     previous.cueStartsMs &&
-    previous.source === candidates[0]?.ref
+    previous.source === candidates[0]?.ref &&
+    !(previous.contentHash && rejected.has(previous.contentHash)) &&
+    readsAs(previous.content.split("\n"), languages)
   ) {
     return "unchanged";
   }
   for (const candidate of candidates.slice(0, MAX_TRACKS_TRIED)) {
     const cues = cleanCues(parseSrt(await client.getSubtitleSrt(itemId, media.id, candidate.index)));
-    if (wordCount(cues) >= MIN_TRANSCRIPT_WORDS) return { ref: candidate.ref, cues };
+    if (wordCount(cues) < MIN_TRANSCRIPT_WORDS) continue;
+    const lines = cues.map((c) => c.text);
+    const contentHash = hash(lines.join("\n"));
+    if (rejected.has(contentHash)) continue;
+    if (!readsAs(lines, languages)) {
+      await reject(itemId, "transcript", contentHash, "not in the library's language");
+      continue;
+    }
+    return { ref: candidate.ref, cues };
   }
   return null;
 }
@@ -476,6 +512,12 @@ async function indexReferences(
     }
     const previous = await getText(item.id, "reference");
     const contentHash = hash(plot.plot);
+    if ((await rejectedOf(item.id, "reference")).has(contentHash)) {
+      // Another title's plot, as found before: none, until the lists change.
+      const none = await saveText(serverId, item.id, "reference", { status: "missing", source: null, content: "", contentHash: null });
+      await db.delete(itemTextChunks).where(eq(itemTextChunks.itemTextId, none));
+      continue;
+    }
     const id = await saveText(serverId, item.id, "reference", {
       status: "ready",
       source: plot.source,
