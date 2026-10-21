@@ -87,7 +87,7 @@ export async function searchByPlot({
           embedding,
           limit: POOL,
         })
-      : Promise.resolve(Object.assign([], { complete: false }));
+      : Promise.resolve(Object.assign([], { complete: false, exact: false }));
   const [byStory, byPlot, byReference, byDialogue] = await Promise.all([
     db
       .select({ id: items.id })
@@ -100,12 +100,13 @@ export async function searchByPlot({
     windows("transcript"),
   ]);
 
-  // A remembered line (it reads as speech, and some dialogue window holds
-  // every word of it) is found by its dialogue; the other rankings' first
-  // places, which for a line are mostly titles about the same thing, come
-  // after the dialogue's: a line dialogue search puts second would otherwise
-  // land about eighth.
-  const isLine = byDialogue.complete && SPOKEN.test(query);
+  // A remembered line (dialogue says it word for word, or it reads as speech
+  // and some dialogue window holds every word of it) is found by its
+  // dialogue; the other rankings' first places, which for a line are mostly
+  // titles about the same thing, come after the dialogue's: a line dialogue
+  // search puts second would otherwise land about eighth.
+  const isLine =
+    byDialogue.exact || (byDialogue.complete && SPOKEN.test(query));
   const fused = fuseByBestRank(
     [
       byStory.map((r) => r.id),
