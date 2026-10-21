@@ -36,3 +36,16 @@ export function saysWordForWord(phrase: string, text: SQL): SQL {
     SELECT 1 FROM unnest(${sql.param(wordings(phrase))}::text[]) AS w(phrase)
     WHERE position(${asWords(sql`w.phrase`)} IN ${asWords(text)}) > 0)`;
 }
+
+/**
+ * Whether `text` may say the phrase word for word: its words in order, with
+ * anything between, in any of its wordings (ILIKE, so cheap enough to rule
+ * out most texts before saysWordForWord reads each one as words).
+ */
+export function hasWordsInOrder(phrase: string, text: SQL): SQL {
+  const patterns = wordings(phrase).map(
+    (w) =>
+      `%${(w.toLowerCase().match(/[\p{L}\p{N}']+/gu) ?? []).join("%").replaceAll("'", "_")}%`,
+  );
+  return sql`${text} ILIKE ANY (${sql.param(patterns)}::text[])`;
+}

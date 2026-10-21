@@ -6,6 +6,7 @@ import {
   fuseByBestRank,
   fuseChunkRankings,
   fuseItemRankings,
+  readsAsSpeech,
 } from "./transcript-rank";
 
 const chunk = (id: number, itemId: string) => ({
@@ -178,4 +179,11 @@ describe("bestLine", () => {
 
 test("formatTimestamp", () => {
   expect(formatTimestamp(3_723_400)).toBe("01:02:03");
+});
+
+test("readsAsSpeech: a line, not a description", () => {
+  expect(readsAsSpeech("Why so serious?")).toBe(true);
+  expect(readsAsSpeech("Serenity now!")).toBe(true);
+  expect(readsAsSpeech("I love lamp.")).toBe(true);
+  expect(readsAsSpeech("the robot falls for the guest")).toBe(false);
 });

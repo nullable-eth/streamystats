@@ -14,7 +14,11 @@ import {
   toItemResult,
 } from "./search-result";
 import { getRerankerConfig } from "./server";
-import { fuseByBestRank, type TranscriptMatch } from "./transcript-rank";
+import {
+  fuseByBestRank,
+  readsAsSpeech,
+  type TranscriptMatch,
+} from "./transcript-rank";
 import { searchTextWindows } from "./transcript-search";
 
 export type PlotSearchType = "Movie" | "Series" | "Episode";
@@ -26,8 +30,6 @@ const RERANK_TOP = 20;
 const PASSAGE_CHARS = 1500;
 /** For a remembered line, the place in another ranking that counts as first in the dialogue. */
 const LINE_WEIGHT = 3;
-/** Speech: quotation marks, a question or exclamation, or talk of me and you. */
-const SPOKEN = /["“”?!]|\b(i|i'm|i'll|you|you're|we|we're|my|your|me|us)\b/i;
 
 /**
  * Titles that match a description of their story, best first. Four rankings
@@ -108,7 +110,8 @@ export async function searchByPlot({
   // titles about the same thing, come after the dialogue's: a line dialogue
   // search puts second would otherwise land about eighth.
   const isLine =
-    byDialogue.exact.length > 0 || (byDialogue.complete && SPOKEN.test(query));
+    byDialogue.exact.length > 0 ||
+    (byDialogue.complete && readsAsSpeech(query));
   const fused = fuseByBestRank(
     [
       byStory.map((r) => r.id),

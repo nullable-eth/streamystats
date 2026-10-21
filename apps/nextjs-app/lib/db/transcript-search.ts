@@ -13,11 +13,12 @@ import {
 } from "drizzle-orm";
 import { getItemEmbeddingComparison } from "./embedding-comparison";
 import { getStatisticsExclusions } from "./exclusions";
-import { anyWording, saysWordForWord } from "./full-text";
+import { anyWording, hasWordsInOrder, saysWordForWord } from "./full-text";
 import { rankWindowsByWords } from "./keyword-rank";
 import {
   exactFirst,
   fuseChunkRankings,
+  readsAsSpeech,
   type TranscriptMatch,
 } from "./transcript-rank";
 
@@ -139,13 +140,23 @@ export async function searchTextWindows({
   // mostly a famous one the later titles quote ("You're gonna need a bigger
   // boat" in a dozen films and episodes after Jaws), or a catchphrase, first
   // said in the episode that coined it.
+  // A line with one word that counts ("Why so serious?", "Serenity now!") is
+  // no phrase to Postgres; when the query reads as speech, the windows saying
+  // it as typed, earliest first, found among those with that word.
   const exactRanking = async () => {
     if (kind !== "transcript") return [];
     const phrase = anyWording(query, "phraseto_tsquery");
-    return db
-      .select(columns)
-      .from(itemTextChunks)
-      .innerJoin(items, eq(items.id, itemTextChunks.itemId))
+    const saysIt = saysWordForWord(query, sql`${itemTextChunks.text}`);
+    // Undated titles last (ascending puts nulls last).
+    const earliest = asc(
+      sql`coalesce(${items.premiereDate}, make_date(${items.productionYear}, 1, 1))`,
+    );
+    const windows = () =>
+      db
+        .select(columns)
+        .from(itemTextChunks)
+        .innerJoin(items, eq(items.id, itemTextChunks.itemId));
+    const asPhrase = windows()
       .where(
         and(
           ...visible,
@@ -154,14 +165,29 @@ export async function searchTextWindows({
         ),
       )
       .orderBy(
-        desc(saysWordForWord(query, sql`${itemTextChunks.text}`)),
-        // Undated titles last (ascending puts nulls last).
-        asc(
-          sql`coalesce(${items.premiereDate}, make_date(${items.productionYear}, 1, 1))`,
-        ),
+        desc(saysIt),
+        earliest,
         desc(sql`ts_rank_cd(${itemTextChunks.searchVector}, ${phrase})`),
       )
       .limit(pool);
+    const typedWords = query.match(/[\p{L}\p{N}']+/gu) ?? [];
+    const asTyped =
+      readsAsSpeech(query) && typedWords.length >= 2
+        ? windows()
+            .where(
+              and(
+                ...visible,
+                sql`numnode(phraseto_tsquery('english', ${query})) < 3`,
+                sql`${itemTextChunks.searchVector} @@ ${tsQuery}`,
+                hasWordsInOrder(query, sql`${itemTextChunks.text}`),
+                saysIt,
+              ),
+            )
+            .orderBy(earliest)
+            .limit(pool)
+        : Promise.resolve([]);
+    const [phrased, typed] = await Promise.all([asPhrase, asTyped]);
+    return [...phrased, ...typed];
   };
 
   const [words, vectors, exact] = await Promise.all([
