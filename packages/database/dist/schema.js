@@ -75,6 +75,14 @@ exports.servers = (0, pg_core_1.pgTable)("servers", {
     // What the settings show the chat and embedding models as.
     chatName: (0, pg_core_1.text)("chat_name"),
     embeddingName: (0, pg_core_1.text)("embedding_name"),
+    // Optional reranker: a cross-encoder plot search asks to reorder its top
+    // titles, reading the query and each title's best passages together. Any
+    // service with a Jina/Cohere-style /rerank: llama.cpp (--reranking),
+    // Infinity, TEI, vLLM, Jina, Cohere.
+    rerankerBaseUrl: (0, pg_core_1.text)("reranker_base_url"),
+    rerankerApiKey: (0, pg_core_1.text)("reranker_api_key"),
+    rerankerModel: (0, pg_core_1.text)("reranker_model"),
+    rerankerName: (0, pg_core_1.text)("reranker_name"),
     // Sync status tracking
     syncStatus: (0, pg_core_1.text)("sync_status").notNull().default("pending"), // pending, syncing, completed, failed
     syncProgress: (0, pg_core_1.text)("sync_progress").notNull().default("not_started"), // not_started, users, libraries, items, activities, completed

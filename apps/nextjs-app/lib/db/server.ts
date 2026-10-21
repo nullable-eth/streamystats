@@ -18,10 +18,11 @@ import type { ServerPublic } from "@/lib/types";
 
 type ServerPublicSelectRow = Omit<
   ServerPublic,
-  "hasChatApiKey" | "hasEmbeddingApiKey"
+  "hasChatApiKey" | "hasEmbeddingApiKey" | "hasRerankerApiKey"
 > & {
   embeddingApiKey: string | null;
   chatApiKey: string | null;
+  rerankerApiKey: string | null;
 };
 
 const SERVER_PUBLIC_SELECT = {
@@ -47,6 +48,9 @@ const SERVER_PUBLIC_SELECT = {
   chatModel: servers.chatModel,
   chatName: servers.chatName,
   embeddingName: servers.embeddingName,
+  rerankerBaseUrl: servers.rerankerBaseUrl,
+  rerankerModel: servers.rerankerModel,
+  rerankerName: servers.rerankerName,
   syncStatus: servers.syncStatus,
   syncProgress: servers.syncProgress,
   syncError: servers.syncError,
@@ -62,14 +66,19 @@ const SERVER_PUBLIC_SELECT = {
   // Select secrets only to compute boolean flags; never return them to callers
   embeddingApiKey: servers.embeddingApiKey,
   chatApiKey: servers.chatApiKey,
+  rerankerApiKey: servers.rerankerApiKey,
 } satisfies Record<string, unknown>;
 
 function toServerPublic(row: ServerPublicSelectRow): ServerPublic {
-  const { embeddingApiKey, chatApiKey, ...rest } = row;
+  const { embeddingApiKey, chatApiKey, rerankerApiKey, ...rest } = row;
   return {
-    ...(rest as Omit<ServerPublic, "hasChatApiKey" | "hasEmbeddingApiKey">),
+    ...(rest as Omit<
+      ServerPublic,
+      "hasChatApiKey" | "hasEmbeddingApiKey" | "hasRerankerApiKey"
+    >),
     hasEmbeddingApiKey: Boolean(embeddingApiKey),
     hasChatApiKey: Boolean(chatApiKey),
+    hasRerankerApiKey: Boolean(rerankerApiKey),
   };
 }
 
@@ -1100,4 +1109,74 @@ export const testChatConnection = async ({
       message: error instanceof Error ? error.message : "Connection failed",
     };
   }
+};
+
+/** Where the reranker is and which model, as saved; the key only on the server. */
+export interface RerankerConfig {
+  baseUrl: string;
+  apiKey?: string;
+  model: string;
+  /** What the settings show it as; left as is when undefined. */
+  name?: string | null;
+}
+
+/** Save the reranker; an empty key keeps the saved one. */
+export const saveRerankerConfig = async ({
+  serverId,
+  config,
+}: {
+  serverId: number;
+  config: RerankerConfig;
+}) => {
+  const updateData: Partial<typeof servers.$inferInsert> = {
+    rerankerBaseUrl: config.baseUrl.replace(/\/+$/, ""),
+    rerankerModel: config.model,
+    ...(config.name !== undefined
+      ? { rerankerName: config.name?.trim() || null }
+      : {}),
+  };
+  if (config.apiKey && config.apiKey.trim().length > 0) {
+    updateData.rerankerApiKey = config.apiKey;
+  }
+  await db.update(servers).set(updateData).where(eq(servers.id, serverId));
+};
+
+/** No reranker: plot search keeps its own order. */
+export const clearRerankerConfig = async ({
+  serverId,
+}: {
+  serverId: number;
+}) => {
+  await db
+    .update(servers)
+    .set({
+      rerankerBaseUrl: null,
+      rerankerApiKey: null,
+      rerankerModel: null,
+      rerankerName: null,
+    })
+    .where(eq(servers.id, serverId));
+};
+
+/** The reranker with its key, for calling it; null when none is set. */
+export const getRerankerConfig = async ({
+  serverId,
+}: {
+  serverId: number;
+}): Promise<{
+  baseUrl: string;
+  apiKey: string | null;
+  model: string;
+} | null> => {
+  const [row] = await db
+    .select({
+      baseUrl: servers.rerankerBaseUrl,
+      apiKey: servers.rerankerApiKey,
+      model: servers.rerankerModel,
+    })
+    .from(servers)
+    .where(eq(servers.id, serverId))
+    .limit(1);
+  if (!row?.baseUrl || !row.model) return null;
+  return { baseUrl: row.baseUrl, apiKey: row.apiKey, model: row.model };
 };
