@@ -14,9 +14,16 @@ import {
 import { getItemEmbeddingComparison } from "./embedding-comparison";
 import { getStatisticsExclusions } from "./exclusions";
 import { anyWording } from "./full-text";
+import { rankWindowsByWords } from "./keyword-rank";
 import { fuseChunkRankings, type TranscriptMatch } from "./transcript-rank";
 
 export { formatTimestamp } from "./transcript-rank";
+
+/**
+ * Titles' best windows, best first, and whether a window holds every word of
+ * the query: what a remembered line looks like (see plot search).
+ */
+export type WindowMatches = TranscriptMatch[] & { complete: boolean };
 
 /** Windows each ranking reads, at least; more when more titles are asked for. */
 const POOL = 50;
@@ -50,7 +57,7 @@ export async function searchTextWindows({
   query: string;
   embedding: number[] | null;
   limit: number;
-}): Promise<TranscriptMatch[]> {
+}): Promise<WindowMatches> {
   const { itemLibraryExclusion } = await getStatisticsExclusions(
     serverId,
     userId,
@@ -75,13 +82,26 @@ export async function searchTextWindows({
   // A title has several windows, so read enough of them for `limit` titles.
   const pool = Math.max(POOL, limit * 3);
 
-  const textRanking = db
-    .select(columns)
-    .from(itemTextChunks)
-    .innerJoin(items, eq(items.id, itemTextChunks.itemId))
-    .where(and(...visible, sql`${itemTextChunks.searchVector} @@ ${tsQuery}`))
-    .orderBy(desc(sql`ts_rank_cd(${itemTextChunks.searchVector}, ${tsQuery})`))
-    .limit(pool);
+  // By the query's words, weighted by how rare (see rankWindowsByWords).
+  const textRanking = rankWindowsByWords({
+    kind,
+    serverId,
+    query,
+    visible,
+    limit: pool,
+    allWords: () =>
+      db
+        .select(columns)
+        .from(itemTextChunks)
+        .innerJoin(items, eq(items.id, itemTextChunks.itemId))
+        .where(
+          and(...visible, sql`${itemTextChunks.searchVector} @@ ${tsQuery}`),
+        )
+        .orderBy(
+          desc(sql`ts_rank_cd(${itemTextChunks.searchVector}, ${tsQuery})`),
+        )
+        .limit(pool),
+  });
 
   const vectorRanking = async () => {
     if (!embedding) return [];
@@ -98,8 +118,10 @@ export async function searchTextWindows({
       .limit(pool);
   };
 
-  const rankings = await Promise.all([textRanking, vectorRanking()]);
-  return fuseChunkRankings(rankings, limit);
+  const [words, vectors] = await Promise.all([textRanking, vectorRanking()]);
+  return Object.assign(fuseChunkRankings([words.rows, vectors], limit), {
+    complete: words.complete,
+  });
 }
 
 /** What was said: the dialogue windows, with when. */

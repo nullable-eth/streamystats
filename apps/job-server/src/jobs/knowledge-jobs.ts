@@ -40,6 +40,7 @@ import {
   writersFor,
 } from "../knowledge/models";
 import { runPool } from "../knowledge/pool";
+import { ensureSearchIndexes, refreshCommonTerms } from "../knowledge/terms";
 import {
   characterNames,
   formatScenes,
@@ -688,6 +689,17 @@ export async function knowledgeIndexJob(job: PgBossJob<ServerIdJobData>) {
   if (!embedding) {
     await logJobResult(job.id, KNOWLEDGE_INDEX_JOB_NAME, "completed", { serverId, skipped: "embeddings not configured" }, 0);
     return { skipped: "embeddings not configured" };
+  }
+  // The full-text indexes per kind and the common-word counts keyword search
+  // ranks by (see terms.ts); a failure here leaves search slower, not wrong.
+  try {
+    await ensureSearchIndexes();
+    const counted = await refreshCommonTerms();
+    if (counted.length > 0) {
+      console.info(`[knowledge] serverId=${serverId} action=common-terms kinds=${counted.join(",")}`);
+    }
+  } catch (error) {
+    console.warn(`[knowledge] serverId=${serverId} common terms: ${errorText(error)}`);
   }
   const withReferences = server.knowledgeWikipedia;
   const client = JellyfinClient.fromServer(server);

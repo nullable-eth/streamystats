@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.itemPeopleRelations = exports.peopleRelations = exports.watchlistItemsRelations = exports.watchlistsRelations = exports.hiddenRecommendationsRelations = exports.anomalyEventsRelations = exports.userFingerprintsRelations = exports.activityLocationsRelations = exports.sessionsRelations = exports.itemsRelations = exports.activitiesRelations = exports.usersRelations = exports.librariesRelations = exports.serverJobConfigurationsRelations = exports.serversRelations = exports.watchlistItems = exports.watchlists = exports.itemPeople = exports.people = exports.anomalyEvents = exports.userFingerprints = exports.activityLocations = exports.userItemRatings = exports.userRecommendationProfiles = exports.hiddenRecommendations = exports.activityLogCursors = exports.activeSessions = exports.sessions = exports.itemTextChunks = exports.knowledgeRejectedTexts = exports.knowledgeRefusals = exports.knowledgeModels = exports.itemTexts = exports.mediaSources = exports.items = exports.serverJobConfigurations = exports.jobResults = exports.activities = exports.users = exports.libraries = exports.servers = void 0;
+exports.itemPeopleRelations = exports.peopleRelations = exports.watchlistItemsRelations = exports.watchlistsRelations = exports.hiddenRecommendationsRelations = exports.anomalyEventsRelations = exports.userFingerprintsRelations = exports.activityLocationsRelations = exports.sessionsRelations = exports.itemsRelations = exports.activitiesRelations = exports.usersRelations = exports.librariesRelations = exports.serverJobConfigurationsRelations = exports.serversRelations = exports.watchlistItems = exports.watchlists = exports.itemPeople = exports.people = exports.anomalyEvents = exports.userFingerprints = exports.activityLocations = exports.userItemRatings = exports.userRecommendationProfiles = exports.hiddenRecommendations = exports.activityLogCursors = exports.activeSessions = exports.sessions = exports.itemTextCommonTerms = exports.itemTextChunks = exports.knowledgeRejectedTexts = exports.knowledgeRefusals = exports.knowledgeModels = exports.itemTexts = exports.mediaSources = exports.items = exports.serverJobConfigurations = exports.jobResults = exports.activities = exports.users = exports.libraries = exports.servers = void 0;
 const pg_core_1 = require("drizzle-orm/pg-core");
 const drizzle_orm_1 = require("drizzle-orm");
 // Custom vector type that supports variable dimensions
@@ -518,7 +518,23 @@ exports.itemTextChunks = (0, pg_core_1.pgTable)("item_text_chunks", {
     (0, pg_core_1.index)("item_text_chunks_text_idx").on(table.itemTextId),
     (0, pg_core_1.index)("item_text_chunks_server_idx").on(table.serverId),
     (0, pg_core_1.index)("item_text_chunks_search_idx").using("gin", table.searchVector),
+    // Plus, created by the knowledge index job (CONCURRENTLY, as they take a
+    // while on a large library): an HNSW index per dimension and kind, and a
+    // full-text (GIN) index per kind, so a word looked up in the plot windows
+    // doesn't wade through its matches in the dialogue.
 ]);
+// The words too common to rank by, per kind of window: those in more than
+// COMMON_TERM_WINDOWS windows (as the full-text search stems them), with how
+// many; and, under the empty word, how many windows the kind has. Refreshed
+// daily by the knowledge index job (ts_stat). Keyword search ranks windows by
+// the rare words of a query, weighted by how rare (see keyword-rank.ts);
+// without this table it finds the common words by counting, only slower.
+exports.itemTextCommonTerms = (0, pg_core_1.pgTable)("item_text_common_terms", {
+    kind: (0, pg_core_1.text)("kind").notNull(),
+    term: (0, pg_core_1.text)("term").notNull(),
+    windows: (0, pg_core_1.integer)("windows").notNull(),
+    refreshedAt: (0, pg_core_1.timestamp)("refreshed_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [(0, pg_core_1.primaryKey)({ columns: [table.kind, table.term] })]);
 // Sessions table - user sessions and playback information
 exports.sessions = (0, pg_core_1.pgTable)("sessions", {
     // Primary key and relationships

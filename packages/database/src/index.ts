@@ -16,6 +16,7 @@ export * from "./schema";
 export * from "./job-defaults";
 
 export {
+  COMMON_TERM_WINDOWS,
   EMBEDDABLE_ITEM_TYPES,
   embeddableItemCondition,
   KNOWLEDGE_ITEM_TYPES,

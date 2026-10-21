@@ -90,11 +90,13 @@ export function fuseItemRankings(
  * Fuse ranked item id lists by each item's best rank in any of them, so a
  * title that one ranking puts first is not buried under titles several
  * rankings put halfway down. Ties go to the item the rankings agree on more
- * (reciprocal rank fusion), which is also its score.
+ * (reciprocal rank fusion), which is also its score. `weights` (1 each by
+ * default) push a ranking down: weighted 3, its first place counts as third.
  */
 export function fuseByBestRank(
   rankings: string[][],
   limit: number,
+  weights: number[] = [],
 ): { id: string; rank: number; score: number }[] {
   const consensus = new Map(
     fuseItemRankings(rankings, Number.POSITIVE_INFINITY).map((r) => [
@@ -103,11 +105,14 @@ export function fuseByBestRank(
     ]),
   );
   const best = new Map<string, number>();
-  for (const ranking of rankings) {
+  rankings.forEach((ranking, i) => {
+    // A ranking weighted w counts its n-th place as the (w*n)-th.
+    const w = weights[i] ?? 1;
     ranking.forEach((id, rank) => {
-      best.set(id, Math.min(best.get(id) ?? rank, rank));
+      const at = (rank + 1) * w - 1;
+      best.set(id, Math.min(best.get(id) ?? at, at));
     });
-  }
+  });
   return [...best]
     .sort(
       (a, b) =>

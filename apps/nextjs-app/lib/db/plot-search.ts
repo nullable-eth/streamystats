@@ -17,6 +17,10 @@ import { searchTextWindows } from "./transcript-search";
 export type PlotSearchType = "Movie" | "Series" | "Episode";
 
 const POOL = 50;
+/** For a remembered line, the place in another ranking that counts as first in the dialogue. */
+const LINE_WEIGHT = 3;
+/** Speech: quotation marks, a question or exclamation, or talk of me and you. */
+const SPOKEN = /["“”?!]|\b(i|i'm|i'll|you|you're|we|we're|my|your|me|us)\b/i;
 
 /**
  * Titles that match a description of their story, best first. Four rankings
@@ -76,7 +80,7 @@ export async function searchByPlot({
           embedding,
           limit: POOL,
         })
-      : Promise.resolve([]);
+      : Promise.resolve(Object.assign([], { complete: false }));
   const [byStory, byPlot, byReference, byDialogue] = await Promise.all([
     db
       .select({ id: items.id })
@@ -89,6 +93,12 @@ export async function searchByPlot({
     windows("transcript"),
   ]);
 
+  // A remembered line (it reads as speech, and some dialogue window holds
+  // every word of it) is found by its dialogue; the other rankings' first
+  // places, which for a line are mostly titles about the same thing, come
+  // after the dialogue's: a line dialogue search puts second would otherwise
+  // land about eighth.
+  const isLine = byDialogue.complete && SPOKEN.test(query);
   const fused = fuseByBestRank(
     [
       byStory.map((r) => r.id),
@@ -97,6 +107,7 @@ export async function searchByPlot({
       byDialogue.map((m) => m.itemId),
     ],
     POOL * 4,
+    isLine ? [LINE_WEIGHT, LINE_WEIGHT, LINE_WEIGHT, 1] : [],
   );
   if (fused.length === 0) return [];
 

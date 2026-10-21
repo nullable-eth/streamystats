@@ -5,6 +5,13 @@ import { items } from "./schema";
 export const EMBEDDABLE_ITEM_TYPES = ["Movie", "Series", "Episode"] as const;
 /** Item types with their own subtitles: transcripts and synopses. */
 export const KNOWLEDGE_ITEM_TYPES = ["Movie", "Episode"] as const;
+/**
+ * A word in more windows of a kind than this is too common to rank by: it is
+ * kept in item_text_common_terms, and keyword search finds windows by the
+ * rarer words of a query. About 0.6% of the dialogue windows of a large
+ * library, 1.5% of its plot windows.
+ */
+export const COMMON_TERM_WINDOWS = 3000;
 
 /**
  * Items that get an embedding: the selected types (all three by default),
