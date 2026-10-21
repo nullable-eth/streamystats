@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   bestLine,
+  exactFirst,
   formatTimestamp,
   fuseByBestRank,
   fuseChunkRankings,
@@ -49,6 +50,32 @@ describe("fuseChunkRankings", () => {
     expect(fuseChunkRankings([[chunk(1, "a"), chunk(2, "b")]], 1)).toHaveLength(
       1,
     );
+  });
+});
+
+describe("exactFirst", () => {
+  test("titles holding the line come first, each once, with their own windows", () => {
+    const exact = fuseChunkRankings(
+      [[chunk(7, "quote"), chunk(8, "homage")]],
+      5,
+    );
+    const fused = fuseChunkRankings(
+      [[chunk(1, "near"), chunk(2, "quote"), chunk(3, "other")]],
+      5,
+    );
+    const order = exactFirst(exact, fused, 5);
+    expect(order.map((m) => m.itemId)).toEqual([
+      "quote",
+      "homage",
+      "near",
+      "other",
+    ]);
+    expect(order[0].moments.map((m) => m.text)).toEqual(["c7"]);
+  });
+
+  test("respects the limit", () => {
+    const exact = fuseChunkRankings([[chunk(1, "a"), chunk(2, "b")]], 5);
+    expect(exactFirst(exact, [], 1).map((m) => m.itemId)).toEqual(["a"]);
   });
 });
 

@@ -67,6 +67,24 @@ export function fuseChunkRankings(
 }
 
 /**
+ * Titles whose dialogue holds the query word for word (`exact`, best first)
+ * ahead of the rest of `fused`, each once: a remembered line said in a title
+ * is surer than any closeness of words or meaning. An exact title keeps its
+ * own windows, so its moment is where the line is said.
+ */
+export function exactFirst(
+  exact: TranscriptMatch[],
+  fused: TranscriptMatch[],
+  limit: number,
+): TranscriptMatch[] {
+  const found = new Set(exact.map((m) => m.itemId));
+  return [...exact, ...fused.filter((m) => !found.has(m.itemId))].slice(
+    0,
+    limit,
+  );
+}
+
+/**
  * Reciprocal rank fusion of ranked item id lists: an item near the top of
  * several rankings beats one found by a single ranking.
  */

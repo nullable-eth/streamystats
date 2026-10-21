@@ -15,15 +15,23 @@ import { getItemEmbeddingComparison } from "./embedding-comparison";
 import { getStatisticsExclusions } from "./exclusions";
 import { anyWording } from "./full-text";
 import { rankWindowsByWords } from "./keyword-rank";
-import { fuseChunkRankings, type TranscriptMatch } from "./transcript-rank";
+import {
+  exactFirst,
+  fuseChunkRankings,
+  type TranscriptMatch,
+} from "./transcript-rank";
 
 export { formatTimestamp } from "./transcript-rank";
 
 /**
- * Titles' best windows, best first, and whether a window holds every word of
- * the query: what a remembered line looks like (see plot search).
+ * Titles' best windows, best first; whether a window holds every word of the
+ * query, and whether dialogue holds it word for word: what a remembered line
+ * looks like (see plot search).
  */
-export type WindowMatches = TranscriptMatch[] & { complete: boolean };
+export type WindowMatches = TranscriptMatch[] & {
+  complete: boolean;
+  exact: boolean;
+};
 
 /** Windows each ranking reads, at least; more when more titles are asked for. */
 const POOL = 50;
@@ -118,10 +126,42 @@ export async function searchTextWindows({
       .limit(pool);
   };
 
-  const [words, vectors] = await Promise.all([textRanking, vectorRanking()]);
-  return Object.assign(fuseChunkRankings([words.rows, vectors], limit), {
-    complete: words.complete,
-  });
+  // Dialogue that says the query word for word: the words that count, in
+  // order, as many words apart as in the query (Postgres's phrase match, on
+  // the stemmed words the index keeps). Titles saying it come first: a
+  // remembered line ranked by its words is often a few places down, under
+  // titles that use the same words apart. Only with two words or more that
+  // count; one is no phrase, and the word ranking has it already.
+  const exactRanking = async () => {
+    if (kind !== "transcript") return [];
+    const phrase = anyWording(query, "phraseto_tsquery");
+    return db
+      .select(columns)
+      .from(itemTextChunks)
+      .innerJoin(items, eq(items.id, itemTextChunks.itemId))
+      .where(
+        and(
+          ...visible,
+          sql`numnode(phraseto_tsquery('english', ${query})) >= 3`,
+          sql`${itemTextChunks.searchVector} @@ ${phrase}`,
+        ),
+      )
+      .orderBy(desc(sql`ts_rank_cd(${itemTextChunks.searchVector}, ${phrase})`))
+      .limit(pool);
+  };
+
+  const [words, vectors, exact] = await Promise.all([
+    textRanking,
+    vectorRanking(),
+    exactRanking(),
+  ]);
+  const fused = fuseChunkRankings([words.rows, vectors], limit);
+  return Object.assign(
+    exact.length > 0
+      ? exactFirst(fuseChunkRankings([exact], limit), fused, limit)
+      : fused,
+    { complete: words.complete, exact: exact.length > 0 },
+  );
 }
 
 /** What was said: the dialogue windows, with when. */
