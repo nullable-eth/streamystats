@@ -25,12 +25,13 @@ export { formatTimestamp } from "./transcript-rank";
 
 /**
  * Titles' best windows, best first; whether a window holds every word of the
- * query, and whether dialogue holds it word for word: what a remembered line
- * looks like (see plot search).
+ * query, and the titles whose dialogue says it word for word (first among
+ * the matches, in their order): what a remembered line looks like (see plot
+ * search).
  */
 export type WindowMatches = TranscriptMatch[] & {
   complete: boolean;
-  exact: boolean;
+  exact: string[];
 };
 
 /** Windows each ranking reads, at least; more when more titles are asked for. */
@@ -169,11 +170,10 @@ export async function searchTextWindows({
     exactRanking(),
   ]);
   const fused = fuseChunkRankings([words.rows, vectors], limit);
+  const sayers = fuseChunkRankings([exact], limit);
   return Object.assign(
-    exact.length > 0
-      ? exactFirst(fuseChunkRankings([exact], limit), fused, limit)
-      : fused,
-    { complete: words.complete, exact: exact.length > 0 },
+    sayers.length > 0 ? exactFirst(sayers, fused, limit) : fused,
+    { complete: words.complete, exact: sayers.map((m) => m.itemId) },
   );
 }
 
