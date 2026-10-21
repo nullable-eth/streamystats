@@ -1,6 +1,12 @@
 /** Pure ranking helpers for transcript search (no database access). */
 const RRF_K = 60;
 
+/** Speech: quotation marks, a question or exclamation, or talk of me and you. */
+const SPOKEN = /["“”?!]|\b(i|i'm|i'll|you|you're|we|we're|my|your|me|us)\b/i;
+
+/** Whether a query reads as something said rather than a description. */
+export const readsAsSpeech = (query: string) => SPOKEN.test(query);
+
 export interface TranscriptMatch {
   itemId: string;
   score: number;
