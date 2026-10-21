@@ -53,6 +53,11 @@ export interface KnowledgeTypeStatus {
   unread: number;
   /** Read, but no readable full-dialogue subtitles: checked again daily. */
   noSubtitles: number;
+  /**
+   * Of those, the ones whose subtitles were turned down: in another language
+   * than the library's, or for another title (see knowledge_rejected_texts).
+   */
+  rejected: number;
   /** Synopses whose writing failed in the last day: tried again a day later. */
   failed: number;
   /**
@@ -137,6 +142,9 @@ export async function getKnowledgeIndexStatus(
         count(*) FILTER (WHERE r.status = 'ready')::int AS wikipedia,
         count(*) FILTER (WHERE t.id IS NULL)::int AS unread,
         count(*) FILTER (WHERE t.status <> 'ready')::int AS "noSubtitles",
+        count(*) FILTER (WHERE t.status <> 'ready' AND EXISTS (
+          SELECT 1 FROM knowledge_rejected_texts x
+          WHERE x.item_id = ${items.id} AND x.kind = 'transcript'))::int AS rejected,
         count(*) FILTER (WHERE t.status = 'ready' AND s.status <> 'ready' AND s.status <> 'declined'
                          AND s.checked_at > now() - interval '1 day')::int AS failed,
         count(*) FILTER (WHERE t.status = 'ready' AND s.status = 'declined')::int AS declined,
@@ -206,6 +214,7 @@ export async function getKnowledgeIndexStatus(
     wikipedia: 0,
     unread: 0,
     noSubtitles: 0,
+    rejected: 0,
     failed: 0,
     declined: 0,
     rewrites: 0,

@@ -626,6 +626,27 @@ export const knowledgeRefusals = pgTable(
   (table) => [primaryKey({ columns: [table.itemId, table.model] })]
 );
 
+// Texts the knowledge index must not use for a title: a subtitle track that
+// isn't the title's (another episode's, in another language, only part of
+// the dialogue) or a Wikipedia plot of another title, kept by the hash of the
+// text as read. A track or plot with the same text is passed over and the
+// next one tried; a new download with other text is read as usual.
+export const knowledgeRejectedTexts = pgTable(
+  "knowledge_rejected_texts",
+  {
+    itemId: text("item_id")
+      .notNull()
+      .references(() => items.id, { onDelete: "cascade" }),
+    // "transcript" | "reference"
+    kind: text("kind").notNull(),
+    contentHash: text("content_hash").notNull(),
+    // Why, in a few words: "another title", "not in the library's language", "part of the dialogue".
+    reason: text("reason"),
+    rejectedAt: timestamp("rejected_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.itemId, table.kind, table.contentHash] })]
+);
+
 // Searchable windows of an item's texts, each with an embedding (HNSW index
 // created per dimension at runtime, as for items.embedding) and a generated
 // tsvector for exact-wording search. Transcript windows are up to two
@@ -1377,6 +1398,7 @@ export type NewItem = typeof items.$inferInsert;
 export type ItemText = typeof itemTexts.$inferSelect;
 export type KnowledgeModel = typeof knowledgeModels.$inferSelect;
 export type KnowledgeRefusal = typeof knowledgeRefusals.$inferSelect;
+export type KnowledgeRejectedText = typeof knowledgeRejectedTexts.$inferSelect;
 export type ItemTextChunk = typeof itemTextChunks.$inferSelect;
 
 export type MediaSource = typeof mediaSources.$inferSelect;

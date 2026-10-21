@@ -334,6 +334,14 @@ export function KnowledgeIndexManager({
               for example) are picked up. Image-based and forced-only subtitles
               (do not contain full transcript) cannot be used.
             </p>
+            {sum("rejected") > 0 && (
+              <p className="text-muted-foreground">
+                {count(sum("rejected"), "title has", "titles have")} subtitles
+                that were turned down: in another language than the library's,
+                or for another title. The same text is passed over from now on;
+                a new subtitle file is read as usual.
+              </p>
+            )}
             <MissingList missing={status.missing} />
           </section>
         )}
