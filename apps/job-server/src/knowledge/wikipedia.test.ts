@@ -216,12 +216,18 @@ describe("matchListedEpisode", () => {
     expect(titles(matchListedEpisode(rows, ep({ title: "Hot Girl", aired: "2005-04-19" })))).toEqual(["Hot Girl"]);
   });
 
-  test("a placeholder title: by air date alone, and only when one aired that day", () => {
+  test("a placeholder title: by air date when one row aired then, else by season and number", () => {
     expect(titles(matchListedEpisode(rows, ep({ title: "The Office - S01E03 -", aired: "2005-04-05" })))).toEqual([
       "Health Care",
     ]);
     expect(matchListedEpisode(rows, ep({ title: "The Office - S01E05 -", aired: "2005-04-19" }))).toEqual([]);
-    expect(matchListedEpisode(rows, ep({ title: "The Office - S01E03 -", number: 3 }))).toEqual([]);
+    expect(titles(matchListedEpisode(rows, ep({ title: "The Office - S01E05 -", aired: "2005-04-19", number: 5 })))).toEqual(
+      ["Basketball"]
+    );
+    // A file date as the air date (metadata missing): no row aired then, so the number tells.
+    expect(titles(matchListedEpisode(rows, ep({ title: "The Office - S01E03 -", aired: "2015-09-10", number: 3 })))).toEqual(
+      ["Health Care"]
+    );
   });
 
   test("an air date whose row has another title is not trusted", () => {

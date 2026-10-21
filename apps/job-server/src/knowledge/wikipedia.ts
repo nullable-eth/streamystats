@@ -396,14 +396,19 @@ export async function listedEpisodesOf(series: Map<string, SeriesIds>): Promise<
       for (const linked of linkedSeasonPages(read.get(title)?.text ?? "")) titles.push(linked);
     }
     const seen = new Set<string>();
-    const rows: ListedEpisode[] = [];
+    // A list and a season article often both list an episode: one row each, the one that says most.
+    const rows = new Map<string, ListedEpisode>();
     for (const title of titles) {
       const page = read.get(title);
       if (!page || seen.has(page.title) || seen.size >= MAX_LIST_PAGES) continue;
       seen.add(page.title);
-      rows.push(...episodeListEntries(page));
+      for (const row of episodeListEntries(page)) {
+        const id = `${row.season}|${row.number}|${normalize(row.title)}|${row.aired}`;
+        const kept = rows.get(id);
+        if (!kept || row.summary.length > kept.summary.length) rows.set(id, row);
+      }
     }
-    listed.set(key, rows);
+    listed.set(key, [...rows.values()]);
   }
   return listed;
 }
@@ -467,8 +472,10 @@ const daysApart = (a: string, b: string) => Math.abs(Date.parse(a) - Date.parse(
  * row that day, unless its title disagrees with the episode's; then by season
  * and number, only when the titles agree (numbering differs between sources:
  * double episodes, specials, a revival's seasons); then by title alone, when
- * one row has it. An episode whose title is a placeholder is told by its air
- * date only. A file of several episodes ("A / B") is each of its parts.
+ * one row has it. An episode whose title is only a placeholder (a file name,
+ * usually with the rest of its metadata missing or wrong too) is told by its
+ * air date if one row aired then, else by its season and number, the one thing
+ * left to go on. A file of several episodes ("A / B") is each of its parts.
  */
 export function matchListedEpisode(rows: ListedEpisode[], episode: LibraryEpisode): ListedEpisode[] {
   const parts = episode.title && !placeholder(episode.title) ? episode.title.split(/\s+\/\s+/) : [null];
@@ -485,22 +492,18 @@ function matchOne(rows: ListedEpisode[], episode: LibraryEpisode): ListedEpisode
   const titled = !placeholder(episode.title);
   const agrees = (row: ListedEpisode) => titled && !!row.title && titlesAgree(row.title, episode.title ?? "");
   const only = (found: ListedEpisode[]) => (found.length === 1 ? found[0] : null);
+  const sameDay = episode.aired ? rows.filter((row) => row.aired && daysApart(row.aired, episode.aired ?? "") <= 1) : [];
+  const numbered =
+    episode.season !== null && episode.number !== null
+      ? rows.filter((row) => row.season === episode.season && row.number === episode.number)
+      : [];
 
-  if (episode.aired) {
-    const sameDay = rows.filter((row) => row.aired && daysApart(row.aired, episode.aired ?? "") <= 1);
-    if (titled) {
-      const named = sameDay.filter(agrees);
-      if (named.length > 0) return only(named);
-      if (sameDay.length === 1 && !sameDay[0].title) return sameDay[0];
-    } else if (sameDay.length > 0) {
-      return only(sameDay);
-    }
-  }
-  if (!titled) return null;
-  if (episode.season !== null && episode.number !== null) {
-    const numbered = rows.filter((row) => row.season === episode.season && row.number === episode.number && agrees(row));
-    if (numbered.length > 0) return only(numbered);
-  }
+  if (!titled) return only(sameDay) ?? only(numbered);
+  const named = sameDay.filter(agrees);
+  if (named.length > 0) return only(named);
+  if (sameDay.length === 1 && !sameDay[0].title) return sameDay[0];
+  const numberedAndNamed = numbered.filter(agrees);
+  if (numberedAndNamed.length > 0) return only(numberedAndNamed);
   return only(rows.filter((row) => !!row.title && normalize(row.title) === normalize(episode.title ?? "")));
 }
 
