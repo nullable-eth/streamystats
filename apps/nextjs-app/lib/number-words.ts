@@ -49,7 +49,42 @@ export const digitNumbers = (text: string) =>
     })
     .replace(/\s*\bper ?cent\b/gi, "%");
 
-/** A query as typed and with its numbers in the other wording, each once. */
+/** Hesitations said but seldom written: subtitles leave out most "uh"s. */
+const FILLERS =
+  /(?<![\p{L}'])(?:u+h+|u+m+|uhm|e+rm|a+h|h+m+|m+h*m+)(?![\p{L}'])[\s,.…-]*/giu;
+
+/** Speech as subtitles often write it out. */
+const WRITTEN_OUT: [RegExp, string][] = [
+  [/\bgonna\b/gi, "going to"],
+  [/\bwanna\b/gi, "want to"],
+  [/\bgotta\b/gi, "got to"],
+  [/\bgimme\b/gi, "give me"],
+  [/\blemme\b/gi, "let me"],
+  [/\bkinda\b/gi, "kind of"],
+  [/\bsorta\b/gi, "sort of"],
+  [/\boutta\b/gi, "out of"],
+  [/\bdunno\b/gi, "don't know"],
+  [/(?<![\p{L}'])(?:'cause|cuz)(?![\p{L}'])/giu, "because"],
+];
+
+/**
+ * A line as subtitles tend to write it: "uh" and "um" left out, "gonna" as
+ * "going to". People quote "Life, uh, finds a way", the subtitle says "life
+ * finds a way"; they type "you're gonna need a bigger boat", it says "going
+ * to need".
+ */
+export const writtenSpeech = (text: string) =>
+  WRITTEN_OUT.reduce(
+    (t, [said, written]) => t.replace(said, written),
+    text.replace(FILLERS, ""),
+  ).trim();
+
+/** A query as typed, with its numbers in the other wording, and as subtitles write speech, each once. */
 export const wordings = (query: string) => [
-  ...new Set([query, spellNumbers(query), digitNumbers(query)]),
+  ...new Set([
+    query,
+    spellNumbers(query),
+    digitNumbers(query),
+    writtenSpeech(query),
+  ]),
 ];
