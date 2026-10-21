@@ -161,11 +161,13 @@ export function KnowledgeIndexManager({
               />
             </div>
             <p className="text-sm text-muted-foreground">
-              Looks up each one&apos;s plot on English Wikipedia. Not needed:
-              without one, the synopsis is written from the subtitles. With one,
-              it gets who is who and what happens off screen right more often,
-              and the plot is searchable too. Wikipedia text is CC BY-SA.
-              Turning this off deletes the plots fetched so far.
+              Looks up each one&apos;s plot on English Wikipedia: its own
+              article&apos;s, or for an episode without one, its summary in the
+              series&apos; season or episode-list pages. Not needed: without
+              one, the synopsis is written from the subtitles. With one, it gets
+              who is who and what happens off screen right more often, and the
+              plot is searchable too, even with no subtitles. Wikipedia text is
+              CC BY-SA. Turning this off deletes the plots fetched so far.
             </p>
           </div>
         </div>
@@ -221,6 +223,29 @@ export function KnowledgeIndexManager({
                     ))}
                   </tr>
                 ))}
+                {wikipedia && (
+                  <tr className="border-t align-top">
+                    <td className="pt-2">
+                      <span className="font-medium">With Wikipedia text</span>
+                      <p className="text-muted-foreground">
+                        In any tier: an article&apos;s plot, or an episode
+                        list&apos;s summary.
+                      </p>
+                    </td>
+                    {selected.map((t) => (
+                      <td
+                        key={t.type}
+                        className="pt-2 pl-4 text-right tabular-nums"
+                      >
+                        {t.wikipedia.toLocaleString()}
+                        <span className="text-muted-foreground">
+                          {" "}
+                          ({percent(t.wikipedia, t.total)})
+                        </span>
+                      </td>
+                    ))}
+                  </tr>
+                )}
               </tbody>
             </table>
           </section>
@@ -303,11 +328,11 @@ export function KnowledgeIndexManager({
               No readable subtitles: {sum("noSubtitles").toLocaleString()}
             </h3>
             <p className="text-muted-foreground">
-              Without subtitles only the title and description are searchable.
-              They are checked again daily, so subtitles added later (by a
-              subtitle downloader, for example) are picked up. Image-based and
-              forced-only subtitles (do not contain full transcript) cannot be
-              used.
+              Without subtitles only the title, the description and any
+              Wikipedia plot or episode summary are searchable. They are checked
+              again daily, so subtitles added later (by a subtitle downloader,
+              for example) are picked up. Image-based and forced-only subtitles
+              (do not contain full transcript) cannot be used.
             </p>
             <MissingList missing={status.missing} />
           </section>
@@ -318,6 +343,9 @@ export function KnowledgeIndexManager({
 }
 
 /** "1 synopsis", "2,345 synopses". */
+const percent = (n: number, of: number) =>
+  `${of > 0 ? Math.round((100 * n) / of) : 0}%`;
+
 const count = (n: number, one: string, many: string) =>
   `${n.toLocaleString()} ${n === 1 ? one : many}`;
 
@@ -417,6 +445,13 @@ const TIERS = [
     label: "Dialogue only",
     color: "bg-amber-400",
     about: "Every line is searchable; the synopsis is still to be written.",
+  },
+  {
+    key: "wikipediaOnly",
+    label: "Wikipedia only",
+    color: "bg-violet-400",
+    about:
+      "No subtitles yet, but the Wikipedia plot or episode summary is searchable.",
   },
   {
     key: "titleOnly",
