@@ -13,7 +13,7 @@ import {
 } from "drizzle-orm";
 import { getItemEmbeddingComparison } from "./embedding-comparison";
 import { getStatisticsExclusions } from "./exclusions";
-import { anyWording } from "./full-text";
+import { anyWording, saysWordForWord } from "./full-text";
 import { rankWindowsByWords } from "./keyword-rank";
 import {
   exactFirst,
@@ -132,10 +132,12 @@ export async function searchTextWindows({
   // remembered line ranked by its words is often a few places down, under
   // titles that use the same words apart. Only with two words or more that
   // count; one is no phrase, and the word ranking has it already.
-  // Among titles that say it, the earliest first: a line said word for word
-  // in several is mostly a famous one the later titles quote ("We're gonna
-  // need a bigger boat" in a dozen films and episodes after Jaws), or a
-  // catchphrase, first said in the episode that coined it.
+  // Those saying every word as typed, stopwords too, before those the phrase
+  // query lets through with other words where the query has stopwords. Then
+  // the earliest first: a line said word for word in several titles is
+  // mostly a famous one the later titles quote ("You're gonna need a bigger
+  // boat" in a dozen films and episodes after Jaws), or a catchphrase, first
+  // said in the episode that coined it.
   const exactRanking = async () => {
     if (kind !== "transcript") return [];
     const phrase = anyWording(query, "phraseto_tsquery");
@@ -151,6 +153,7 @@ export async function searchTextWindows({
         ),
       )
       .orderBy(
+        desc(saysWordForWord(query, sql`${itemTextChunks.text}`)),
         // Undated titles last (ascending puts nulls last).
         asc(
           sql`coalesce(${items.premiereDate}, make_date(${items.productionYear}, 1, 1))`,
