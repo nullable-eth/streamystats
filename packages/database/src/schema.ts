@@ -682,7 +682,28 @@ export const itemTextChunks = pgTable(
     index("item_text_chunks_text_idx").on(table.itemTextId),
     index("item_text_chunks_server_idx").on(table.serverId),
     index("item_text_chunks_search_idx").using("gin", table.searchVector),
+    // Plus, created by the knowledge index job (CONCURRENTLY, as they take a
+    // while on a large library): an HNSW index per dimension and kind, and a
+    // full-text (GIN) index per kind, so a word looked up in the plot windows
+    // doesn't wade through its matches in the dialogue.
   ]
+);
+
+// The words too common to rank by, per kind of window: those in more than
+// COMMON_TERM_WINDOWS windows (as the full-text search stems them), with how
+// many; and, under the empty word, how many windows the kind has. Refreshed
+// daily by the knowledge index job (ts_stat). Keyword search ranks windows by
+// the rare words of a query, weighted by how rare (see keyword-rank.ts);
+// without this table it finds the common words by counting, only slower.
+export const itemTextCommonTerms = pgTable(
+  "item_text_common_terms",
+  {
+    kind: text("kind").notNull(),
+    term: text("term").notNull(),
+    windows: integer("windows").notNull(),
+    refreshedAt: timestamp("refreshed_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.kind, table.term] })]
 );
 
 // Sessions table - user sessions and playback information

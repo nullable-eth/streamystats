@@ -97,6 +97,18 @@ describe("fuseByBestRank", () => {
     );
     expect(fused.map((r) => r.id)).toEqual(["a", "b", "c"]);
   });
+
+  test("a weighted ranking's places count further down", () => {
+    // Weighted 3, the first two rankings' first places count as third: the
+    // last ranking's first and second come before them.
+    const fused = fuseByBestRank(
+      [["plot"], ["story"], ["line", "close"]],
+      4,
+      [3, 3, 1],
+    );
+    expect(fused.map((r) => r.id)).toEqual(["line", "close", "plot", "story"]);
+    expect(fused.map((r) => r.rank)).toEqual([0, 1, 2, 2]);
+  });
 });
 
 describe("bestLine", () => {

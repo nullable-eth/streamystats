@@ -4489,6 +4489,81 @@ export declare const itemTextChunks: import("drizzle-orm/pg-core").PgTableWithCo
     };
     dialect: "pg";
 }>;
+export declare const itemTextCommonTerms: import("drizzle-orm/pg-core").PgTableWithColumns<{
+    name: "item_text_common_terms";
+    schema: undefined;
+    columns: {
+        kind: import("drizzle-orm/pg-core").PgColumn<{
+            name: "kind";
+            tableName: "item_text_common_terms";
+            dataType: "string";
+            columnType: "PgText";
+            data: string;
+            driverParam: string;
+            notNull: true;
+            hasDefault: false;
+            isPrimaryKey: false;
+            isAutoincrement: false;
+            hasRuntimeDefault: false;
+            enumValues: [string, ...string[]];
+            baseColumn: never;
+            identity: undefined;
+            generated: undefined;
+        }, {}, {}>;
+        term: import("drizzle-orm/pg-core").PgColumn<{
+            name: "term";
+            tableName: "item_text_common_terms";
+            dataType: "string";
+            columnType: "PgText";
+            data: string;
+            driverParam: string;
+            notNull: true;
+            hasDefault: false;
+            isPrimaryKey: false;
+            isAutoincrement: false;
+            hasRuntimeDefault: false;
+            enumValues: [string, ...string[]];
+            baseColumn: never;
+            identity: undefined;
+            generated: undefined;
+        }, {}, {}>;
+        windows: import("drizzle-orm/pg-core").PgColumn<{
+            name: "windows";
+            tableName: "item_text_common_terms";
+            dataType: "number";
+            columnType: "PgInteger";
+            data: number;
+            driverParam: string | number;
+            notNull: true;
+            hasDefault: false;
+            isPrimaryKey: false;
+            isAutoincrement: false;
+            hasRuntimeDefault: false;
+            enumValues: undefined;
+            baseColumn: never;
+            identity: undefined;
+            generated: undefined;
+        }, {}, {}>;
+        refreshedAt: import("drizzle-orm/pg-core").PgColumn<{
+            name: "refreshed_at";
+            tableName: "item_text_common_terms";
+            dataType: "date";
+            columnType: "PgTimestamp";
+            data: Date;
+            driverParam: string;
+            notNull: true;
+            hasDefault: true;
+            isPrimaryKey: false;
+            isAutoincrement: false;
+            hasRuntimeDefault: false;
+            enumValues: undefined;
+            baseColumn: never;
+            identity: undefined;
+            generated: undefined;
+        }, {}, {}>;
+    };
+    dialect: "pg";
+}>;
 export declare const sessions: import("drizzle-orm/pg-core").PgTableWithColumns<{
     name: "sessions";
     schema: undefined;
