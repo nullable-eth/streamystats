@@ -77,6 +77,31 @@ app.post("/scheduler/trigger-user-sync", async (c) => {
   }
 });
 
+app.post("/scheduler/trigger-knowledge-sync", async (c) => {
+  try {
+    const { serverId } = await c.req.json();
+
+    if (!serverId) {
+      return c.json({ error: "Server ID is required" }, 400);
+    }
+
+    const server = await getServerById(serverId);
+    if (!server) {
+      return c.json({ error: "Server not found" }, 404);
+    }
+
+    await activityScheduler.triggerServerKnowledgeSync(server.id);
+
+    return c.json({
+      success: true,
+      message: `Knowledge index run triggered for server: ${server.name}`,
+    });
+  } catch (error) {
+    console.error("Error triggering knowledge index run:", error);
+    return c.json({ error: "Failed to trigger knowledge index run" }, 500);
+  }
+});
+
 app.post("/scheduler/trigger-full-sync", async (c) => {
   try {
     const { serverId } = await c.req.json();

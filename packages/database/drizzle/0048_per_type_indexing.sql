@@ -1,0 +1,2 @@
+ALTER TABLE "servers" ADD COLUMN "embedding_item_types" text[] DEFAULT '{"Movie","Series","Episode"}' NOT NULL;--> statement-breakpoint
+ALTER TABLE "servers" ADD COLUMN "knowledge_item_types" text[] DEFAULT '{"Movie","Episode"}' NOT NULL;

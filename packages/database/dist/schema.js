@@ -1,7 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.itemPeopleRelations = exports.peopleRelations = exports.watchlistItemsRelations = exports.watchlistsRelations = exports.hiddenRecommendationsRelations = exports.anomalyEventsRelations = exports.userFingerprintsRelations = exports.activityLocationsRelations = exports.sessionsRelations = exports.itemsRelations = exports.activitiesRelations = exports.usersRelations = exports.librariesRelations = exports.serverJobConfigurationsRelations = exports.serversRelations = exports.watchlistItems = exports.watchlists = exports.itemPeople = exports.people = exports.anomalyEvents = exports.userFingerprints = exports.activityLocations = exports.hiddenRecommendations = exports.activityLogCursors = exports.activeSessions = exports.sessions = exports.mediaSources = exports.items = exports.serverJobConfigurations = exports.jobResults = exports.activities = exports.users = exports.libraries = exports.servers = void 0;
+exports.itemPeopleRelations = exports.peopleRelations = exports.watchlistItemsRelations = exports.watchlistsRelations = exports.hiddenRecommendationsRelations = exports.anomalyEventsRelations = exports.userFingerprintsRelations = exports.activityLocationsRelations = exports.sessionsRelations = exports.itemsRelations = exports.activitiesRelations = exports.usersRelations = exports.librariesRelations = exports.serverJobConfigurationsRelations = exports.serversRelations = exports.watchlistItems = exports.watchlists = exports.itemPeople = exports.people = exports.anomalyEvents = exports.userFingerprints = exports.activityLocations = exports.userItemRatings = exports.userRecommendationProfiles = exports.hiddenRecommendations = exports.activityLogCursors = exports.activeSessions = exports.sessions = exports.itemTextCommonTerms = exports.itemTextChunks = exports.knowledgeRejectedTexts = exports.knowledgeRefusals = exports.knowledgeModels = exports.itemTexts = exports.mediaSources = exports.items = exports.serverJobConfigurations = exports.jobResults = exports.activities = exports.users = exports.libraries = exports.servers = void 0;
 const pg_core_1 = require("drizzle-orm/pg-core");
+const drizzle_orm_1 = require("drizzle-orm");
 // Custom vector type that supports variable dimensions
 // This allows storing embeddings of any size without hardcoding dimensions
 const vector = (0, pg_core_1.customType)({
@@ -32,7 +33,7 @@ const tsvector = (0, pg_core_1.customType)({
         return value;
     },
 });
-const drizzle_orm_1 = require("drizzle-orm");
+const drizzle_orm_2 = require("drizzle-orm");
 // =============================================================================
 // Tables
 // =============================================================================
@@ -71,6 +72,17 @@ exports.servers = (0, pg_core_1.pgTable)("servers", {
     chatBaseUrl: (0, pg_core_1.text)("chat_base_url"),
     chatApiKey: (0, pg_core_1.text)("chat_api_key"),
     chatModel: (0, pg_core_1.text)("chat_model"),
+    // What the settings show the chat and embedding models as.
+    chatName: (0, pg_core_1.text)("chat_name"),
+    embeddingName: (0, pg_core_1.text)("embedding_name"),
+    // Optional reranker: a cross-encoder plot search asks to reorder its top
+    // titles, reading the query and each title's best passages together. Any
+    // service with a Jina/Cohere-style /rerank: llama.cpp (--reranking),
+    // Infinity, TEI, vLLM, Jina, Cohere.
+    rerankerBaseUrl: (0, pg_core_1.text)("reranker_base_url"),
+    rerankerApiKey: (0, pg_core_1.text)("reranker_api_key"),
+    rerankerModel: (0, pg_core_1.text)("reranker_model"),
+    rerankerName: (0, pg_core_1.text)("reranker_name"),
     // Sync status tracking
     syncStatus: (0, pg_core_1.text)("sync_status").notNull().default("pending"), // pending, syncing, completed, failed
     syncProgress: (0, pg_core_1.text)("sync_progress").notNull().default("not_started"), // not_started, users, libraries, items, activities, completed
@@ -87,6 +99,25 @@ exports.servers = (0, pg_core_1.pgTable)("servers", {
     embeddingStopRequested: (0, pg_core_1.boolean)("embedding_stop_requested")
         .notNull()
         .default(false),
+    // Knowledge index: transcripts from library subtitles, chunked and
+    // embedded, plus a chat-model synopsis folded into each item's embedding.
+    knowledgeIndexEnabled: (0, pg_core_1.boolean)("knowledge_index_enabled")
+        .notNull()
+        .default(false),
+    // Which item types get an item embedding, and which get transcripts and
+    // synopses. Admin-selectable: episodes are most of a typical library.
+    embeddingItemTypes: (0, pg_core_1.text)("embedding_item_types")
+        .array()
+        .notNull()
+        .default(["Movie", "Series", "Episode"]),
+    knowledgeItemTypes: (0, pg_core_1.text)("knowledge_item_types")
+        .array()
+        .notNull()
+        .default(["Movie", "Episode"]),
+    // Fetch each title's plot from Wikipedia (by its IMDb id, through
+    // Wikidata): a reference the synopsis is written with, and searched on
+    // its own. Off by default: it calls out to Wikimedia.
+    knowledgeWikipedia: (0, pg_core_1.boolean)("knowledge_wikipedia").notNull().default(false),
     // Display timezone for this server (IANA timezone identifier)
     // All data is stored in UTC; this controls display formatting only
     timezone: (0, pg_core_1.text)("timezone").notNull().default("Etc/UTC"),
@@ -372,6 +403,146 @@ exports.mediaSources = (0, pg_core_1.pgTable)("media_sources", {
     (0, pg_core_1.index)("media_sources_item_id_idx").on(table.itemId),
     (0, pg_core_1.index)("media_sources_server_id_idx").on(table.serverId),
 ]);
+// Full texts behind the knowledge index, one row per item and kind:
+// "transcript" (cleaned dialogue from a library subtitle track), "scenes" and
+// "synopsis" (written by the chat model from the transcript) or "reference"
+// (the plot from Wikipedia). status "missing" records that no usable subtitle
+// (or Wikipedia plot) existed when last checked, so the item is retried later
+// instead of on every run.
+exports.itemTexts = (0, pg_core_1.pgTable)("item_texts", {
+    id: (0, pg_core_1.serial)("id").primaryKey(),
+    serverId: (0, pg_core_1.integer)("server_id")
+        .notNull()
+        .references(() => exports.servers.id, { onDelete: "cascade" }),
+    itemId: (0, pg_core_1.text)("item_id")
+        .notNull()
+        .references(() => exports.items.id, { onDelete: "cascade" }),
+    kind: (0, pg_core_1.text)("kind").notNull(), // "transcript" | "scenes" | "synopsis" | "reference"
+    // "ready" | "missing"; scenes also "wanted" (asked to be written next) and
+    // "declined" (every model tried refused it: see knowledge_refusals)
+    status: (0, pg_core_1.text)("status").notNull(),
+    // transcript: the subtitle stream it was read from; scenes (the plot part
+    // by part, each under its times) and synopsis: the transcript hash they
+    // were written from, and the reference's when there was one (a change
+    // means rebuild); reference: the Wikipedia revision's permanent link.
+    source: (0, pg_core_1.text)("source"),
+    content: (0, pg_core_1.text)("content").notNull().default(""),
+    contentHash: (0, pg_core_1.text)("content_hash"),
+    // scenes and synopsis: the model that wrote them ("provider:model"), so
+    // a model can be asked to rewrite another's (knowledge_models.rewrite_from).
+    writtenBy: (0, pg_core_1.text)("written_by"),
+    // transcript: when each line of `content` starts, so a matched line can
+    // be located to the moment it is said.
+    cueStartsMs: (0, pg_core_1.integer)("cue_starts_ms").array(),
+    checkedAt: (0, pg_core_1.timestamp)("checked_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: (0, pg_core_1.timestamp)("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+    (0, pg_core_1.unique)("item_texts_item_kind_unique").on(table.itemId, table.kind),
+    (0, pg_core_1.index)("item_texts_server_kind_idx").on(table.serverId, table.kind),
+]);
+// The models the knowledge index writes scene notes and synopses with, tried
+// in order: a title goes to the first one not resting after a failure of its
+// own, and on to the next if it fails. None: the AI Chat model.
+exports.knowledgeModels = (0, pg_core_1.pgTable)("knowledge_models", {
+    id: (0, pg_core_1.serial)("id").primaryKey(),
+    serverId: (0, pg_core_1.integer)("server_id")
+        .notNull()
+        .references(() => exports.servers.id, { onDelete: "cascade" }),
+    position: (0, pg_core_1.integer)("position").notNull(),
+    // What the settings show it as; the provider and model when unset.
+    name: (0, pg_core_1.text)("name"),
+    // Off: kept, but not tried.
+    enabled: (0, pg_core_1.boolean)("enabled").notNull().default(true),
+    provider: (0, pg_core_1.text)("provider").notNull(), // as chatProvider
+    baseUrl: (0, pg_core_1.text)("base_url"),
+    apiKey: (0, pg_core_1.text)("api_key"),
+    model: (0, pg_core_1.text)("model").notNull(),
+    // Writers ("provider:model") whose notes it replaces, as asked in the settings.
+    rewriteFrom: (0, pg_core_1.text)("rewrite_from").array().notNull().default([]),
+    // Requests it is sent at once; null: its provider's default (see the job).
+    parallelRequests: (0, pg_core_1.integer)("parallel_requests"),
+    // Out of credit, rate limited, or down: not tried again until then.
+    unavailableUntil: (0, pg_core_1.timestamp)("unavailable_until", { withTimezone: true }),
+    lastError: (0, pg_core_1.text)("last_error"),
+    createdAt: (0, pg_core_1.timestamp)("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: (0, pg_core_1.timestamp)("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [(0, pg_core_1.index)("knowledge_models_server_idx").on(table.serverId, table.position)]);
+// Models that declined to write a title's notes: the provider's content filter
+// refused it (a usage-policy block, say). The title is not sent to that model
+// again; any other model may still write it.
+exports.knowledgeRefusals = (0, pg_core_1.pgTable)("knowledge_refusals", {
+    itemId: (0, pg_core_1.text)("item_id")
+        .notNull()
+        .references(() => exports.items.id, { onDelete: "cascade" }),
+    // The model, as written_by names it ("provider:model").
+    model: (0, pg_core_1.text)("model").notNull(),
+    // What the provider said, shortened.
+    reason: (0, pg_core_1.text)("reason"),
+    refusedAt: (0, pg_core_1.timestamp)("refused_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [(0, pg_core_1.primaryKey)({ columns: [table.itemId, table.model] })]);
+// Texts the knowledge index must not use for a title: a subtitle track that
+// isn't the title's (another episode's, in another language, only part of
+// the dialogue) or a Wikipedia plot of another title, kept by the hash of the
+// text as read. A track or plot with the same text is passed over and the
+// next one tried; a new download with other text is read as usual.
+exports.knowledgeRejectedTexts = (0, pg_core_1.pgTable)("knowledge_rejected_texts", {
+    itemId: (0, pg_core_1.text)("item_id")
+        .notNull()
+        .references(() => exports.items.id, { onDelete: "cascade" }),
+    // "transcript" | "reference"
+    kind: (0, pg_core_1.text)("kind").notNull(),
+    contentHash: (0, pg_core_1.text)("content_hash").notNull(),
+    // Why, in a few words: "another title", "not in the library's language", "part of the dialogue".
+    reason: (0, pg_core_1.text)("reason"),
+    rejectedAt: (0, pg_core_1.timestamp)("rejected_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [(0, pg_core_1.primaryKey)({ columns: [table.itemId, table.kind, table.contentHash] })]);
+// Searchable windows of an item's texts, each with an embedding (HNSW index
+// created per dimension at runtime, as for items.embedding) and a generated
+// tsvector for exact-wording search. Transcript windows are up to two
+// minutes of dialogue with their timestamps; synopsis windows are the plot:
+// the whole synopsis and each of its paragraphs (no timestamps) and each
+// part of the scene notes (with its timestamps), so a single plot point can
+// match on its own.
+exports.itemTextChunks = (0, pg_core_1.pgTable)("item_text_chunks", {
+    id: (0, pg_core_1.serial)("id").primaryKey(),
+    itemTextId: (0, pg_core_1.integer)("item_text_id")
+        .notNull()
+        .references(() => exports.itemTexts.id, { onDelete: "cascade" }),
+    serverId: (0, pg_core_1.integer)("server_id")
+        .notNull()
+        .references(() => exports.servers.id, { onDelete: "cascade" }),
+    itemId: (0, pg_core_1.text)("item_id")
+        .notNull()
+        .references(() => exports.items.id, { onDelete: "cascade" }),
+    kind: (0, pg_core_1.text)("kind").notNull().default("transcript"), // "transcript" | "synopsis" | "reference"
+    startMs: (0, pg_core_1.integer)("start_ms"),
+    endMs: (0, pg_core_1.integer)("end_ms"),
+    text: (0, pg_core_1.text)("text").notNull(),
+    embedding: vector("embedding"),
+    searchVector: tsvector("search_vector").generatedAlwaysAs((0, drizzle_orm_1.sql) `to_tsvector('english', text)`),
+}, (table) => [
+    (0, pg_core_1.index)("item_text_chunks_item_idx").on(table.itemId),
+    // Windows are replaced per text: keeps those deletes (and cascades) cheap.
+    (0, pg_core_1.index)("item_text_chunks_text_idx").on(table.itemTextId),
+    (0, pg_core_1.index)("item_text_chunks_server_idx").on(table.serverId),
+    (0, pg_core_1.index)("item_text_chunks_search_idx").using("gin", table.searchVector),
+    // Plus, created by the knowledge index job (CONCURRENTLY, as they take a
+    // while on a large library): an HNSW index per dimension and kind, and a
+    // full-text (GIN) index per kind, so a word looked up in the plot windows
+    // doesn't wade through its matches in the dialogue.
+]);
+// The words too common to rank by, per kind of window: those in more than
+// COMMON_TERM_WINDOWS windows (as the full-text search stems them), with how
+// many; and, under the empty word, how many windows the kind has. Refreshed
+// daily by the knowledge index job (ts_stat). Keyword search ranks windows by
+// the rare words of a query, weighted by how rare (see keyword-rank.ts);
+// without this table it finds the common words by counting, only slower.
+exports.itemTextCommonTerms = (0, pg_core_1.pgTable)("item_text_common_terms", {
+    kind: (0, pg_core_1.text)("kind").notNull(),
+    term: (0, pg_core_1.text)("term").notNull(),
+    windows: (0, pg_core_1.integer)("windows").notNull(),
+    refreshedAt: (0, pg_core_1.timestamp)("refreshed_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [(0, pg_core_1.primaryKey)({ columns: [table.kind, table.term] })]);
 // Sessions table - user sessions and playback information
 exports.sessions = (0, pg_core_1.pgTable)("sessions", {
     // Primary key and relationships
@@ -500,6 +671,57 @@ exports.hiddenRecommendations = (0, pg_core_1.pgTable)("hidden_recommendations",
     createdAt: (0, pg_core_1.timestamp)("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
     (0, pg_core_1.index)("hidden_recommendations_server_user_idx").on(table.serverId, table.userId),
+]);
+// How each user wants their recommendations steered. Themes are embedded with
+// the server's embedding model when saved, so they compare directly against
+// item embeddings.
+exports.userRecommendationProfiles = (0, pg_core_1.pgTable)("user_recommendation_profiles", {
+    id: (0, pg_core_1.serial)("id").primaryKey(),
+    serverId: (0, pg_core_1.integer)("server_id")
+        .references(() => exports.servers.id, { onDelete: "cascade" })
+        .notNull(),
+    userId: (0, pg_core_1.text)("user_id").notNull(), // Jellyfin user ID
+    likesText: (0, pg_core_1.text)("likes_text").default("").notNull(),
+    dislikesText: (0, pg_core_1.text)("dislikes_text").default("").notNull(),
+    likeThemes: (0, pg_core_1.jsonb)("like_themes").$type().default([]).notNull(),
+    dislikeThemes: (0, pg_core_1.jsonb)("dislike_themes").$type().default([]).notNull(),
+    // Off: watch history no longer steers recommendations (watched titles are
+    // still never recommended). For shared viewing that isn't your taste.
+    useWatchHistory: (0, pg_core_1.boolean)("use_watch_history").default(true).notNull(),
+    // On: skip anything started at all (any session, any episode of a series,
+    // or another copy of the same title), not only what was watched past half.
+    excludeStarted: (0, pg_core_1.boolean)("exclude_started").default(false).notNull(),
+    updatedAt: (0, pg_core_1.timestamp)("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+    (0, pg_core_1.unique)("user_recommendation_profiles_server_user_unique").on(table.serverId, table.userId),
+]);
+// Explicit per-user opinions on items, normalized to a 0-5 scale. Watch history
+// only says what someone sat through; ratings say what they actually liked, and
+// an episode rating says which content they liked, not just which series.
+// Rows are replaced per (server, user, source) on every ratings sync, so a
+// rating removed in Jellyfin disappears here too.
+exports.userItemRatings = (0, pg_core_1.pgTable)("user_item_ratings", {
+    id: (0, pg_core_1.serial)("id").primaryKey(),
+    serverId: (0, pg_core_1.integer)("server_id")
+        .references(() => exports.servers.id, { onDelete: "cascade" })
+        .notNull(),
+    userId: (0, pg_core_1.text)("user_id").notNull(), // Jellyfin user ID
+    // Null when the rated title is not (or no longer) in the library; kept so
+    // it matches as soon as the item is added.
+    itemId: (0, pg_core_1.text)("item_id").references(() => exports.items.id, { onDelete: "set null" }),
+    // "jellyfin-enhanced" (plugin star reviews) or "jellyfin" (likes/favorites)
+    source: (0, pg_core_1.text)("source").notNull(),
+    // Stable key within the source: "movie:603" / "tv:1418:s4:e12" for
+    // Jellyfin Enhanced, the Jellyfin item ID for native user data.
+    sourceKey: (0, pg_core_1.text)("source_key").notNull(),
+    rating: (0, pg_core_1.doublePrecision)("rating").notNull(),
+    review: (0, pg_core_1.text)("review"),
+    ratedAt: (0, pg_core_1.timestamp)("rated_at", { withTimezone: true }),
+    createdAt: (0, pg_core_1.timestamp)("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+    (0, pg_core_1.unique)("user_item_ratings_unique").on(table.serverId, table.userId, table.source, table.sourceKey),
+    (0, pg_core_1.index)("user_item_ratings_server_user_rating_idx").on(table.serverId, table.userId, table.rating),
+    (0, pg_core_1.index)("user_item_ratings_item_idx").on(table.itemId),
 ]);
 // Activity locations table - geolocated IP data for activities
 exports.activityLocations = (0, pg_core_1.pgTable)("activity_locations", {
@@ -670,7 +892,7 @@ exports.watchlistItems = (0, pg_core_1.pgTable)("watchlist_items", {
     (0, pg_core_1.unique)("watchlist_items_unique").on(table.watchlistId, table.itemId),
 ]);
 // Define relationships
-exports.serversRelations = (0, drizzle_orm_1.relations)(exports.servers, ({ many }) => ({
+exports.serversRelations = (0, drizzle_orm_2.relations)(exports.servers, ({ many }) => ({
     libraries: many(exports.libraries),
     users: many(exports.users),
     activities: many(exports.activities),
@@ -684,20 +906,20 @@ exports.serversRelations = (0, drizzle_orm_1.relations)(exports.servers, ({ many
     itemPeople: many(exports.itemPeople),
     jobConfigurations: many(exports.serverJobConfigurations),
 }));
-exports.serverJobConfigurationsRelations = (0, drizzle_orm_1.relations)(exports.serverJobConfigurations, ({ one }) => ({
+exports.serverJobConfigurationsRelations = (0, drizzle_orm_2.relations)(exports.serverJobConfigurations, ({ one }) => ({
     server: one(exports.servers, {
         fields: [exports.serverJobConfigurations.serverId],
         references: [exports.servers.id],
     }),
 }));
-exports.librariesRelations = (0, drizzle_orm_1.relations)(exports.libraries, ({ one, many }) => ({
+exports.librariesRelations = (0, drizzle_orm_2.relations)(exports.libraries, ({ one, many }) => ({
     server: one(exports.servers, {
         fields: [exports.libraries.serverId],
         references: [exports.servers.id],
     }),
     items: many(exports.items),
 }));
-exports.usersRelations = (0, drizzle_orm_1.relations)(exports.users, ({ one, many }) => ({
+exports.usersRelations = (0, drizzle_orm_2.relations)(exports.users, ({ one, many }) => ({
     server: one(exports.servers, {
         fields: [exports.users.serverId],
         references: [exports.servers.id],
@@ -707,7 +929,7 @@ exports.usersRelations = (0, drizzle_orm_1.relations)(exports.users, ({ one, man
     fingerprints: many(exports.userFingerprints),
     anomalyEvents: many(exports.anomalyEvents),
 }));
-exports.activitiesRelations = (0, drizzle_orm_1.relations)(exports.activities, ({ one, many }) => ({
+exports.activitiesRelations = (0, drizzle_orm_2.relations)(exports.activities, ({ one, many }) => ({
     server: one(exports.servers, {
         fields: [exports.activities.serverId],
         references: [exports.servers.id],
@@ -719,7 +941,7 @@ exports.activitiesRelations = (0, drizzle_orm_1.relations)(exports.activities, (
     location: one(exports.activityLocations),
     anomalyEvents: many(exports.anomalyEvents),
 }));
-exports.itemsRelations = (0, drizzle_orm_1.relations)(exports.items, ({ one, many }) => ({
+exports.itemsRelations = (0, drizzle_orm_2.relations)(exports.items, ({ one, many }) => ({
     server: one(exports.servers, {
         fields: [exports.items.serverId],
         references: [exports.servers.id],
@@ -737,7 +959,7 @@ exports.itemsRelations = (0, drizzle_orm_1.relations)(exports.items, ({ one, man
     watchlistItems: many(exports.watchlistItems),
     itemPeople: many(exports.itemPeople),
 }));
-exports.sessionsRelations = (0, drizzle_orm_1.relations)(exports.sessions, ({ one, many }) => ({
+exports.sessionsRelations = (0, drizzle_orm_2.relations)(exports.sessions, ({ one, many }) => ({
     server: one(exports.servers, {
         fields: [exports.sessions.serverId],
         references: [exports.servers.id],
@@ -751,13 +973,13 @@ exports.sessionsRelations = (0, drizzle_orm_1.relations)(exports.sessions, ({ on
         references: [exports.items.id],
     }),
 }));
-exports.activityLocationsRelations = (0, drizzle_orm_1.relations)(exports.activityLocations, ({ one }) => ({
+exports.activityLocationsRelations = (0, drizzle_orm_2.relations)(exports.activityLocations, ({ one }) => ({
     activity: one(exports.activities, {
         fields: [exports.activityLocations.activityId],
         references: [exports.activities.id],
     }),
 }));
-exports.userFingerprintsRelations = (0, drizzle_orm_1.relations)(exports.userFingerprints, ({ one }) => ({
+exports.userFingerprintsRelations = (0, drizzle_orm_2.relations)(exports.userFingerprints, ({ one }) => ({
     user: one(exports.users, {
         fields: [exports.userFingerprints.userId],
         references: [exports.users.id],
@@ -767,7 +989,7 @@ exports.userFingerprintsRelations = (0, drizzle_orm_1.relations)(exports.userFin
         references: [exports.servers.id],
     }),
 }));
-exports.anomalyEventsRelations = (0, drizzle_orm_1.relations)(exports.anomalyEvents, ({ one }) => ({
+exports.anomalyEventsRelations = (0, drizzle_orm_2.relations)(exports.anomalyEvents, ({ one }) => ({
     user: one(exports.users, {
         fields: [exports.anomalyEvents.userId],
         references: [exports.users.id],
@@ -781,7 +1003,7 @@ exports.anomalyEventsRelations = (0, drizzle_orm_1.relations)(exports.anomalyEve
         references: [exports.activities.id],
     }),
 }));
-exports.hiddenRecommendationsRelations = (0, drizzle_orm_1.relations)(exports.hiddenRecommendations, ({ one }) => ({
+exports.hiddenRecommendationsRelations = (0, drizzle_orm_2.relations)(exports.hiddenRecommendations, ({ one }) => ({
     server: one(exports.servers, {
         fields: [exports.hiddenRecommendations.serverId],
         references: [exports.servers.id],
@@ -791,14 +1013,14 @@ exports.hiddenRecommendationsRelations = (0, drizzle_orm_1.relations)(exports.hi
         references: [exports.items.id],
     }),
 }));
-exports.watchlistsRelations = (0, drizzle_orm_1.relations)(exports.watchlists, ({ one, many }) => ({
+exports.watchlistsRelations = (0, drizzle_orm_2.relations)(exports.watchlists, ({ one, many }) => ({
     server: one(exports.servers, {
         fields: [exports.watchlists.serverId],
         references: [exports.servers.id],
     }),
     items: many(exports.watchlistItems),
 }));
-exports.watchlistItemsRelations = (0, drizzle_orm_1.relations)(exports.watchlistItems, ({ one }) => ({
+exports.watchlistItemsRelations = (0, drizzle_orm_2.relations)(exports.watchlistItems, ({ one }) => ({
     watchlist: one(exports.watchlists, {
         fields: [exports.watchlistItems.watchlistId],
         references: [exports.watchlists.id],
@@ -808,14 +1030,14 @@ exports.watchlistItemsRelations = (0, drizzle_orm_1.relations)(exports.watchlist
         references: [exports.items.id],
     }),
 }));
-exports.peopleRelations = (0, drizzle_orm_1.relations)(exports.people, ({ one, many }) => ({
+exports.peopleRelations = (0, drizzle_orm_2.relations)(exports.people, ({ one, many }) => ({
     server: one(exports.servers, {
         fields: [exports.people.serverId],
         references: [exports.servers.id],
     }),
     itemPeople: many(exports.itemPeople),
 }));
-exports.itemPeopleRelations = (0, drizzle_orm_1.relations)(exports.itemPeople, ({ one }) => ({
+exports.itemPeopleRelations = (0, drizzle_orm_2.relations)(exports.itemPeople, ({ one }) => ({
     item: one(exports.items, {
         fields: [exports.itemPeople.itemId],
         references: [exports.items.id],

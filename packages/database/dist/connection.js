@@ -63,6 +63,18 @@ const getClient = () => {
             idle_timeout: 20, // Close connections after 20 seconds of inactivity
             max_lifetime: 60 * 30, // Maximum lifetime of a connection (30 minutes)
             connect_timeout: 60,
+            connection: {
+                // Filtered vector searches (by item type, excluding watched items)
+                // otherwise only see the index's first ~40 candidates, so a seed whose
+                // nearest neighbours are of another type returns almost nothing.
+                // pgvector >= 0.8; older versions drop the unknown setting.
+                "hnsw.iterative_scan": "strict_order",
+                // How many candidates an HNSW search keeps. Measured against exact
+                // search over 66 eval queries on a 16k-title library: the default 40
+                // returned 57-66% of the true top 50, 100 returned 74-79%, 800
+                // returns 97-99% in 10-16 ms. Search quality is the point.
+                "hnsw.ef_search": "800",
+            },
         });
     }
     return globalForDatabase.streamystatsClient;

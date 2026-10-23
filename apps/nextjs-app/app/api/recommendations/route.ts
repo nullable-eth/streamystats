@@ -1,9 +1,12 @@
-import type { Server } from "@streamystats/database";
+import { db, items, type Server } from "@streamystats/database";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { NextRequest } from "next/server";
 import {
   authenticateMediaBrowser,
   validateJellyfinToken,
 } from "@/lib/api-auth";
+import { getStatisticsExclusions } from "@/lib/db/exclusions";
+import { alternate } from "@/lib/db/rating-signals-pick";
 import {
   hasServerIdentifier,
   parseServerIdentifier,
@@ -15,6 +18,7 @@ import {
   type SeriesRecommendationItem,
 } from "@/lib/db/similar-series-statistics";
 import {
+  getSimilarItemsForItem,
   getSimilarStatistics,
   type RecommendationItem,
 } from "@/lib/db/similar-statistics";
@@ -35,6 +39,7 @@ type ResolvedParams = {
   includeBasedOn: boolean;
   includeReasons: boolean;
   targetUserId: string | null;
+  itemId: string | null;
   format: ResponseFormat;
 };
 
@@ -132,9 +137,14 @@ function getRecommendationReason(args: {
   recommendation: {
     item: { name: string; genres: string[] | null };
     basedOn: Array<{ name: string; genres: string[] | null }>;
+    matchedThemes?: string[];
   };
 }): string {
   const { recommendation } = args;
+  const themes = recommendation.matchedThemes ?? [];
+  if (themes.length > 0) {
+    return `Matches your interest in ${themes.slice(0, 3).join(", ")}`;
+  }
   if (!recommendation.basedOn || recommendation.basedOn.length === 0) {
     return "Popular on this server";
   }
@@ -142,8 +152,8 @@ function getRecommendationReason(args: {
   const baseNames = recommendation.basedOn.slice(0, 3).map((b) => b.name);
   const baseReason =
     baseNames.length === 1
-      ? `Because you watched "${baseNames[0]}"`
-      : `Because you watched "${baseNames.slice(0, -1).join('", "')}" and "${
+      ? `Similar to "${baseNames[0]}"`
+      : `Similar to "${baseNames.slice(0, -1).join('", "')}" and "${
           baseNames[baseNames.length - 1]
         }"`;
 
@@ -248,6 +258,7 @@ function parseQueryParams(searchParams: URLSearchParams):
   }
 
   const targetUserId = searchParams.get("targetUserId");
+  const itemId = searchParams.get("itemId");
 
   return {
     ok: true,
@@ -263,9 +274,52 @@ function parseQueryParams(searchParams: URLSearchParams):
       includeBasedOn,
       includeReasons,
       targetUserId,
+      itemId,
       format: formatRaw,
     },
   };
+}
+
+/**
+ * "More like this" for one item: items of its type with the nearest
+ * embeddings, limited to the libraries the user can see. Empty when the user
+ * cannot see the item itself.
+ */
+async function getVisibleSimilarItems({
+  serverId,
+  userId,
+  itemId,
+  limit,
+}: {
+  serverId: number;
+  userId: string;
+  itemId: string;
+  limit: number;
+}): Promise<RecommendationItem[]> {
+  const { itemLibraryExclusion } = await getStatisticsExclusions(
+    serverId,
+    userId,
+  );
+  const visibleIds = async (ids: string[]) => {
+    const rows = await db
+      .select({ id: items.id })
+      .from(items)
+      .where(
+        and(
+          eq(items.serverId, serverId),
+          isNull(items.deletedAt),
+          inArray(items.id, ids),
+          itemLibraryExclusion,
+        ),
+      );
+    return new Set(rows.map((r) => r.id));
+  };
+
+  if (!(await visibleIds([itemId])).has(itemId)) return [];
+  const similar = await getSimilarItemsForItem(serverId, itemId, limit);
+  if (similar.length === 0) return [];
+  const visible = await visibleIds(similar.map((s) => s.item.id));
+  return similar.filter((s) => visible.has(s.item.id));
 }
 
 async function buildRecommendationsResponse(args: {
@@ -282,7 +336,7 @@ async function buildRecommendationsResponse(args: {
   let movieResults: RecommendationItem[] = [];
   let seriesResults: SeriesRecommendationItem[] = [];
 
-  if (params.type === "Movie" || params.type === "all") {
+  if (!params.itemId && (params.type === "Movie" || params.type === "all")) {
     movieResults = await getSimilarStatistics({
       serverId: server.id,
       userId: user.id,
@@ -294,7 +348,7 @@ async function buildRecommendationsResponse(args: {
     });
   }
 
-  if (params.type === "Series" || params.type === "all") {
+  if (!params.itemId && (params.type === "Series" || params.type === "all")) {
     seriesResults = await getSimilarSeries({
       serverId: server.id,
       userId: user.id,
@@ -302,10 +356,18 @@ async function buildRecommendationsResponse(args: {
     });
   }
 
-  // Combine and sort by similarity (both types have compatible structure)
-  const combined = [...movieResults, ...seriesResults].sort(
-    (a, b) => b.similarity - a.similarity,
-  );
+  // Both types have compatible structure; each list keeps its engine's order.
+  const combined = params.itemId
+    ? await getVisibleSimilarItems({
+        serverId: server.id,
+        userId: user.id,
+        itemId: params.itemId,
+        limit: fetchLimit,
+      })
+    : alternate<RecommendationItem | SeriesRecommendationItem>(
+        movieResults,
+        seriesResults,
+      );
 
   const limitedResults = combined.slice(0, params.limit);
 

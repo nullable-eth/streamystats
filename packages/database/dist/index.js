@@ -17,7 +17,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.migrate = exports.getDb = exports.getDatabaseUrl = exports.getClient = exports.closeConnection = exports.database = exports.db = exports.client = void 0;
+exports.migrate = exports.KNOWLEDGE_ITEM_TYPES = exports.embeddableItemCondition = exports.EMBEDDABLE_ITEM_TYPES = exports.COMMON_TERM_WINDOWS = exports.getDb = exports.getDatabaseUrl = exports.getClient = exports.closeConnection = exports.database = exports.db = exports.client = void 0;
 // Export the database connection (lazy-init; safe to import in Next.js build/SSG)
 var connection_1 = require("./connection");
 Object.defineProperty(exports, "client", { enumerable: true, get: function () { return connection_1.client; } });
@@ -31,6 +31,11 @@ Object.defineProperty(exports, "getDb", { enumerable: true, get: function () { r
 __exportStar(require("./schema"), exports);
 // Export job defaults
 __exportStar(require("./job-defaults"), exports);
+var embeddable_1 = require("./embeddable");
+Object.defineProperty(exports, "COMMON_TERM_WINDOWS", { enumerable: true, get: function () { return embeddable_1.COMMON_TERM_WINDOWS; } });
+Object.defineProperty(exports, "EMBEDDABLE_ITEM_TYPES", { enumerable: true, get: function () { return embeddable_1.EMBEDDABLE_ITEM_TYPES; } });
+Object.defineProperty(exports, "embeddableItemCondition", { enumerable: true, get: function () { return embeddable_1.embeddableItemCondition; } });
+Object.defineProperty(exports, "KNOWLEDGE_ITEM_TYPES", { enumerable: true, get: function () { return embeddable_1.KNOWLEDGE_ITEM_TYPES; } });
 // Export migration utilities
 var migrate_1 = require("./migrate");
 Object.defineProperty(exports, "migrate", { enumerable: true, get: function () { return migrate_1.migrate; } });

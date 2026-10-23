@@ -7,6 +7,7 @@ import {
   type EmbeddingProvider,
   getEmbeddingProgress as getEmbeddingProgressDb,
   saveEmbeddingConfig as saveEmbeddingConfigDb,
+  setEmbeddingItemTypes as setEmbeddingItemTypesDb,
   startEmbedding as startEmbeddingDb,
   stopEmbedding as stopEmbeddingDb,
   toggleAutoEmbeddings as toggleAutoEmbeddingsDb,
@@ -69,4 +70,15 @@ export async function getEmbeddingProgressAction(
     throw new Error("Admin privileges required");
   }
   return await getEmbeddingProgressDb({ serverId });
+}
+
+export async function setEmbeddingItemTypesAction(
+  serverId: number,
+  types: string[],
+) {
+  const isAdmin = await isUserAdmin(serverId);
+  if (!isAdmin) {
+    throw new Error("Admin privileges required");
+  }
+  return await setEmbeddingItemTypesDb({ serverId, types });
 }

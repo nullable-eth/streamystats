@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { getJobQueue, JobTypes, latestQueueStats } from "../../jobs/queue";
 import { JELLYFIN_JOB_NAMES } from "../../jellyfin/workers";
+import { KNOWLEDGE_INDEX_JOB_NAME } from "../../jobs/knowledge-jobs";
 import {
   db,
   servers,
@@ -66,6 +67,12 @@ app.get("/servers/:serverId/status", async (c) => {
         category: "foreground",
       },
       {
+        key: KNOWLEDGE_INDEX_JOB_NAME,
+        label: "Knowledge index",
+        name: KNOWLEDGE_INDEX_JOB_NAME,
+        category: "background",
+      },
+      {
         key: "jellyfin-full-sync",
         label: "Jellyfin full sync",
         name: JELLYFIN_JOB_NAMES.FULL_SYNC,
@@ -111,6 +118,12 @@ app.get("/servers/:serverId/status", async (c) => {
         key: "jellyfin-people-sync",
         label: "Jellyfin people",
         name: JELLYFIN_JOB_NAMES.PEOPLE_SYNC,
+        category: "background",
+      },
+      {
+        key: "jellyfin-ratings-sync",
+        label: "Jellyfin ratings",
+        name: JELLYFIN_JOB_NAMES.RATINGS_SYNC,
         category: "background",
       },
     ];
@@ -309,6 +322,7 @@ app.get("/server-status", async (c) => {
       boss.getQueueStats(JELLYFIN_JOB_NAMES.RECENT_ITEMS_SYNC),
       boss.getQueueStats(JELLYFIN_JOB_NAMES.RECENT_ACTIVITIES_SYNC),
       boss.getQueueStats(JELLYFIN_JOB_NAMES.PEOPLE_SYNC),
+      boss.getQueueStats(JELLYFIN_JOB_NAMES.RATINGS_SYNC),
     ]);
     const jellyfinQueueSizes = jellyfinQueueStats.map(
       (s) => latestQueueStats(s)?.queuedCount ?? 0,
@@ -383,6 +397,7 @@ app.get("/server-status", async (c) => {
         jellyfinRecentItemsSync: jellyfinQueueSizes[5],
         jellyfinRecentActivitiesSync: jellyfinQueueSizes[6],
         jellyfinPeopleSync: jellyfinQueueSizes[7],
+        jellyfinRatingsSync: jellyfinQueueSizes[8],
         totalQueued: [...queueSizes, ...jellyfinQueueSizes].reduce(
           (sum, stat) => sum + stat,
           0

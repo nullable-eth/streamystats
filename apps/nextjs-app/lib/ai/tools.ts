@@ -1,13 +1,6 @@
 import "server-only";
 
-import {
-  db,
-  items,
-  libraries,
-  servers,
-  sessions,
-  users,
-} from "@streamystats/database";
+import { db, items, libraries, sessions, users } from "@streamystats/database";
 import type { Item } from "@streamystats/database/schema";
 import { tool } from "ai";
 import {
@@ -18,27 +11,39 @@ import {
   ilike,
   inArray,
   isNotNull,
+  isNull,
   sql,
 } from "drizzle-orm";
 import { z } from "zod";
+import { embedTextForServer } from "@/lib/ai/embed-text";
 import { getItemEmbeddingComparison } from "@/lib/db/embedding-comparison";
 import { getHistoryByFilters } from "@/lib/db/history";
 import {
   findItemsByCharacter,
   findItemsByPerson,
 } from "@/lib/db/item-people-search";
+import { closeSpellings, titlesMentioning } from "@/lib/db/mentions";
+import { findMoments, locateMoment, momentScope } from "@/lib/db/moments";
+import { searchByPlot } from "@/lib/db/plot-search";
+import { getRatedItems } from "@/lib/db/rated-items";
+import { alternate } from "@/lib/db/rating-signals-pick";
+import { getSimilarSeries } from "@/lib/db/similar-series-statistics";
 import {
   getSimilarItemsForItem,
   getSimilarStatistics,
 } from "@/lib/db/similar-statistics";
 import { getMostWatchedItems } from "@/lib/db/statistics";
+import { lookupSynopsis } from "@/lib/db/synopsis-lookup";
+import {
+  formatTimestamp,
+  getMatchedItems,
+  searchTranscripts,
+} from "@/lib/db/transcript-search";
 import {
   getUserStatsSummaryForServer,
   getUsers,
   getUserWatchStats,
 } from "@/lib/db/users";
-
-type EmbeddingProvider = "openai-compatible" | "ollama" | "gemini";
 
 function formatDuration(seconds: number): string {
   const hours = Math.floor(seconds / 3600);
@@ -92,162 +97,16 @@ function formatItem(
   return base;
 }
 
-function normalizeBaseUrl(baseUrl: string): string {
-  return baseUrl.replace(/\/+$/, "");
-}
-
-async function embedTextForServer({
-  serverId,
-  text,
-}: {
-  serverId: number;
-  text: string;
-}): Promise<
-  | { ok: true; embedding: number[] }
-  | { ok: false; error: string; reason: "not_configured" | "request_failed" }
-> {
-  const server = await db.query.servers.findFirst({
-    where: eq(servers.id, serverId),
-  });
-
-  const provider = server?.embeddingProvider as EmbeddingProvider | null;
-  const baseUrl = server?.embeddingBaseUrl ?? null;
-  const model = server?.embeddingModel ?? null;
-  const apiKey = server?.embeddingApiKey ?? null;
-  const dimensions = server?.embeddingDimensions ?? null;
-
-  if (!provider || !baseUrl || !model) {
-    return {
-      ok: false,
-      reason: "not_configured",
-      error:
-        "Embeddings are not configured for this server. Configure them in Settings > Embeddings.",
-    };
-  }
-
-  try {
-    if (provider === "ollama") {
-      const res = await fetch(`${normalizeBaseUrl(baseUrl)}/api/embed`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model, input: text }),
-      });
-
-      if (!res.ok) {
-        return {
-          ok: false,
-          reason: "request_failed",
-          error: `Embedding request failed (status ${res.status})`,
-        };
-      }
-
-      const json = (await res.json()) as {
-        embeddings?: number[][];
-      };
-      const embedding = json.embeddings?.[0];
-      if (!Array.isArray(embedding) || embedding.length === 0) {
-        return {
-          ok: false,
-          reason: "request_failed",
-          error: "Embedding request returned no embedding vector",
-        };
-      }
-      return { ok: true, embedding };
-    }
-
-    if (provider === "gemini") {
-      const normalized = normalizeBaseUrl(baseUrl);
-      const geminiModel = model.startsWith("models/")
-        ? model
-        : `models/${model}`;
-      const res = await fetch(`${normalized}/${geminiModel}:embedContent`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(apiKey ? { "x-goog-api-key": apiKey } : {}),
-        },
-        body: JSON.stringify({
-          model: geminiModel,
-          content: { parts: [{ text }] },
-          taskType: "SEMANTIC_SIMILARITY",
-          ...(dimensions && dimensions > 0
-            ? { outputDimensionality: dimensions }
-            : {}),
-        }),
-      });
-
-      if (!res.ok) {
-        return {
-          ok: false,
-          reason: "request_failed",
-          error: `Embedding request failed (status ${res.status})`,
-        };
-      }
-
-      const json = (await res.json()) as {
-        embedding?: { values?: number[] };
-      };
-      const embedding = json.embedding?.values;
-      if (!Array.isArray(embedding) || embedding.length === 0) {
-        return {
-          ok: false,
-          reason: "request_failed",
-          error: "Embedding request returned no embedding vector",
-        };
-      }
-      return { ok: true, embedding };
-    }
-
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-    };
-    if (apiKey) {
-      headers.Authorization = `Bearer ${apiKey}`;
-    }
-
-    const body: Record<string, unknown> = { model, input: text };
-    if (typeof dimensions === "number" && dimensions > 0) {
-      body.dimensions = dimensions;
-    }
-
-    const normalized = normalizeBaseUrl(baseUrl);
-    const embeddingsUrl = normalized.endsWith("/v1")
-      ? `${normalized}/embeddings`
-      : `${normalized}/v1/embeddings`;
-    const res = await fetch(embeddingsUrl, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-    });
-
-    if (!res.ok) {
-      return {
-        ok: false,
-        reason: "request_failed",
-        error: `Embedding request failed (status ${res.status})`,
-      };
-    }
-
-    const json = (await res.json()) as {
-      data?: Array<{ embedding?: number[] }>;
-    };
-    const embedding = json.data?.[0]?.embedding;
-    if (!Array.isArray(embedding) || embedding.length === 0) {
-      return {
-        ok: false,
-        reason: "request_failed",
-        error: "Embedding request returned no embedding vector",
-      };
-    }
-    return { ok: true, embedding };
-  } catch (error) {
-    return {
-      ok: false,
-      reason: "request_failed",
-      error:
-        error instanceof Error ? error.message : "Embedding request failed",
-    };
-  }
+/** Series, season and episode for an episode, so results name the show. */
+function episodeOf(
+  item: Pick<Item, "type" | "seriesName" | "parentIndexNumber" | "indexNumber">,
+) {
+  if (item.type !== "Episode") return {};
+  const pad = (n: number | null) => String(n ?? 0).padStart(2, "0");
+  return {
+    series: item.seriesName,
+    episode: `S${pad(item.parentIndexNumber)}E${pad(item.indexNumber)}`,
+  };
 }
 
 function getHolidayHintScore(item: Item): number {
@@ -285,6 +144,20 @@ function getHolidayHintScore(item: Item): number {
   return keywordHits + genreHits * 2;
 }
 
+/** Most titles one ranked search returns. */
+const MAX_TITLES = 50;
+const titleLimit = (fallback: number) =>
+  z
+    .number()
+    .int()
+    .min(1)
+    .max(MAX_TITLES)
+    .optional()
+    .default(fallback)
+    .describe(
+      `Number of titles, up to ${MAX_TITLES}: ask for more when the user wants any or every title about something`,
+    );
+
 const limitSchema = z.object({
   limit: z
     .number()
@@ -311,6 +184,21 @@ export function createChatTools(
   userId: string,
   isAdmin: boolean = false,
 ) {
+  /** For a search that found nothing: names in the library spelled like it. */
+  const misspelled = async (phrase: string) => {
+    const close = await closeSpellings({
+      serverId,
+      userId,
+      phrase: phrase.replace(/"|\bOR\b/g, " ").trim(),
+    });
+    return close.length === 0
+      ? {}
+      : {
+          closeSpellings: close,
+          hint: "It may be misspelled: these names in the library are spelled like it. Search again with the one the user most likely meant.",
+        };
+  };
+
   return {
     getUserMostWatchedMovies: tool({
       description:
@@ -358,19 +246,21 @@ export function createChatTools(
 
     getPersonalizedRecommendations: tool({
       description:
-        "Get personalized movie and series recommendations based on user's watch history using AI embeddings. Each recommendation includes a 'reason' field (e.g. 'Because you watched X and Y') and a 'basedOn' array with the watched items that led to this recommendation. Always use this data when presenting recommendations to explain what they're based on.",
+        "Get personalized movie and series recommendations from the library, seeded by what the user rated highly (4+ stars, likes, favorites) and their watch history, using AI embeddings. Only returns items the user has not watched or rated. Each recommendation includes a 'reason' field and a 'basedOn' array with the rated or watched items that led to it. Always use this data when presenting recommendations to explain what they're based on.",
       inputSchema: limitTypeSchema,
       execute: async ({ limit, type }: z.infer<typeof limitTypeSchema>) => {
-        const recommendations = await getSimilarStatistics({
-          serverId,
-          userId,
-          limit: limit * 2,
-        });
+        const [movieRecs, seriesRecs] = await Promise.all([
+          type === "Series"
+            ? Promise.resolve([])
+            : getSimilarStatistics({ serverId, userId, limit: limit * 2 }),
+          type === "Movie"
+            ? Promise.resolve([])
+            : getSimilarSeries({ serverId, userId, limit: limit * 2 }),
+        ]);
 
-        const filtered =
-          type === "all"
-            ? recommendations
-            : recommendations.filter((r) => r.item.type === type);
+        const filtered = alternate<
+          (typeof movieRecs)[number] | (typeof seriesRecs)[number]
+        >(movieRecs, seriesRecs);
 
         const enrichedRecs = filtered.slice(0, limit).map((r) => {
           const recGenres = new Set(r.item.genres || []);
@@ -382,12 +272,17 @@ export function createChatTools(
           const uniqueSharedGenres = [...new Set(sharedGenres)];
 
           let reason = "";
-          if (basedOnItems.length > 0) {
+          const themes = r.matchedThemes ?? [];
+          if (themes.length > 0) {
+            reason = `Matches the user's stated interest in ${themes
+              .slice(0, 3)
+              .join(", ")}`;
+          } else if (basedOnItems.length > 0) {
             const baseNames = basedOnItems.map((b) => b.name);
             if (basedOnItems.length === 1) {
-              reason = `Because you watched "${baseNames[0]}"`;
+              reason = `Similar to "${baseNames[0]}"`;
             } else {
-              reason = `Because you watched "${baseNames
+              reason = `Similar to "${baseNames
                 .slice(0, -1)
                 .join('", "')}" and "${baseNames[baseNames.length - 1]}"`;
             }
@@ -418,7 +313,65 @@ export function createChatTools(
           message:
             enrichedRecs.length > 0
               ? `Found ${enrichedRecs.length} personalized recommendations with reasoning`
-              : "Unable to generate recommendations. Make sure embeddings are configured and you have watch history.",
+              : "Unable to generate recommendations. Make sure embeddings are configured and you have watch history or ratings.",
+        };
+      },
+    }),
+
+    getRatedItems: tool({
+      description:
+        "Get the movies, series and individual episodes the user has explicitly rated (Jellyfin Enhanced star reviews on a 0-5 scale, plus Jellyfin likes, dislikes and favorites), with each item's overview. Ratings are the strongest signal of taste: a highly rated episode shows which themes the user enjoys, even when the series as a whole is not a favorite. Use this to understand what the user likes before searching the library (e.g. with searchLibraryBySemanticQuery or getSimilarToItem) for things they have not seen.",
+      inputSchema: z.object({
+        minRating: z
+          .number()
+          .min(0)
+          .max(5)
+          .optional()
+          .default(4)
+          .describe("Lowest rating to include (0-5 stars)"),
+        maxRating: z
+          .number()
+          .min(0)
+          .max(5)
+          .optional()
+          .default(5)
+          .describe("Highest rating to include (0-5 stars)"),
+        type: z
+          .enum(["Movie", "Series", "Episode", "all"])
+          .optional()
+          .default("all")
+          .describe("Filter by item type"),
+        limit: z
+          .number()
+          .min(1)
+          .max(100)
+          .optional()
+          .default(25)
+          .describe("Number of items to return, highest rated first"),
+      }),
+      execute: async ({ minRating, maxRating, type, limit }) => {
+        const rated = await getRatedItems({
+          serverId,
+          userId,
+          minRating,
+          maxRating,
+          type: type === "all" ? null : type,
+          limit,
+        });
+        return {
+          items: rated.map((r) => ({
+            ...formatItem({ ...r.item, overview: r.item.overview }),
+            overview: r.item.overview?.slice(0, 300),
+            seriesName: r.item.seriesName,
+            season: r.item.parentIndexNumber,
+            episode: r.item.indexNumber,
+            userRating: r.rating,
+            userReview: r.review?.slice(0, 300) ?? undefined,
+          })),
+          message:
+            rated.length > 0
+              ? `Found ${rated.length} rated items`
+              : "No rated items found in that range",
         };
       },
     }),
@@ -516,6 +469,7 @@ export function createChatTools(
             results.length > 0
               ? `Found ${results.length} items matching "${query}"`
               : `No items found matching "${query}"`,
+          ...(results.length === 0 ? await misspelled(query) : {}),
         };
       },
     }),
@@ -616,6 +570,7 @@ export function createChatTools(
             results.length > 0
               ? `Found ${results.length} items featuring character "${characterName}"`
               : `No items found featuring character "${characterName}"`,
+          ...(results.length === 0 ? await misspelled(characterName) : {}),
         };
       },
     }),
@@ -746,8 +701,8 @@ export function createChatTools(
             const seasonId =
               item.item?.seasonId || item.session.seasonId || null;
             const seasonName = item.item?.seasonName || null;
-            const episodeNumber = item.item?.indexNumber || null;
-            const seasonNumber = item.item?.parentIndexNumber || null;
+            const episodeNumber = item.item?.indexNumber ?? null;
+            const seasonNumber = item.item?.parentIndexNumber ?? null;
 
             return {
               itemName: item.item?.name || item.session.itemName || "Unknown",
@@ -773,9 +728,9 @@ export function createChatTools(
               seasonNumber,
               ...(seriesName && {
                 displayName: `${seriesName}${
-                  seasonNumber && episodeNumber
+                  seasonNumber !== null && episodeNumber !== null
                     ? ` - S${seasonNumber}E${episodeNumber}`
-                    : seasonNumber
+                    : seasonNumber !== null
                       ? ` - Season ${seasonNumber}`
                       : ""
                 } - ${item.item?.name || item.session.itemName || "Unknown"}`,
@@ -1173,17 +1128,17 @@ export function createChatTools(
 
     searchLibraryBySemanticQuery: tool({
       description:
-        "Semantic search across the user's library using embeddings. Use this for theme-based queries like 'Christmas movie I have', 'cozy winter movie', or 'something like a heist thriller'. Returns items from the library ranked by semantic similarity.",
+        "Semantic search across the user's library using embeddings. Use this for theme-based queries like 'Christmas movie I have', 'cozy winter movie', or 'something like a heist thriller'. To identify a title from what happens in it, use findTitleByPlot instead. Use type 'all' when it is unclear whether it was a movie, a series or a single episode, or when the user wants any or every title about a theme (with a higher limit). Returns items from the library ranked by semantic similarity.",
       inputSchema: z.object({
         query: z
           .string()
           .describe("What the user is looking for (theme/query)"),
         type: z
-          .enum(["Movie", "Series", "all"])
+          .enum(["Movie", "Series", "Episode", "all"])
           .optional()
           .default("Movie")
-          .describe("Filter by item type"),
-        limit: z.number().optional().default(10).describe("Number of results"),
+          .describe("Filter by item type ('all' includes episodes)"),
+        limit: titleLimit(10),
       }),
       execute: async ({
         query,
@@ -1191,7 +1146,7 @@ export function createChatTools(
         limit,
       }: {
         query: string;
-        type: "Movie" | "Series" | "all";
+        type: "Movie" | "Series" | "Episode" | "all";
         limit: number;
       }) => {
         const embed = await embedTextForServer({
@@ -1255,13 +1210,14 @@ export function createChatTools(
 
         const conditions = [
           eq(items.serverId, serverId),
+          isNull(items.deletedAt),
           isNotNull(items.embedding),
           dimensionFilter,
         ];
         if (type !== "all") {
           conditions.push(eq(items.type, type));
         } else {
-          conditions.push(inArray(items.type, ["Movie", "Series"]));
+          conditions.push(inArray(items.type, ["Movie", "Series", "Episode"]));
         }
 
         const candidates = await db
@@ -1292,6 +1248,7 @@ export function createChatTools(
         return {
           items: ranked.map((r) => ({
             ...formatItem(r.item),
+            ...episodeOf(r.item),
             similarityPercent: Math.round(r.similarity * 100),
             reason: `Semantic match for "${query}"`,
           })),
@@ -1300,6 +1257,321 @@ export function createChatTools(
               ? `Found ${ranked.length} semantically similar items for "${query}"`
               : `No items found for "${query}" (embeddings search)`,
           usedEmbeddings: true,
+        };
+      },
+    }),
+
+    findTitleByPlot: tool({
+      description:
+        "Find a movie, series or episode in the library from a description of what happens in it: a scene, a twist, a character's fate, how it ends, or a half-remembered line. It searches the plot synopses (whole and paragraph by paragraph) and the dialogue as well as the overviews, so it finds titles from details their official description leaves out. Describe the events in plain words, as the user remembers them. Use type 'all' unless the user is sure whether it was a movie or an episode. Returns titles best first; for any or every title about a topic, raise the limit.",
+      inputSchema: z.object({
+        description: z.string().describe("What happens, in the user's words"),
+        type: z
+          .enum(["Movie", "Series", "Episode", "all"])
+          .optional()
+          .default("all")
+          .describe("Filter by item type"),
+        limit: titleLimit(8),
+      }),
+      execute: async ({
+        description,
+        type,
+        limit,
+      }: {
+        description: string;
+        type: "Movie" | "Series" | "Episode" | "all";
+        limit: number;
+      }) => {
+        const embed = await embedTextForServer({ serverId, text: description });
+        if (!embed.ok) return { items: [], message: embed.error };
+        const found = await searchByPlot({
+          serverId,
+          viewerUserId: userId,
+          query: description,
+          embedding: embed.embedding,
+          types: type === "all" ? ["Movie", "Series", "Episode"] : [type],
+          limit,
+        });
+        const matched = await getMatchedItems(found.map((r) => r.id));
+        return {
+          items: matched.map((item) => ({
+            ...formatItem(item),
+            ...episodeOf(item),
+          })),
+          message:
+            matched.length > 0
+              ? `Found ${matched.length} titles whose story matches "${description}", best first. Confirm the best one with its overview, or with getPlotSynopsis when the detail is not in the overview.`
+              : `No title in the library matches "${description}".`,
+        };
+      },
+    }),
+
+    findMoment: tool({
+      description:
+        "Find when something is said or happens in a movie, series or episode the user names, e.g. 'when does Neo meet the Architect in The Matrix Reloaded' or 'where is the line \"I'll be back\" in The Terminator'. Searches that title's dialogue and its plot notes, scene by scene, and returns timestamps (hh:mm:ss) with the matching line. It works from what is said: a scene nobody talks in is not found.",
+      inputSchema: z.object({
+        title: z.string().describe("Movie or series name"),
+        description: z.string().describe("The line, or what happens"),
+        season: z.number().optional().describe("Season number, for a series"),
+        episode: z
+          .number()
+          .optional()
+          .describe("Episode number within the season"),
+      }),
+      execute: async ({
+        title,
+        description,
+        season,
+        episode,
+      }: {
+        title: string;
+        description: string;
+        season?: number;
+        episode?: number;
+      }) => {
+        const scope = await momentScope({
+          serverId,
+          userId,
+          title,
+          season,
+          episode,
+        });
+        if (scope.length === 0) {
+          return {
+            moments: [],
+            message: `Nothing in the library matches "${title}".`,
+          };
+        }
+        const embed = await embedTextForServer({ serverId, text: description });
+        const moments = await findMoments({
+          serverId,
+          itemIds: scope.map((s) => s.id),
+          query: description,
+          embedding: embed.ok ? embed.embedding : null,
+          limit: 3,
+        });
+        const titles = await getMatchedItems([
+          ...new Set(moments.map((m) => m.itemId)),
+        ]);
+        const byId = new Map(titles.map((item) => [item.id, item]));
+        return {
+          moments: moments.flatMap((m) => {
+            const item = byId.get(m.itemId);
+            return item
+              ? [
+                  {
+                    ...formatItem(item),
+                    ...episodeOf(item),
+                    at: formatTimestamp(m.startMs),
+                    precision: m.precision,
+                    line: m.line,
+                  },
+                ]
+              : [];
+          }),
+          message:
+            moments.length > 0
+              ? "Times are when the matching dialogue is said, best first. Precision 'window' means only the stretch (two minutes of dialogue, or a scene of a few minutes) is known."
+              : `No dialogue in "${title}" matches "${description}". Only titles with a transcript can be searched this way.`,
+        };
+      },
+    }),
+
+    getPlotSynopsis: tool({
+      description:
+        "Get the full plot synopsis (spoilers included) of a movie, or of one episode of a series in the library. For a series, it defaults to the series' last episode; pass season to get that season's last episode, or season and episode for a specific one, or position 'first'. Use it to answer how something ends, whether a series or season ends on a cliffhanger, or to recap an episode before the user resumes a show. It is for you to answer from: tell the user only what they asked to know (whether it ends on a cliffhanger is a yes or no, not the ending).",
+      inputSchema: z.object({
+        title: z.string().describe("Movie or series name"),
+        season: z.number().optional().describe("Season number"),
+        episode: z
+          .number()
+          .optional()
+          .describe("Episode number within the season"),
+        position: z
+          .enum(["first", "last"])
+          .optional()
+          .default("last")
+          .describe("Which episode when no episode number is given"),
+      }),
+      execute: async ({
+        title,
+        season,
+        episode,
+        position,
+      }: {
+        title: string;
+        season?: number;
+        episode?: number;
+        position: "first" | "last";
+      }) => {
+        const found = await lookupSynopsis({
+          serverId,
+          userId,
+          title,
+          season,
+          episode,
+          position,
+        });
+        if (!found) {
+          return {
+            message: `Nothing in the library matches "${title}"${season ? ` season ${season}` : ""}${episode ? ` episode ${episode}` : ""}.`,
+          };
+        }
+        const notes = [
+          found.synopsis
+            ? "Synopsis written by a model from the subtitles; it may simplify or get minor details wrong."
+            : "No synopsis has been indexed for this item yet (it needs a full subtitle).",
+          found.wikipediaPlot
+            ? "wikipediaPlot is the plot from Wikipedia, written by people who watched it: prefer it where the two differ, and link wikipediaSource when quoting it."
+            : null,
+          !found.synopsis && !found.wikipediaPlot
+            ? "Only the spoiler-free overview is available."
+            : null,
+        ];
+        return { ...found, message: notes.filter(Boolean).join(" ") };
+      },
+    }),
+
+    searchTranscripts: tool({
+      description:
+        "Search the dialogue of every movie and episode in the library (indexed from their subtitles). Use it to find which title has a remembered line or quote, or a scene the user half-remembers (what was said, names mentioned, a situation). Put exact remembered wording in double quotes for a phrase match. Returns the best matching titles with their moments: 'at' is when the matching line is said, 'line' the line, and 'dialogue' the two minutes of dialogue around it. Subtitles carry no speaker names or setting, so the dialogue alone does not say who speaks a line, to whom, or where. To list every title that mentions something, use findTitlesMentioning.",
+      inputSchema: z.object({
+        query: z
+          .string()
+          .describe("Remembered line, quote or description of the scene"),
+        limit: titleLimit(8),
+      }),
+      execute: async ({ query, limit }: { query: string; limit: number }) => {
+        const embed = await embedTextForServer({ serverId, text: query });
+        const matches = await searchTranscripts({
+          serverId,
+          userId,
+          query,
+          embedding: embed.ok ? embed.embedding : null,
+          limit,
+        });
+        const matched = await getMatchedItems(matches.map((m) => m.itemId));
+        // Each window pinned to its matching line, so 'at' is when it is said.
+        const moments = new Map(
+          await Promise.all(
+            matches.map(
+              async (m) =>
+                [
+                  m.itemId,
+                  await Promise.all(
+                    m.moments.map(async (w) => {
+                      if (w.startMs === null) return { dialogue: w.text };
+                      const at = await locateMoment(
+                        {
+                          itemId: m.itemId,
+                          startMs: w.startMs,
+                          endMs: w.endMs,
+                        },
+                        query,
+                      );
+                      return {
+                        at: formatTimestamp(at.startMs),
+                        line: at.line ?? undefined,
+                        dialogue: w.text,
+                      };
+                    }),
+                  ),
+                ] as const,
+            ),
+          ),
+        );
+        return {
+          items: matched.map((item) => ({
+            ...formatItem(item),
+            ...episodeOf(item),
+            moments: moments.get(item.id) ?? [],
+          })),
+          message:
+            matched.length > 0
+              ? `Found ${matched.length} titles whose dialogue matches "${query}"`
+              : `No dialogue matches "${query}". Transcripts exist only for titles with a full text subtitle, once the knowledge index has run.`,
+        };
+      },
+    }),
+
+    findTitlesMentioning: tool({
+      description:
+        "List every movie, series and episode whose dialogue, plot notes, Wikipedia plot, or title and description mention a word, name or phrase, in any word form ('quantum computer' also finds 'quantum computing'). Unlike the ranked searches, nothing that mentions it is left out, so use it whenever the user wants any or every title about a specific topic, term or name; add findTitleByPlot and searchLibraryBySemanticQuery for titles about the theme that never name it. Put a phrase in double quotes to keep its words together, and separate alternatives with OR. Each title says how many passages mention it in each source and shows the best matching line and plot passage: a mention in the plot or description suggests the topic is central, a single line of dialogue a passing one.",
+      inputSchema: z.object({
+        phrase: z
+          .string()
+          .describe('Words to find, e.g. "quantum computer" OR qubit'),
+        type: z
+          .enum(["Movie", "Series", "Episode", "all"])
+          .optional()
+          .default("all")
+          .describe("Filter by item type"),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(100)
+          .optional()
+          .default(50)
+          .describe("Most titles to list, up to 100"),
+      }),
+      execute: async ({
+        phrase,
+        type,
+        limit,
+      }: {
+        phrase: string;
+        type: "Movie" | "Series" | "Episode" | "all";
+        limit: number;
+      }) => {
+        const { total, titles } = await titlesMentioning({
+          serverId,
+          userId,
+          phrase,
+          types: type === "all" ? ["Movie", "Series", "Episode"] : [type],
+          limit,
+        });
+        const matched = await getMatchedItems(titles.map((t) => t.itemId));
+        const byId = new Map(titles.map((t) => [t.itemId, t]));
+        // Dialogue evidence pinned to its matching line, so 'at' is when it is said.
+        await Promise.all(
+          titles.flatMap((t) =>
+            t.evidence.map(async (e) => {
+              if (e.startMs === null || e.endMs === null) return;
+              const at = await locateMoment(
+                { itemId: t.itemId, startMs: e.startMs, endMs: e.endMs },
+                phrase,
+              );
+              e.startMs = at.startMs;
+            }),
+          ),
+        );
+        return {
+          items: matched.map((item) => {
+            const t = byId.get(item.id);
+            return {
+              ...formatItem(item),
+              ...episodeOf(item),
+              mentions: {
+                dialogue: t?.dialogue ?? 0,
+                plot: t?.plot ?? 0,
+                wikipedia: t?.wikipedia ?? 0,
+                description: t?.description ?? false,
+              },
+              evidence: (t?.evidence ?? []).map((e) => ({
+                source: e.source,
+                at: e.startMs === null ? undefined : formatTimestamp(e.startMs),
+                text: e.text,
+              })),
+            };
+          }),
+          message:
+            total === 0
+              ? `Nothing in the library mentions ${phrase}.`
+              : total > matched.length
+                ? `${total} titles mention ${phrase}; showing the first ${matched.length}. Raise the limit to see the rest.`
+                : `${total} titles mention ${phrase}.`,
+          ...(total === 0 ? await misspelled(phrase) : {}),
         };
       },
     }),

@@ -2,6 +2,7 @@ import { db, hiddenRecommendations, sessions } from "@streamystats/database";
 import { eq } from "drizzle-orm";
 import type { NextRequest } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
+import { exportKnowledgeModels } from "@/lib/db/knowledge-models";
 import { getServerWithSecrets } from "@/lib/db/server";
 import { jellyfinHeaders } from "@/lib/jellyfin-auth";
 
@@ -110,6 +111,13 @@ export async function GET(
         chatProvider: server.chatProvider,
         chatBaseUrl: server.chatBaseUrl,
         chatModel: server.chatModel,
+        chatName: server.chatName,
+        embeddingName: server.embeddingName,
+        // Without their keys, like the models above.
+        knowledgeModels: await exportKnowledgeModels(server.id),
+        knowledgeIndexEnabled: server.knowledgeIndexEnabled,
+        embeddingItemTypes: server.embeddingItemTypes,
+        knowledgeItemTypes: server.knowledgeItemTypes,
         disabledHolidays: server.disabledHolidays,
         excludedUserIds: server.excludedUserIds,
         excludedLibraryIds: server.excludedLibraryIds,

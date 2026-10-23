@@ -10,6 +10,7 @@ import {
 import { eq } from "drizzle-orm";
 import { type NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
+import { replaceKnowledgeModels } from "@/lib/db/knowledge-models";
 import { getServerWithSecrets } from "@/lib/db/server";
 import { jellyfinHeaders } from "@/lib/jellyfin-auth";
 
@@ -142,6 +143,16 @@ interface ImportData {
     chatProvider?: string | null;
     chatBaseUrl?: string | null;
     chatModel?: string | null;
+    chatName?: string | null;
+    embeddingName?: string | null;
+    knowledgeModels?: Parameters<typeof replaceKnowledgeModels>[1];
+    /** Older backups: the one knowledge index model. */
+    synopsisProvider?: string | null;
+    synopsisBaseUrl?: string | null;
+    synopsisModel?: string | null;
+    knowledgeIndexEnabled?: boolean;
+    embeddingItemTypes?: string[] | null;
+    knowledgeItemTypes?: string[] | null;
     disabledHolidays?: string[] | null;
     excludedUserIds?: string[] | null;
     excludedLibraryIds?: string[] | null;
@@ -302,6 +313,37 @@ export async function POST(req: NextRequest) {
       }
       if (importData.server.chatModel !== undefined) {
         update.chatModel = importData.server.chatModel ?? null;
+      }
+      if (importData.server.chatName !== undefined) {
+        update.chatName = importData.server.chatName ?? null;
+      }
+      if (importData.server.embeddingName !== undefined) {
+        update.embeddingName = importData.server.embeddingName ?? null;
+      }
+      const { synopsisProvider, synopsisBaseUrl, synopsisModel } =
+        importData.server;
+      const knowledgeModels = Array.isArray(importData.server.knowledgeModels)
+        ? importData.server.knowledgeModels
+        : synopsisProvider && synopsisModel
+          ? [
+              {
+                provider: synopsisProvider,
+                baseUrl: synopsisBaseUrl ?? null,
+                model: synopsisModel,
+              },
+            ]
+          : null;
+      if (knowledgeModels) {
+        await replaceKnowledgeModels(serverIdNum, knowledgeModels);
+      }
+      if (typeof importData.server.knowledgeIndexEnabled === "boolean") {
+        update.knowledgeIndexEnabled = importData.server.knowledgeIndexEnabled;
+      }
+      if (Array.isArray(importData.server.embeddingItemTypes)) {
+        update.embeddingItemTypes = importData.server.embeddingItemTypes;
+      }
+      if (Array.isArray(importData.server.knowledgeItemTypes)) {
+        update.knowledgeItemTypes = importData.server.knowledgeItemTypes;
       }
 
       if (Array.isArray(importData.server.disabledHolidays)) {

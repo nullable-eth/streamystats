@@ -208,16 +208,17 @@ await testChatConnectionAction(1, {
   baseUrl: "https://other.example/v1beta",
 });
 assert.equal(testedApiKey, undefined);
+// Any provider reuses its own saved key, never another provider's.
 await testChatConnectionAction(1, {
   ...config,
   provider: "openai-compatible",
   apiKey: undefined,
 });
 assert.equal(testedApiKey, undefined);
-assert.equal(savedConfigReads, 2);
+assert.equal(savedConfigReads, 3);
 isAdmin = false;
 await assert.rejects(
   testChatConnectionAction(1, { ...config, apiKey: undefined }),
   /Admin privileges required/,
 );
-assert.equal(savedConfigReads, 2);
+assert.equal(savedConfigReads, 3);

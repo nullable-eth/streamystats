@@ -168,7 +168,7 @@ export function HistoryTable({
                   {row.original.item?.seriesName}
                   {row.original.item?.seasonName &&
                     ` • ${row.original.item?.seasonName}`}
-                  {row.original.item?.indexNumber &&
+                  {row.original.item?.indexNumber != null &&
                     ` • Episode ${row.original.item?.indexNumber}`}
                 </div>
               )}

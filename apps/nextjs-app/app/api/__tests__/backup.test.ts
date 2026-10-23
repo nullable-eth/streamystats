@@ -48,6 +48,9 @@ describe("backup export/import routes", () => {
 
     bunMock.module("@/lib/api-auth", () => ({
       requireAdmin: async () => ({ error: null }),
+      // Module mocks are process-wide under `bun test`, so the mock keeps the
+      // exports other route tests import (search-plot.test.ts: requireAuth).
+      requireAuth: async () => ({ error: null, session: null }),
     }));
 
     bunMock.module("@/lib/db/server", () => ({
@@ -81,6 +84,13 @@ describe("backup export/import routes", () => {
       hiddenRecommendations: { serverId: "hiddenRecommendations.serverId" },
     }));
 
+    bunMock.module("@/lib/db/knowledge-models", () => ({
+      exportKnowledgeModels: async () => [
+        { provider: "anthropic", baseUrl: null, model: "claude-sonnet-5-5" },
+      ],
+      replaceKnowledgeModels: async () => {},
+    }));
+
     const { GET } = await import("../export/[serverId]/route");
 
     const res = await GET({} as any, {
@@ -100,6 +110,10 @@ describe("backup export/import routes", () => {
       "sys-1",
     );
     expect((body.server as any).apiKey).toBeUndefined();
+    // The knowledge index models go along, without their keys.
+    expect((body.server as any).knowledgeModels).toEqual([
+      { provider: "anthropic", baseUrl: null, model: "claude-sonnet-5-5" },
+    ]);
   });
 
   test("import restores hidden recommendations + sessions", async () => {
@@ -159,6 +173,9 @@ describe("backup export/import routes", () => {
 
     bunMock.module("@/lib/api-auth", () => ({
       requireAdmin: async () => ({ error: null }),
+      // Module mocks are process-wide under `bun test`, so the mock keeps the
+      // exports other route tests import (search-plot.test.ts: requireAuth).
+      requireAuth: async () => ({ error: null, session: null }),
     }));
 
     bunMock.module("@/lib/db/server", () => ({
@@ -172,6 +189,14 @@ describe("backup export/import routes", () => {
 
     bunMock.module("@streamystats/database", () => ({
       db: fakeDb,
+    }));
+
+    const restoredModels: unknown[] = [];
+    bunMock.module("@/lib/db/knowledge-models", () => ({
+      exportKnowledgeModels: async () => [],
+      replaceKnowledgeModels: async (_serverId: number, models: unknown[]) => {
+        restoredModels.push(...models);
+      },
     }));
 
     // Mock schema tables used only for db builder + eq()
@@ -201,6 +226,10 @@ describe("backup export/import routes", () => {
         jellyfinSystemId: "sys-1",
         excludedUserIds: ["u-ignore"],
         excludedLibraryIds: ["lib-ignore"],
+        // A backup from before the list: its one knowledge index model.
+        synopsisProvider: "anthropic",
+        synopsisBaseUrl: null,
+        synopsisModel: "claude-sonnet-5-5",
       },
       sessions: [
         {
@@ -299,5 +328,8 @@ describe("backup export/import routes", () => {
     expect(insertedHidden.length).toBe(1);
     expect(insertedSessions.length).toBe(1);
     expect(deleted.length).toBeGreaterThan(0);
+    expect(restoredModels).toEqual([
+      { provider: "anthropic", baseUrl: null, model: "claude-sonnet-5-5" },
+    ]);
   });
 });

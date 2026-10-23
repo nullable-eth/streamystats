@@ -316,6 +316,132 @@
       "when": 1773333333333,
       "tag": "0044_performance_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1791809208686,
+      "tag": "0045_user_item_ratings",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1791809603955,
+      "tag": "0046_recommendation_profiles",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1791842904310,
+      "tag": "0047_knowledge_index",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1791848143563,
+      "tag": "0048_per_type_indexing",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1791900210902,
+      "tag": "0049_synopsis_model",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1791910409693,
+      "tag": "0050_synopsis_windows",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1792082241837,
+      "tag": "0051_wikipedia_plots",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1792086973119,
+      "tag": "0052_knowledge_models",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1792102348027,
+      "tag": "0053_model_names",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1792103266513,
+      "tag": "0054_no_model_costs",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1792169303794,
+      "tag": "0055_notes_credit_by_writer",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1792245224696,
+      "tag": "0056_explicit_rewrites",
+      "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "7",
+      "when": 1792245985058,
+      "tag": "0057_parallel_requests",
+      "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1792543656116,
+      "tag": "0058_knowledge_refusals",
+      "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1792586272948,
+      "tag": "0059_episode_list_summaries",
+      "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "7",
+      "when": 1792597134433,
+      "tag": "0060_knowledge_rejected_texts",
+      "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1792599183938,
+      "tag": "0061_common_terms",
+      "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1792599815241,
+      "tag": "0062_reranker",
+      "breakpoints": true
     }
   ]
 }

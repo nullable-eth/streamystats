@@ -1,0 +1,819 @@
+import { createHash } from "node:crypto";
+import {
+  db,
+  itemTextChunks,
+  itemTexts,
+  items,
+  type ItemText,
+  KNOWLEDGE_ITEM_TYPES,
+  knowledgeRefusals,
+  knowledgeRejectedTexts,
+  servers,
+} from "@streamystats/database";
+import { and, eq, sql } from "drizzle-orm";
+import { JellyfinClient } from "../jellyfin/client";
+import {
+  type EmbeddingSettings,
+  embedTexts,
+  getEmbeddingSettings,
+} from "../knowledge/embed";
+import { readsAs } from "../knowledge/language";
+import {
+  chunkCues,
+  cleanCues,
+  type Cue,
+  MIN_TRANSCRIPT_WORDS,
+  parseSrt,
+  rankTranscriptStreams,
+  wordCount,
+} from "../knowledge/subtitles";
+import {
+  getKnowledgeModels,
+  isUsable,
+  type KnowledgeModel,
+  modelLabel,
+  parallelOf,
+  rewritesOf,
+  SHORT_REST_MS,
+  WriteFailure,
+  writePlotWithModels,
+  writersFor,
+} from "../knowledge/models";
+import { runPool } from "../knowledge/pool";
+import { ensureSearchIndexes, refreshCommonTerms } from "../knowledge/terms";
+import {
+  characterNames,
+  formatScenes,
+  parseScenes,
+  sceneWindows,
+  synopsisWindows,
+  transcriptParts,
+} from "../knowledge/synopsis";
+import {
+  articlesByImdbId,
+  type ListedEpisode,
+  listedEpisodesOf,
+  listedSummary,
+  matchListedEpisode,
+  plotsOf,
+  type SeriesIds,
+} from "../knowledge/wikipedia";
+import type { PgBossJob, ServerIdJobData } from "../types/job-status";
+import { logJobResult } from "./job-logger";
+
+export const KNOWLEDGE_INDEX_JOB_NAME = "knowledge-index-sync";
+
+/**
+ * A run goes on while titles are due, so the threads stay busy instead of
+ * draining at a cut-off; it stops an hour short of the job's 24h expiry
+ * (SEND_OPTIONS.DAY in scheduler.ts) to finish the titles in flight. The
+ * 15-minute schedule keeps a next run queued, which starts as this one ends.
+ */
+const RUN_BUDGET_MS = 23 * 60 * 60_000;
+const ITEMS_PER_QUERY = 25;
+const EMBED_BATCH = 32;
+const MAX_TRACKS_TRIED = 3;
+
+type Outcome = "indexed" | "unchanged" | "missing";
+
+type ItemRow = {
+  id: string;
+  name: string;
+  type: string;
+  series_name: string | null;
+  parent_index_number: number | null;
+  index_number: number | null;
+  production_year: number | null;
+  overview: string | null;
+};
+
+type DueItem = ItemRow & {
+  imdb_id: string | null;
+  /** An episode's series and its ids, and when the episode first aired (YYYY-MM-DD): for its series' episode lists. */
+  series_id: string | null;
+  series_imdb_id: string | null;
+  series_tvdb_id: string | null;
+  series_tmdb_id: string | null;
+  aired: string | null;
+  /** Its Wikipedia plot is to be looked up (again). */
+  reference_due: boolean;
+};
+
+/** Dialogue; the plot as the model wrote it; the plot as people wrote it (Wikipedia's). */
+type WindowKind = "transcript" | "synopsis" | "reference";
+
+const ensuredIndexes = new Set<string>();
+
+/**
+ * Partial HNSW index per dimension, as for items.embedding, and per kind of
+ * window: dialogue and plot summaries sit in different parts of the vector
+ * space, and one shared graph searched with a kind filter missed the best
+ * synopsis windows entirely. Replaces the earlier shared index.
+ */
+function ensureChunkIndex(dimensions: number, kind: WindowKind): Promise<void> {
+  // One at a time: titles are indexed concurrently with a hosted model.
+  const run = indexing.then(() => createChunkIndex(dimensions, kind));
+  indexing = run.catch(() => {});
+  return run;
+}
+let indexing = Promise.resolve();
+
+async function createChunkIndex(dimensions: number, kind: WindowKind): Promise<void> {
+  const key = `${kind}:${dimensions}`;
+  if (ensuredIndexes.has(key)) return;
+  const n = sql.raw(String(dimensions));
+  await db.execute(sql`
+    CREATE INDEX CONCURRENTLY IF NOT EXISTS ${sql.raw(`item_text_chunks_${kind}_embedding_${dimensions}_idx`)}
+    ON item_text_chunks USING hnsw ((embedding::vector(${n})) vector_cosine_ops)
+    WHERE vector_dims(embedding) = ${n} AND kind = ${sql.raw(`'${kind}'`)}
+  `);
+  ensuredIndexes.add(key);
+  if (ensuredIndexes.has(`transcript:${dimensions}`) && ensuredIndexes.has(`synopsis:${dimensions}`)) {
+    await db.execute(
+      sql`DROP INDEX CONCURRENTLY IF EXISTS ${sql.raw(`item_text_chunks_embedding_${dimensions}_idx`)}`
+    );
+  }
+}
+
+const hash = (text: string) => createHash("sha256").update(text).digest("hex");
+
+/** Embed in batches; the window index for the dimension exists afterwards. */
+async function embedAll(
+  embedding: EmbeddingSettings,
+  texts: string[],
+  kind: WindowKind
+): Promise<number[][]> {
+  const vectors: number[][] = [];
+  for (let i = 0; i < texts.length; i += EMBED_BATCH) {
+    vectors.push(...(await embedTexts(embedding, texts.slice(i, i + EMBED_BATCH))));
+  }
+  for (const d of new Set(vectors.map((v) => v.length))) await ensureChunkIndex(d, kind);
+  return vectors;
+}
+
+const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+function titleOf(item: ItemRow): string {
+  if (item.type !== "Episode") {
+    return item.production_year ? `${item.name} (${item.production_year})` : item.name;
+  }
+  const s = String(item.parent_index_number ?? 0).padStart(2, "0");
+  const e = String(item.index_number ?? 0).padStart(2, "0");
+  return `${item.series_name ?? "Unknown series"} S${s}E${e} "${item.name}"`;
+}
+
+/** What scene notes are written from, kept as their source: the transcript, and the Wikipedia plot when there was one. */
+const plotBasis = (transcriptHash: string, reference: ItemText | undefined) =>
+  reference?.status === "ready" && reference.contentHash ? `${transcriptHash}:${reference.contentHash}` : transcriptHash;
+
+/**
+ * Selected movies/episodes that need work: never looked at; no usable subtitle a
+ * day ago (a subtitle downloader may have fetched one since); a weekly re-check for upgraded
+ * subtitles; a transcript indexed before line timings were kept; scene
+ * notes (and the synopsis written with them) that one of the `usable` models
+ * writes (see writersFor): missing, or by a writer one was asked to replace;
+ * or, with Wikipedia plots on, a plot never looked up, missing for a month
+ * (an article may have been written since) or three months old. Notes whose writing
+ * failed wait a day; titles already taken this run (`taken`) wait for the next.
+ * Notes go only to a usable model that hasn't declined the title (see
+ * knowledge_refusals): one every model declined ("declined") waits for a
+ * model that hasn't, and is due as soon as one is turned on.
+ * First those whose notes were asked for next ("wanted", from a title's page),
+ * then those never looked at, then the newest.
+ */
+async function dueItems(
+  serverId: number,
+  types: readonly string[],
+  usable: KnowledgeModel[],
+  withReferences: boolean,
+  taken: Set<string>,
+  limit = ITEMS_PER_QUERY
+): Promise<DueItem[]> {
+  const allowed: readonly string[] = KNOWLEDGE_ITEM_TYPES;
+  const selected = types.filter((t) => allowed.includes(t));
+  if (selected.length === 0) return [];
+  const replaced = rewritesOf(usable);
+  const rewrite = replaced.length > 0 ? sql`s.written_by IN ${replaced}` : sql`false`;
+  const fresh = sql`i.id <> ALL(${sql.param([...taken])}::text[])`;
+  const notDeclinedByAll = sql`EXISTS (
+    SELECT 1 FROM unnest(${sql.param(usable.map(modelLabel))}::text[]) AS u(label)
+    WHERE NOT EXISTS (SELECT 1 FROM knowledge_refusals kr WHERE kr.item_id = i.id AND kr.model = u.label))`;
+  const referenceDue = sql`(${withReferences} AND (r.id IS NULL
+    OR r.checked_at < now() - CASE WHEN r.status = 'ready' THEN interval '90 days' ELSE interval '30 days' END))`;
+  const rows = await db.execute<DueItem>(sql`
+    SELECT i.id, i.name, i.type, i.series_name, i.parent_index_number,
+           i.index_number, i.production_year, i.overview,
+           i.provider_ids->>'Imdb' AS imdb_id, ${referenceDue} AS reference_due,
+           i.series_id, ser.provider_ids->>'Imdb' AS series_imdb_id,
+           ser.provider_ids->>'Tvdb' AS series_tvdb_id, ser.provider_ids->>'Tmdb' AS series_tmdb_id,
+           to_char(i.premiere_date AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS aired
+    FROM items i
+    LEFT JOIN items ser ON ser.id = i.series_id
+    LEFT JOIN item_texts t ON t.item_id = i.id AND t.kind = 'transcript'
+    LEFT JOIN item_texts s ON s.item_id = i.id AND s.kind = 'scenes'
+    LEFT JOIN item_texts r ON r.item_id = i.id AND r.kind = 'reference'
+    WHERE i.server_id = ${serverId}
+      AND i.deleted_at IS NULL
+      AND i.type IN ${selected}
+      AND ${fresh}
+      AND (
+        t.id IS NULL
+        OR (t.status <> 'ready' AND t.checked_at < now() - interval '1 day')
+        OR (t.status = 'ready' AND t.checked_at < now() - interval '7 days')
+        OR (t.status = 'ready' AND t.cue_starts_ms IS NULL)
+        OR (${usable.length > 0} AND t.status = 'ready'
+            AND (s.id IS NULL OR s.status <> 'ready' OR ${rewrite})
+            AND (s.id IS NULL OR s.status = 'declined' OR s.checked_at < now() - interval '1 day')
+            AND ${notDeclinedByAll})
+        OR ${referenceDue}
+      )
+    ORDER BY (s.status IS NOT DISTINCT FROM 'wanted') DESC, (t.id IS NULL) DESC, i.date_created DESC NULLS LAST
+    LIMIT ${limit}
+  `);
+  return Array.from(rows);
+}
+
+async function getText(itemId: string, kind: string): Promise<ItemText | undefined> {
+  const [row] = await db
+    .select()
+    .from(itemTexts)
+    .where(and(eq(itemTexts.itemId, itemId), eq(itemTexts.kind, kind)))
+    .limit(1);
+  return row;
+}
+
+/**
+ * Hashes of the texts of a kind the title must not use (see
+ * knowledge_rejected_texts): read, but passed over.
+ */
+async function rejectedOf(itemId: string, kind: "transcript" | "reference"): Promise<Set<string>> {
+  const rows = await db
+    .select({ contentHash: knowledgeRejectedTexts.contentHash })
+    .from(knowledgeRejectedTexts)
+    .where(and(eq(knowledgeRejectedTexts.itemId, itemId), eq(knowledgeRejectedTexts.kind, kind)));
+  return new Set(rows.map((r) => r.contentHash));
+}
+
+/** Keep a text the title must not use, so it is passed over from now on. */
+async function reject(itemId: string, kind: "transcript" | "reference", contentHash: string, reason: string) {
+  await db.insert(knowledgeRejectedTexts).values({ itemId, kind, contentHash, reason }).onConflictDoNothing();
+}
+
+/** The models ("provider:model") that declined to write the title's notes. */
+async function refusalsOf(itemId: string): Promise<Set<string>> {
+  const rows = await db
+    .select({ model: knowledgeRefusals.model })
+    .from(knowledgeRefusals)
+    .where(eq(knowledgeRefusals.itemId, itemId));
+  return new Set(rows.map((r) => r.model));
+}
+
+async function saveText(
+  serverId: number,
+  itemId: string,
+  kind: string,
+  values: Partial<Pick<ItemText, "status" | "source" | "content" | "contentHash" | "cueStartsMs" | "writtenBy">> & {
+    status: string;
+  }
+): Promise<number> {
+  const now = new Date();
+  const [row] = await db
+    .insert(itemTexts)
+    .values({ serverId, itemId, kind, ...values, checkedAt: now, updatedAt: now })
+    .onConflictDoUpdate({
+      target: [itemTexts.itemId, itemTexts.kind],
+      set: { ...values, checkedAt: now, updatedAt: now },
+    })
+    .returning({ id: itemTexts.id });
+  return row.id;
+}
+
+/**
+ * The best full-dialogue track that really is one: not too short to be more
+ * than forced subtitles, in the library's language whatever its label says
+ * (see readsAs), and not a text the title was told not to use (see
+ * rejectedOf). A track in another language is kept as rejected, so the
+ * settings can say why the title has no transcript.
+ */
+async function readTranscript(
+  client: JellyfinClient,
+  itemId: string,
+  previous: ItemText | undefined,
+  languages: string[]
+): Promise<{ ref: string; cues: Cue[] } | "unchanged" | null> {
+  const media = await client.getPrimaryMediaSource(itemId);
+  if (!media) return null;
+  const candidates = rankTranscriptStreams(media.streams, media.id, languages);
+  const rejected = await rejectedOf(itemId, "transcript");
+  if (
+    previous?.status === "ready" &&
+    previous.cueStartsMs &&
+    previous.source === candidates[0]?.ref &&
+    !(previous.contentHash && rejected.has(previous.contentHash)) &&
+    readsAs(previous.content.split("\n"), languages)
+  ) {
+    return "unchanged";
+  }
+  for (const candidate of candidates.slice(0, MAX_TRACKS_TRIED)) {
+    const cues = cleanCues(parseSrt(await client.getSubtitleSrt(itemId, media.id, candidate.index)));
+    if (wordCount(cues) < MIN_TRANSCRIPT_WORDS) continue;
+    const lines = cues.map((c) => c.text);
+    const contentHash = hash(lines.join("\n"));
+    if (rejected.has(contentHash)) continue;
+    if (!readsAs(lines, languages)) {
+      await reject(itemId, "transcript", contentHash, "not in the library's language");
+      continue;
+    }
+    return { ref: candidate.ref, cues };
+  }
+  return null;
+}
+
+async function indexTranscript(
+  serverId: number,
+  client: JellyfinClient,
+  embedding: EmbeddingSettings,
+  languages: string[],
+  item: DueItem
+): Promise<Outcome> {
+  const previous = await getText(item.id, "transcript");
+  const read = await readTranscript(client, item.id, previous, languages);
+
+  if (read === "unchanged") {
+    await saveText(serverId, item.id, "transcript", { status: "ready" });
+    return "unchanged";
+  }
+  if (!read) {
+    const id = await saveText(serverId, item.id, "transcript", {
+      status: "missing",
+      source: null,
+      content: "",
+      contentHash: null,
+      cueStartsMs: null,
+    });
+    await db.delete(itemTextChunks).where(eq(itemTextChunks.itemTextId, id));
+    return "missing";
+  }
+
+  // One line per cue, with when each is said: a match can be located to
+  // the moment, not just its window.
+  const content = read.cues.map((c) => c.text).join("\n");
+  const cueStartsMs = read.cues.map((c) => c.startMs);
+  const contentHash = hash(content);
+  if (previous?.status === "ready" && previous.contentHash === contentHash) {
+    // Same words from a re-timed or relocated file: no re-embedding.
+    await saveText(serverId, item.id, "transcript", { status: "ready", source: read.ref, cueStartsMs });
+    return "unchanged";
+  }
+
+  const chunks = chunkCues(read.cues);
+  const vectors = await embedAll(embedding, chunks.map((c) => c.text), "transcript");
+
+  await db.transaction(async (tx) => {
+    const now = new Date();
+    const [row] = await tx
+      .insert(itemTexts)
+      .values({
+        serverId,
+        itemId: item.id,
+        kind: "transcript",
+        status: "ready",
+        source: read.ref,
+        content,
+        contentHash,
+        cueStartsMs,
+        checkedAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: [itemTexts.itemId, itemTexts.kind],
+        set: { status: "ready", source: read.ref, content, contentHash, cueStartsMs, checkedAt: now, updatedAt: now },
+      })
+      .returning({ id: itemTexts.id });
+    await tx.delete(itemTextChunks).where(eq(itemTextChunks.itemTextId, row.id));
+    await tx.insert(itemTextChunks).values(
+      chunks.map((chunk, i) => ({
+        itemTextId: row.id,
+        serverId,
+        itemId: item.id,
+        startMs: chunk.startMs,
+        endMs: chunk.endMs,
+        text: chunk.text,
+        embedding: vectors[i],
+      }))
+    );
+  });
+  return "indexed";
+}
+
+type PlotText = { id: number; itemId: string; kind: string; content: string };
+
+/**
+ * A plot text as search windows, replacing any it had: the synopsis or the
+ * Wikipedia plot whole and by paragraph (see synopsisWindows), or each part
+ * of the scene notes with its times. The Wikipedia plot ranks on its own, so
+ * a title it matches is found even where the model's synopsis left the plot
+ * point out, and one both match ranks higher.
+ */
+async function indexPlotWindows(
+  serverId: number,
+  embedding: EmbeddingSettings,
+  text: PlotText,
+  title: string
+): Promise<void> {
+  const windows =
+    text.kind === "scenes"
+      ? sceneWindows(title, parseScenes(text.content))
+      : synopsisWindows(title, text.content).map((w) => ({ text: w, startMs: null, endMs: null }));
+  const kind: WindowKind = text.kind === "reference" ? "reference" : "synopsis";
+  const vectors = await embedAll(embedding, windows.map((w) => w.text), kind);
+  await db.transaction(async (tx) => {
+    await tx.delete(itemTextChunks).where(eq(itemTextChunks.itemTextId, text.id));
+    if (windows.length === 0) return;
+    await tx.insert(itemTextChunks).values(
+      windows.map((w, i) => ({
+        itemTextId: text.id,
+        serverId,
+        itemId: text.itemId,
+        kind,
+        startMs: w.startMs,
+        endMs: w.endMs,
+        text: w.text,
+        embedding: vectors[i],
+      }))
+    );
+  });
+}
+
+/** Series whose episode lists a run keeps, at most: the latest read. */
+const LISTS_KEPT = 200;
+
+/**
+ * A run's Wikipedia episode lists, by series: each series' lists are read once
+ * for all of its episodes the run looks up, the latest LISTS_KEPT series' kept.
+ */
+class EpisodeLists {
+  private readonly bySeries = new Map<string, ListedEpisode[]>();
+
+  async rowsFor(items: DueItem[]): Promise<Map<string, ListedEpisode[]>> {
+    const wanted = new Map<string, SeriesIds>();
+    for (const item of items) {
+      if (!item.series_id || this.bySeries.has(item.series_id)) continue;
+      wanted.set(item.series_id, { imdb: item.series_imdb_id, tvdb: item.series_tvdb_id, tmdb: item.series_tmdb_id });
+    }
+    if (wanted.size > 0) {
+      const read = await listedEpisodesOf(wanted);
+      for (const key of wanted.keys()) this.bySeries.set(key, read.get(key) ?? []);
+      for (const key of this.bySeries.keys()) {
+        if (this.bySeries.size <= LISTS_KEPT) break;
+        this.bySeries.delete(key);
+      }
+    }
+    return new Map(items.flatMap((item) => (item.series_id ? [[item.series_id, this.bySeries.get(item.series_id) ?? []]] : [])));
+  }
+}
+
+/**
+ * Wikipedia plots for a batch of items, looked up together, each stored as
+ * the item's "reference" text and indexed as search windows of its own: the
+ * Plot section of its own English article, or, for an episode without one,
+ * its summary in its series' episode lists (see matchListedEpisode). An item
+ * with neither is marked missing.
+ */
+async function indexReferences(
+  serverId: number,
+  embedding: EmbeddingSettings,
+  batch: DueItem[],
+  episodeLists: EpisodeLists
+): Promise<number> {
+  const articles = await articlesByImdbId(batch.flatMap((item) => (item.imdb_id ? [item.imdb_id] : [])));
+  const plots = await plotsOf([...new Set(articles.values())]);
+  const articlePlot = (item: DueItem) => {
+    const article = item.imdb_id ? articles.get(item.imdb_id) : undefined;
+    return article ? plots.get(article) : undefined;
+  };
+  const unwritten = batch.filter((item) => item.type === "Episode" && item.series_id && !articlePlot(item));
+  const listed = unwritten.length > 0 ? await episodeLists.rowsFor(unwritten) : new Map<string, ListedEpisode[]>();
+  let found = 0;
+  for (const item of batch) {
+    let plot = articlePlot(item) ?? null;
+    if (!plot && item.type === "Episode" && item.series_id) {
+      const rows = matchListedEpisode(listed.get(item.series_id) ?? [], {
+        season: item.parent_index_number,
+        number: item.index_number,
+        title: item.name,
+        aired: item.aired,
+      });
+      plot = listedSummary(rows);
+    }
+    if (!plot) {
+      const id = await saveText(serverId, item.id, "reference", { status: "missing", source: null, content: "", contentHash: null });
+      await db.delete(itemTextChunks).where(eq(itemTextChunks.itemTextId, id));
+      continue;
+    }
+    const previous = await getText(item.id, "reference");
+    const contentHash = hash(plot.plot);
+    if ((await rejectedOf(item.id, "reference")).has(contentHash)) {
+      // Another title's plot, as found before: none, until the lists change.
+      const none = await saveText(serverId, item.id, "reference", { status: "missing", source: null, content: "", contentHash: null });
+      await db.delete(itemTextChunks).where(eq(itemTextChunks.itemTextId, none));
+      continue;
+    }
+    const id = await saveText(serverId, item.id, "reference", {
+      status: "ready",
+      source: plot.source,
+      content: plot.plot,
+      contentHash,
+    });
+    if (previous?.contentHash !== contentHash) {
+      try {
+        await indexPlotWindows(serverId, embedding, { id, itemId: item.id, kind: "reference", content: plot.plot }, titleOf(item));
+      } catch (error) {
+        // The plot stands; the backlog pass retries its windows.
+        console.warn(`[knowledge] serverId=${serverId} item=${item.id} reference windows: ${errorText(error)}`);
+      }
+    }
+    found++;
+  }
+  return found;
+}
+
+/**
+ * Character names from the title's own cast. Not the series' for an episode:
+ * a model told of a regular who is not in the episode puts them in it.
+ */
+async function charactersOf(item: ItemRow): Promise<string[]> {
+  const rows = await db.execute<{ role: string }>(sql`
+    SELECT role FROM item_people
+    WHERE type = 'Actor' AND role <> '' AND item_id = ${item.id}
+    ORDER BY sort_order NULLS LAST
+  `);
+  return characterNames(Array.from(rows, (r) => r.role));
+}
+
+/**
+ * Write the scene notes and the synopsis summarised from them, and re-queue
+ * the item for embedding, so the plot becomes part of the item vector that
+ * search and recommendations already use; then index both as search windows
+ * of their own, by whichever of the `usable` models writersFor picks: notes
+ * already there are kept unless a model was asked to replace their writer's.
+ */
+async function indexSynopsis(
+  serverId: number,
+  usable: KnowledgeModel[],
+  embedding: EmbeddingSettings,
+  item: DueItem
+): Promise<boolean> {
+  const transcript = await getText(item.id, "transcript");
+  if (transcript?.status !== "ready" || !transcript.contentHash || !transcript.cueStartsMs) return false;
+  const reference = await getText(item.id, "reference");
+  const basis = plotBasis(transcript.contentHash, reference);
+  const previous = await getText(item.id, "scenes");
+  const writers = writersFor(previous, usable);
+  if (writers.length === 0) return false;
+
+  const title = titleOf(item);
+  const saved: PlotText[] = [];
+  const refusals = await refusalsOf(item.id);
+  try {
+    const { scenes, synopsis, model } = await writePlotWithModels(
+      writers,
+      {
+        title,
+        overview: item.overview,
+        characters: await charactersOf(item),
+        reference: reference?.status === "ready" ? reference.content : null,
+      },
+      transcriptParts(transcript.content.split("\n"), transcript.cueStartsMs),
+      {
+        by: refusals,
+        record: async (model, reason) => {
+          const label = modelLabel(model);
+          console.warn(`[knowledge] serverId=${serverId} item=${item.id} declined by ${label}: ${title}: ${reason}`);
+          await db
+            .insert(knowledgeRefusals)
+            .values({ itemId: item.id, model: label, reason: reason.slice(0, 500) })
+            .onConflictDoUpdate({
+              target: [knowledgeRefusals.itemId, knowledgeRefusals.model],
+              set: { reason: reason.slice(0, 500), refusedAt: new Date() },
+            });
+        },
+      }
+    );
+    for (const [kind, content] of [
+      ["scenes", formatScenes(scenes)],
+      ["synopsis", synopsis],
+    ] as const) {
+      const id = await saveText(serverId, item.id, kind, {
+        status: "ready",
+        source: basis,
+        content,
+        contentHash: hash(content),
+        writtenBy: modelLabel(model),
+      });
+      saved.push({ id, itemId: item.id, kind, content });
+    }
+    await db.update(items).set({ processed: false }).where(eq(items.id, item.id));
+  } catch (error) {
+    // Every model declined it: it waits, as "declined", for a model that
+    // hasn't, and is not counted as an error. Notes already there stay.
+    if (error instanceof WriteFailure && error.declined) {
+      if (previous?.status === "ready") {
+        await db.update(itemTexts).set({ checkedAt: new Date() }).where(eq(itemTexts.id, previous.id));
+      } else {
+        await saveText(serverId, item.id, "scenes", { status: "declined" });
+      }
+      return false;
+    }
+    // A title the models failed on its own account waits a day rather than
+    // being retried every run; notes already there stay until replaced, and
+    // keep when they were written. One the models couldn't take (resting, rate
+    // limited, failing every title) stays due for when one is back.
+    if (!(error instanceof WriteFailure) || error.titlesFault) {
+      if (previous && previous.status !== "declined") {
+        await db.update(itemTexts).set({ checkedAt: new Date() }).where(eq(itemTexts.id, previous.id));
+      } else {
+        await saveText(serverId, item.id, "scenes", { status: "missing" });
+      }
+    }
+    throw error;
+  }
+
+  for (const text of saved) {
+    try {
+      await indexPlotWindows(serverId, embedding, text, title);
+    } catch (error) {
+      // The text stands; the backlog pass retries its windows.
+      console.warn(
+        `[knowledge] serverId=${serverId} item=${item.id} ${text.kind} windows: ${errorText(error)}`
+      );
+    }
+  }
+  return true;
+}
+
+type PlotTextRow = ItemRow & { text_id: number; kind: string; content: string };
+
+/**
+ * Plot texts without search windows: written before they existed, or their
+ * embedding failed. Those that failed this run (`failed`) wait for the next.
+ */
+async function plotTextsWithoutWindows(serverId: number, failed: Set<number>): Promise<PlotTextRow[]> {
+  const rows = await db.execute<PlotTextRow>(sql`
+    SELECT s.id AS text_id, s.kind, s.content, i.id, i.name, i.type, i.series_name,
+           i.parent_index_number, i.index_number, i.production_year, i.overview
+    FROM item_texts s
+    JOIN items i ON i.id = s.item_id
+    WHERE s.server_id = ${serverId}
+      AND s.kind IN ('synopsis', 'scenes', 'reference')
+      AND s.status = 'ready'
+      AND btrim(s.content) <> ''
+      AND i.deleted_at IS NULL
+      AND NOT EXISTS (SELECT 1 FROM item_text_chunks c WHERE c.item_text_id = s.id)
+      AND s.id <> ALL(${sql.param([...failed])}::int[])
+    LIMIT ${ITEMS_PER_QUERY}
+  `);
+  return Array.from(rows);
+}
+
+export async function knowledgeIndexJob(job: PgBossJob<ServerIdJobData>) {
+  const startTime = Date.now();
+  const { serverId } = job.data;
+  const counts = { indexed: 0, unchanged: 0, missing: 0, synopses: 0, references: 0, windows: 0, errors: 0 };
+  let lastError: string | null = null;
+
+  const [server] = await db.select().from(servers).where(eq(servers.id, serverId)).limit(1);
+  if (!server?.knowledgeIndexEnabled) return { skipped: "disabled" };
+
+  const embedding = await getEmbeddingSettings(serverId);
+  if (!embedding) {
+    await logJobResult(job.id, KNOWLEDGE_INDEX_JOB_NAME, "completed", { serverId, skipped: "embeddings not configured" }, 0);
+    return { skipped: "embeddings not configured" };
+  }
+  // The full-text indexes per kind and the common-word counts keyword search
+  // ranks by (see terms.ts); a failure here leaves search slower, not wrong.
+  try {
+    await ensureSearchIndexes();
+    const counted = await refreshCommonTerms();
+    if (counted.length > 0) {
+      console.info(`[knowledge] serverId=${serverId} action=common-terms kinds=${counted.join(",")}`);
+    }
+  } catch (error) {
+    console.warn(`[knowledge] serverId=${serverId} common terms: ${errorText(error)}`);
+  }
+  const withReferences = server.knowledgeWikipedia;
+  const client = JellyfinClient.fromServer(server);
+  // Transcripts in the language people search in. A transcript picked
+  // under an earlier choice is replaced at its weekly re-check.
+  const languages = await client.getMetadataLanguageCodes().catch(() => ["en", "eng"]);
+
+  const listed = await getKnowledgeModels(serverId);
+  console.info(
+    `[knowledge] serverId=${serverId} action=start synopses=${listed.map(modelLabel).join(" > ") || "off"} wikipedia=${withReferences} language=${languages.join("/")}`
+  );
+  // So the settings show the run as going from its start, not its first batch.
+  await logJobResult(job.id, KNOWLEDGE_INDEX_JOB_NAME, "processing", { serverId, ...counts, lastError }, 0);
+  try {
+    // Plot texts still without search windows: embedding only, no model calls.
+    const failed = new Set<number>();
+    backlog: while (Date.now() - startTime < RUN_BUDGET_MS) {
+      const rows = await plotTextsWithoutWindows(serverId, failed);
+      if (rows.length === 0) break;
+      for (const row of rows) {
+        try {
+          await indexPlotWindows(
+            serverId,
+            embedding,
+            { id: row.text_id, itemId: row.id, kind: row.kind, content: row.content },
+            titleOf(row)
+          );
+          counts.windows++;
+        } catch (error) {
+          counts.errors++;
+          lastError = `${titleOf(row)}: ${errorText(error)}`;
+          console.warn(`[knowledge] serverId=${serverId} item=${row.id} error=${lastError}`);
+          failed.add(row.text_id);
+          // The text's own failure leaves the rest to go on; the embedding
+          // server's (it fails a word too) leaves them for the next run.
+          if (!(await embedTexts(embedding, ["test"]).then(() => true, () => false))) break backlog;
+        }
+      }
+    }
+
+    // Titles go to a pool of workers that keeps as many requests in flight as
+    // the models take, fetching the next titles (with their Wikipedia plots)
+    // while the last ones are still being written (see runPool).
+    const taken = new Set<string>();
+    const episodeLists = new EpisodeLists();
+    let concurrency = 1;
+    const inTime = () => Date.now() - startTime < RUN_BUDGET_MS;
+    const indexItem = async (item: DueItem) => {
+      try {
+        counts[await indexTranscript(serverId, client, embedding, languages, item)]++;
+        // A run for a local model can take hours: a model turned off or
+        // resting since it began is not tried.
+        const current = (await getKnowledgeModels(serverId)).filter((m) => isUsable(m));
+        if (await indexSynopsis(serverId, current, embedding, item)) {
+          counts.synopses++;
+        }
+      } catch (error) {
+        counts.errors++;
+        lastError = `${titleOf(item)}: ${errorText(error)}`;
+        console.warn(`[knowledge] serverId=${serverId} item=${item.id} error=${lastError}`);
+        // Never let one bad item stall the queue: stamp it as checked so it
+        // waits for the next re-check instead of coming straight back.
+        const transcript = await getText(item.id, "transcript");
+        await saveText(serverId, item.id, "transcript", { status: transcript?.status ?? "error" });
+      }
+    };
+    const fetchTitles = async (): Promise<DueItem[]> => {
+      // Read again each fetch (and each title, above): models rest, settings change.
+      let listed = await getKnowledgeModels(serverId);
+      let usable = listed.filter((m) => isUsable(m));
+      // As many at once as the model taking most; each model is sent no more
+      // requests at once than it takes (see parallelOf).
+      concurrency = Math.max(1, ...usable.map(parallelOf));
+      const due = (models: KnowledgeModel[]) =>
+        dueItems(serverId, server.knowledgeItemTypes, models, withReferences, taken, Math.max(ITEMS_PER_QUERY, concurrency));
+      let batch = await due(usable);
+      // Nothing due only because the models are resting a short while (busy,
+      // rate limited): wait for one rather than end the run, looking again
+      // every half minute (one turned back on in the settings comes back then).
+      while (batch.length === 0 && usable.length < listed.length && inTime()) {
+        const back = Math.min(...listed.filter((m) => !isUsable(m)).map((m) => m.unavailableUntil?.getTime() ?? 0));
+        if (back - Date.now() > SHORT_REST_MS || (await due(listed)).length === 0) break;
+        await new Promise((resolve) => setTimeout(resolve, Math.min(30_000, Math.max(1_000, back - Date.now()))));
+        listed = await getKnowledgeModels(serverId);
+        usable = listed.filter((m) => isUsable(m));
+        concurrency = Math.max(1, ...usable.map(parallelOf));
+        batch = await due(usable);
+      }
+      for (const item of batch) taken.add(item.id);
+      const lookUp = batch.filter((item) => item.reference_due);
+      if (lookUp.length > 0) {
+        try {
+          counts.references += await indexReferences(serverId, embedding, lookUp, episodeLists);
+        } catch (error) {
+          // Wikipedia unreachable: stop rather than write notes without the
+          // plots, which they would then lack for good. The next run retries.
+          counts.errors++;
+          lastError = `Wikipedia plots: ${errorText(error)}`;
+          console.warn(`[knowledge] serverId=${serverId} error=${lastError}`);
+          return [];
+        }
+      }
+      if (batch.length > 0) {
+        await logJobResult(job.id, KNOWLEDGE_INDEX_JOB_NAME, "processing", { serverId, ...counts, lastError }, Date.now() - startTime);
+      }
+      return batch;
+    };
+    // Titles left when the run's time is up stay due for the next run.
+    await runPool({ fetch: fetchTitles, work: indexItem, size: () => concurrency, inTime });
+    await logJobResult(job.id, KNOWLEDGE_INDEX_JOB_NAME, "completed", { serverId, ...counts, lastError }, Date.now() - startTime);
+    console.info(`[knowledge] serverId=${serverId} action=done ${JSON.stringify(counts)}`);
+    return counts;
+  } catch (error) {
+    await logJobResult(job.id, KNOWLEDGE_INDEX_JOB_NAME, "failed", { serverId, ...counts }, Date.now() - startTime, error instanceof Error ? error : String(error));
+    throw error;
+  }
+}
