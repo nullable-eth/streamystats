@@ -51,6 +51,7 @@ import {
 } from "@/components/ui/drawer";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { chatRehypePlugins } from "@/lib/ai/chat-markdown";
+import { idsIn, resolveItemLink } from "@/lib/chat-item-links";
 import type { User } from "@/lib/types";
 import JellyfinAvatar from "./JellyfinAvatar";
 
@@ -257,6 +258,28 @@ export function ChatDialog({
     return cache;
   }, [messages]);
 
+  // Every id the tool results hold, to check the model's item links against.
+  const knownItemIds = useMemo(
+    () =>
+      idsIn(
+        messages.flatMap((message) =>
+          message.parts.flatMap((part) => {
+            if (!part.type.startsWith("tool-") && part.type !== "dynamic-tool")
+              return [];
+            const toolPart = part as { state: string; output?: unknown };
+            return toolPart.state === "output-available"
+              ? [toolPart.output]
+              : [];
+          }),
+        ),
+      ),
+    [messages],
+  );
+  const itemNames = useMemo(
+    () => new Map([...itemsCache].map(([id, item]) => [id, item.name])),
+    [itemsCache],
+  );
+
   useEffect(() => {
     if (open && inputRef.current) {
       inputRef.current.focus();
@@ -281,9 +304,19 @@ export function ChatDialog({
         children?: React.ReactNode;
       }) => {
         if (href?.startsWith("item://")) {
-          const itemId = href.replace("item://", "");
-          const cachedItem = itemsCache.get(itemId);
           const itemName = typeof children === "string" ? children : "Unknown";
+          // The id as a tool result has it, or repaired; a link to no item
+          // the conversation found is shown as its name.
+          const itemId = resolveItemLink(
+            href.replace("item://", ""),
+            itemName,
+            knownItemIds,
+            itemNames,
+          );
+          if (!itemId) {
+            return <span className="font-semibold">{children}</span>;
+          }
+          const cachedItem = itemsCache.get(itemId);
 
           if (server) {
             return (
@@ -320,7 +353,7 @@ export function ChatDialog({
         );
       },
     }),
-    [itemsCache, server, serverId],
+    [itemsCache, itemNames, knownItemIds, server, serverId],
   );
 
   const renderMessageText = useCallback(
