@@ -1,0 +1,1 @@
+ALTER TABLE "servers" ADD COLUMN "knowledge_wikipedia" boolean DEFAULT false NOT NULL;

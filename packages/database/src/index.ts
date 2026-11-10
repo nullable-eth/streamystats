@@ -9,11 +9,28 @@ export {
   getDb,
 } from "./connection";
 
+export {
+  buildDatabaseUrl,
+  FILE_ENV_VARS,
+  type FileEnvVar,
+  loadFileEnv,
+  resolveDatabaseUrl,
+} from "./env";
+
 // Export all schema tables and types
 export * from "./schema";
+export * from "./user-merge";
+export * from "./user-merge-backup";
 
 // Export job defaults
 export * from "./job-defaults";
+
+export {
+  COMMON_TERM_WINDOWS,
+  EMBEDDABLE_ITEM_TYPES,
+  embeddableItemCondition,
+  KNOWLEDGE_ITEM_TYPES,
+} from "./embeddable";
 
 // Export migration utilities
 export { migrate } from "./migrate";

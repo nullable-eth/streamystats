@@ -219,8 +219,8 @@ export function ActiveSessions({ server }: { server: ServerPublic }) {
                       {session.item?.seriesName && (
                         <div className="text-sm text-muted-foreground">
                           {session.item.seriesName}
-                          {session.item.parentIndexNumber &&
-                            session.item.indexNumber && (
+                          {session.item.parentIndexNumber != null &&
+                            session.item.indexNumber != null && (
                               <span>
                                 {" "}
                                 - S{session.item.parentIndexNumber}:E

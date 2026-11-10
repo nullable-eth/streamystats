@@ -2,20 +2,19 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 import postgres, { type Sql } from "postgres";
 import * as dotenv from "dotenv";
+import { MISSING_DATABASE_URL_MESSAGE, resolveDatabaseUrl } from "./env";
 import * as schema from "./schema";
 
 // Ensure environment variables are loaded
 dotenv.config({ quiet: true });
 
 export const getDatabaseUrl = () => {
-  const databaseUrl = process.env.DATABASE_URL;
+  const databaseUrl = resolveDatabaseUrl();
   if (!databaseUrl) {
     // Important: if the connection string is missing, postgres-js falls back to
     // PG* env vars and then the OS user. In root-run containers that becomes
     // "root", leading to confusing errors like: `FATAL: role "root" does not exist`.
-    throw new Error(
-      'DATABASE_URL environment variable is missing. Set DATABASE_URL (e.g. "postgresql://postgres:postgres@host:5432/streamystats").',
-    );
+    throw new Error(MISSING_DATABASE_URL_MESSAGE);
   }
   return databaseUrl;
 };
@@ -36,6 +35,18 @@ export const getClient = (): Client => {
       idle_timeout: 20, // Close connections after 20 seconds of inactivity
       max_lifetime: 60 * 30, // Maximum lifetime of a connection (30 minutes)
       connect_timeout: 60,
+      connection: {
+        // Filtered vector searches (by item type, excluding watched items)
+        // otherwise only see the index's first ~40 candidates, so a seed whose
+        // nearest neighbours are of another type returns almost nothing.
+        // pgvector >= 0.8; older versions drop the unknown setting.
+        "hnsw.iterative_scan": "strict_order",
+        // How many candidates an HNSW search keeps. Measured against exact
+        // search over 66 eval queries on a 16k-title library: the default 40
+        // returned 57-66% of the true top 50, 100 returned 74-79%, 800
+        // returns 97-99% in 10-16 ms. Search quality is the point.
+        "hnsw.ef_search": "800",
+      },
     });
   }
   return globalForDatabase.streamystatsClient;

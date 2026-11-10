@@ -1,7 +1,11 @@
 import { items } from "@streamystats/database/schema";
 import { sql } from "drizzle-orm";
+import type { AnyPgColumn } from "drizzle-orm/pg-core";
 
-export function getItemEmbeddingComparison(embedding: number[]) {
+export function getItemEmbeddingComparison(
+  embedding: number[],
+  column: AnyPgColumn = items.embedding,
+) {
   if (embedding.length === 0 || !embedding.every(Number.isFinite)) {
     throw new Error("Embedding must contain finite numbers");
   }
@@ -11,7 +15,7 @@ export function getItemEmbeddingComparison(embedding: number[]) {
   const dimensions = sql.raw(String(embedding.length));
 
   return {
-    distance: sql<number>`(${items.embedding}::vector(${dimensions})) <=> (${JSON.stringify(embedding)}::vector(${dimensions}))`,
-    dimensionFilter: sql`vector_dims(${items.embedding}) = ${dimensions}`,
+    distance: sql<number>`(${column}::vector(${dimensions})) <=> (${JSON.stringify(embedding)}::vector(${dimensions}))`,
+    dimensionFilter: sql`vector_dims(${column}) = ${dimensions}`,
   };
 }

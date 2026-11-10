@@ -58,7 +58,9 @@ const STATUS_KEY_TO_SCHEDULER_KEY: Record<string, JobKey> = {
   "jellyfin-recent-items-sync": "recent-items-sync",
   "jellyfin-recent-activities-sync": "activity-sync",
   "jellyfin-people-sync": "people-sync",
+  "jellyfin-ratings-sync": "ratings-sync",
   "generate-item-embeddings": "embeddings-sync",
+  "knowledge-index-sync": "knowledge-sync",
 };
 
 function getStateBadgeVariant(

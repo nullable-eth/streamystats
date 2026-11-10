@@ -1,0 +1,1 @@
+ALTER TABLE "knowledge_models" ADD COLUMN "parallel_requests" integer;

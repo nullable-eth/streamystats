@@ -14,17 +14,26 @@ import { GEOLOCATION_JOB_NAMES } from "./geolocation-jobs";
 import { BACKFILL_JOB_NAMES } from "./server-jobs";
 import { cancelJobsByName } from "../routes/jobs/utils";
 import { SCHEDULER_MAINTENANCE_JOB_NAME } from "./scheduler-maintenance";
+import { KNOWLEDGE_INDEX_JOB_NAME } from "./knowledge-jobs";
 
 interface ServerJobConfig {
   cronExpression: string | null;
   enabled: boolean;
 }
 
+// Workers send a heartbeat every 30 s, so a job whose worker died (a restart
+// or a deploy mid-run) fails within a minute and is retried. Without one it
+// stays active until it expires, and holds its singleton key all that time:
+// up to four hours with no scheduled run of that job.
+const HEARTBEAT_SECONDS = 60;
+
 const SEND_OPTIONS = {
-  STANDARD: { expireInSeconds: 1800, retryLimit: 1, retryDelay: 60 },
-  MEDIUM: { expireInSeconds: 3600, retryLimit: 1, retryDelay: 60 },
-  LONG: { expireInSeconds: 7200, retryLimit: 1, retryDelay: 300 },
-  EXTENDED: { expireInSeconds: 14400, retryLimit: 1, retryDelay: 300 },
+  STANDARD: { expireInSeconds: 1800, retryLimit: 1, retryDelay: 60, heartbeatSeconds: HEARTBEAT_SECONDS },
+  MEDIUM: { expireInSeconds: 3600, retryLimit: 1, retryDelay: 60, heartbeatSeconds: HEARTBEAT_SECONDS },
+  LONG: { expireInSeconds: 7200, retryLimit: 1, retryDelay: 300, heartbeatSeconds: HEARTBEAT_SECONDS },
+  EXTENDED: { expireInSeconds: 14400, retryLimit: 1, retryDelay: 300, heartbeatSeconds: HEARTBEAT_SECONDS },
+  // Runs as long as work is due (the knowledge index); the heartbeat still fails it quickly if its worker dies.
+  DAY: { expireInSeconds: 86400, retryLimit: 1, retryDelay: 300, heartbeatSeconds: HEARTBEAT_SECONDS },
 } as const;
 
 /**
@@ -64,10 +73,20 @@ const SCHEDULER_JOB_CONFIG: Record<JobKey, {
     buildData: (serverId) => ({ serverId }),
     sendOptions: SEND_OPTIONS.LONG,
   },
+  "ratings-sync": {
+    pgBossName: JELLYFIN_JOB_NAMES.RATINGS_SYNC,
+    buildData: (serverId) => ({ serverId }),
+    sendOptions: SEND_OPTIONS.STANDARD,
+  },
   "embeddings-sync": {
     pgBossName: "generate-item-embeddings",
     buildData: (serverId) => ({ serverId, batchSize: 50 }),
     sendOptions: SEND_OPTIONS.MEDIUM,
+  },
+  "knowledge-sync": {
+    pgBossName: KNOWLEDGE_INDEX_JOB_NAME,
+    buildData: (serverId) => ({ serverId }),
+    sendOptions: SEND_OPTIONS.DAY,
   },
   "full-sync": {
     pgBossName: JELLYFIN_JOB_NAMES.FULL_SYNC,
@@ -682,6 +701,17 @@ class SyncScheduler {
    * Manually trigger full sync for a specific server.
    * Cancels any existing full sync jobs for this server before starting.
    */
+  /**
+   * Start a knowledge index run now, as a model is turned on or titles are
+   * asked for next, rather than at the next scheduled one. With a run going,
+   * it queues behind it (that run reads the settings again as it goes).
+   */
+  async triggerServerKnowledgeSync(serverId: number): Promise<void> {
+    const boss = await getJobQueue();
+    await boss.send(KNOWLEDGE_INDEX_JOB_NAME, { serverId }, SEND_OPTIONS.DAY);
+    console.log(`[scheduler] trigger=knowledge-sync serverId=${serverId}`);
+  }
+
   async triggerServerFullSync(serverId: number): Promise<void> {
     try {
       const cancelledCount = await cancelJobsByName(
@@ -877,7 +907,9 @@ class SyncScheduler {
         recentItemsSync: getDefaultCron("recent-items-sync"),
         userSync: getDefaultCron("user-sync"),
         peopleSync: getDefaultCron("people-sync"),
+        ratingsSync: getDefaultCron("ratings-sync"),
         embeddingsSync: getDefaultCron("embeddings-sync"),
+        knowledgeSync: getDefaultCron("knowledge-sync"),
         geolocationSync: getDefaultCron("geolocation-sync"),
         fingerprintSync: getDefaultCron("fingerprint-sync"),
         jobCleanup: getDefaultCron("job-cleanup"),

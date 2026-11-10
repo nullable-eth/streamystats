@@ -24,6 +24,11 @@ import {
   sum,
 } from "drizzle-orm";
 import { getStatisticsExclusions } from "./exclusions";
+import {
+  getSynopsisStates,
+  type SynopsisState,
+  synopsisProgress,
+} from "./knowledge-index";
 
 // Type definitions for library statistics
 export interface AggregatedLibraryStatistics {
@@ -46,6 +51,8 @@ export interface ItemWatchStats {
   unique_viewers: number;
   last_watched?: string | null;
   first_watched?: string | null;
+  /** Where its synopsis stands; asked for by admins. */
+  synopsis?: SynopsisState;
 }
 
 export interface ItemWatchStatsResponse {
@@ -176,6 +183,7 @@ export const getLibraryItemsWithStats = async ({
   type,
   search,
   libraryIds,
+  withSynopses,
 }: {
   serverId: number;
   userId?: string;
@@ -185,6 +193,8 @@ export const getLibraryItemsWithStats = async ({
   type?: "Movie" | "Episode" | "Series";
   search?: string;
   libraryIds?: string;
+  /** Include where each item's synopsis stands. */
+  withSynopses?: boolean;
 }): Promise<ItemWatchStatsResponse> => {
   // Get exclusion settings
   const { itemLibraryExclusion } = await getStatisticsExclusions(
@@ -241,9 +251,12 @@ export const getLibraryItemsWithStats = async ({
       lastWatched: sql<string>`MAX(${sessions.startTime})`.as("last_watched"),
     })
     .from(items)
-    .leftJoin(sessions, eq(items.id, sessions.itemId))
+    .leftJoin(
+      sessions,
+      and(eq(items.id, sessions.itemId), eq(items.serverId, sessions.serverId)),
+    )
     .where(and(...conditions))
-    .groupBy(items.id);
+    .groupBy(items.serverId, items.id);
 
   // Apply sorting
   let orderClause: SQL | undefined;
@@ -271,13 +284,18 @@ export const getLibraryItemsWithStats = async ({
     case "genres":
       orderClause = order(sql`array_to_string(${items.genres}, ', ')`);
       break;
+    case "synopsis":
+      // Least done first (ascending); those without subtitles last either way.
+      orderClause = sql`${synopsisProgress(items.id)} ${sortOrder === "desc" ? sql`DESC` : sql`ASC`} NULLS LAST`;
+      break;
     default:
       orderClause = desc(sql`COALESCE(SUM(${sessions.playDuration}), 0)`);
   }
 
-  // Get paginated results
+  // Get paginated results. Ties (most series have no watch time of their own,
+  // it is on their episodes) are broken by name and id, so pages don't overlap.
   const results = await baseQuery
-    .orderBy(orderClause)
+    .orderBy(orderClause, asc(items.name), asc(items.id))
     .limit(perPage)
     .offset(offset);
 
@@ -285,7 +303,10 @@ export const getLibraryItemsWithStats = async ({
   const totalCountQuery = db
     .select({ count: sql<number>`COUNT(DISTINCT ${items.id})` })
     .from(items)
-    .leftJoin(sessions, eq(items.id, sessions.itemId))
+    .leftJoin(
+      sessions,
+      and(eq(items.id, sessions.itemId), eq(items.serverId, sessions.serverId)),
+    )
     .where(and(...conditions));
 
   const totalCount = await totalCountQuery.then(
@@ -313,6 +334,11 @@ export const getLibraryItemsWithStats = async ({
       last_watched: row.lastWatched,
     }),
   );
+
+  if (withSynopses) {
+    const states = await getSynopsisStates(data.map((d) => d.item_id));
+    for (const d of data) d.synopsis = states.get(d.item_id);
+  }
 
   return {
     data,
@@ -418,7 +444,13 @@ export const getPerLibraryStatistics = async ({
       totalSize: sum(mediaSources.size),
     })
     .from(mediaSources)
-    .innerJoin(items, eq(mediaSources.itemId, items.id))
+    .innerJoin(
+      items,
+      and(
+        eq(mediaSources.itemId, items.id),
+        eq(mediaSources.serverId, items.serverId),
+      ),
+    )
     .where(and(...itemConditions))
     .groupBy(items.libraryId);
 
@@ -443,7 +475,10 @@ export const getPerLibraryStatistics = async ({
       lastActivity: max(sessions.startTime),
     })
     .from(sessions)
-    .innerJoin(items, eq(sessions.itemId, items.id))
+    .innerJoin(
+      items,
+      and(eq(sessions.itemId, items.id), eq(sessions.serverId, items.serverId)),
+    )
     .where(and(...sessionConditions, isNull(items.deletedAt)))
     .groupBy(items.libraryId);
 
@@ -458,7 +493,10 @@ export const getPerLibraryStatistics = async ({
       startTime: sessions.startTime,
     })
     .from(sessions)
-    .innerJoin(items, eq(sessions.itemId, items.id))
+    .innerJoin(
+      items,
+      and(eq(sessions.itemId, items.id), eq(sessions.serverId, items.serverId)),
+    )
     .where(and(...sessionConditions, isNull(items.deletedAt)))
     .orderBy(items.libraryId, desc(sessions.startTime));
 

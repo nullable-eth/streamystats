@@ -17,13 +17,35 @@ import {
   eq,
   gte,
   ilike,
+  inArray,
   isNotNull,
+  isNull,
   lte,
+  notInArray,
   or,
   type SQL,
   sql,
 } from "drizzle-orm";
+import { parseValueFilter } from "@/lib/filter-values";
 import { getStatisticsExclusions } from "./exclusions";
+
+/**
+ * A filter parameter as a condition: one value, a list (`a,b`), or
+ * everything except a list (`!a,b`); see lib/filter-values. An exclusion
+ * keeps rows with no value (e.g. no device name).
+ */
+function valueFilter(
+  column: AnyColumn,
+  raw: string,
+  mapValue: (value: string) => string = (value) => value,
+): SQL {
+  const filter = parseValueFilter(raw);
+  if (!filter) return eq(column, raw);
+  const values = [...new Set(filter.values.map(mapValue))];
+  return filter.mode === "include"
+    ? inArray(column, values)
+    : (or(isNull(column), notInArray(column, values)) as SQL);
+}
 
 export interface HistoryItem {
   session: Session;
@@ -112,22 +134,22 @@ export const getHistory = async (
 
   // Add user filter
   if (filters?.userId) {
-    conditions.push(eq(sessions.userId, filters.userId));
+    conditions.push(valueFilter(sessions.userId, filters.userId));
   }
 
   // Add device name filter
   if (filters?.deviceName) {
-    conditions.push(eq(sessions.deviceName, filters.deviceName));
+    conditions.push(valueFilter(sessions.deviceName, filters.deviceName));
   }
 
   // Add client name filter
   if (filters?.clientName) {
-    conditions.push(eq(sessions.clientName, filters.clientName));
+    conditions.push(valueFilter(sessions.clientName, filters.clientName));
   }
 
   // Add play method filter
   if (filters?.playMethod) {
-    conditions.push(eq(sessions.playMethod, filters.playMethod));
+    conditions.push(valueFilter(sessions.playMethod, filters.playMethod));
   }
 
   // Add search filter if provided
@@ -145,18 +167,21 @@ export const getHistory = async (
 
   // Add item type filter if provided (requires items join)
   if (filters?.itemType && filters.itemType !== "all") {
-    if (filters.itemType === "Series") {
-      conditions.push(eq(items.type, "Episode"));
-    } else {
-      conditions.push(eq(items.type, filters.itemType));
-    }
+    conditions.push(
+      valueFilter(items.type, filters.itemType, (type) =>
+        type === "Series" ? "Episode" : type,
+      ),
+    );
   }
 
   // Build the query to get session data with joined item and user information
   const baseQuery = db
     .select()
     .from(sessions)
-    .leftJoin(items, eq(sessions.itemId, items.id))
+    .leftJoin(
+      items,
+      and(eq(sessions.itemId, items.id), eq(sessions.serverId, items.serverId)),
+    )
     .leftJoin(users, eq(sessions.userId, users.id))
     .where(and(...conditions));
 
@@ -203,7 +228,10 @@ export const getHistory = async (
   const totalCountQuery = db
     .select({ count: sql<number>`COUNT(*)` })
     .from(sessions)
-    .leftJoin(items, eq(sessions.itemId, items.id))
+    .leftJoin(
+      items,
+      and(eq(sessions.itemId, items.id), eq(sessions.serverId, items.serverId)),
+    )
     .leftJoin(users, eq(sessions.userId, users.id))
     .where(and(...conditions));
 
@@ -282,29 +310,32 @@ export const getUserHistory = async (
 
   // Add item type filter
   if (itemType) {
-    conditions.push(eq(items.type, itemType));
+    conditions.push(valueFilter(items.type, itemType));
   }
 
   // Add device name filter
   if (deviceName) {
-    conditions.push(eq(sessions.deviceName, deviceName));
+    conditions.push(valueFilter(sessions.deviceName, deviceName));
   }
 
   // Add client name filter
   if (clientName) {
-    conditions.push(eq(sessions.clientName, clientName));
+    conditions.push(valueFilter(sessions.clientName, clientName));
   }
 
   // Add play method filter
   if (playMethod) {
-    conditions.push(eq(sessions.playMethod, playMethod));
+    conditions.push(valueFilter(sessions.playMethod, playMethod));
   }
 
   // Build the query to get session data with joined item and user information
   const baseQuery = db
     .select()
     .from(sessions)
-    .leftJoin(items, eq(sessions.itemId, items.id))
+    .leftJoin(
+      items,
+      and(eq(sessions.itemId, items.id), eq(sessions.serverId, items.serverId)),
+    )
     .leftJoin(users, eq(sessions.userId, users.id))
     .where(and(...conditions));
 
@@ -352,7 +383,10 @@ export const getUserHistory = async (
   const totalCount = await db
     .select({ count: sql<number>`COUNT(*)` })
     .from(sessions)
-    .leftJoin(items, eq(sessions.itemId, items.id))
+    .leftJoin(
+      items,
+      and(eq(sessions.itemId, items.id), eq(sessions.serverId, items.serverId)),
+    )
     .leftJoin(users, eq(sessions.userId, users.id))
     .where(and(...conditions))
     .then((result) => result[0]?.count || 0);
@@ -400,7 +434,10 @@ export const getItemHistory = async (
   const data = await db
     .select()
     .from(sessions)
-    .leftJoin(items, eq(sessions.itemId, items.id))
+    .leftJoin(
+      items,
+      and(eq(sessions.itemId, items.id), eq(sessions.serverId, items.serverId)),
+    )
     .leftJoin(users, eq(sessions.userId, users.id))
     .where(and(...conditions))
     .orderBy(desc(sessions.createdAt))
@@ -491,7 +528,10 @@ export const getHistoryByFilters = async ({
   const query = db
     .select()
     .from(sessions)
-    .leftJoin(items, eq(sessions.itemId, items.id))
+    .leftJoin(
+      items,
+      and(eq(sessions.itemId, items.id), eq(sessions.serverId, items.serverId)),
+    )
     .leftJoin(users, eq(sessions.userId, users.id));
 
   if (needsItemJoin) {

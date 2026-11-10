@@ -1,6 +1,7 @@
 import type { Job } from "pg-boss";
 import type { QueueStats } from "pg-boss";
 import { PgBoss } from "pg-boss";
+import { getDatabaseUrl } from "@streamystats/database";
 import {
   addServerJob,
   backfillJellyfinIdsJob,
@@ -18,6 +19,7 @@ import {
   jellyfinRecentItemsSyncWorker,
   jellyfinRecentActivitiesSyncWorker,
   jellyfinPeopleSyncWorker,
+  jellyfinRatingsSyncWorker,
   JELLYFIN_JOB_NAMES,
   inferWatchtimeJob,
   INFER_WATCHTIME_JOB_NAME,
@@ -26,6 +28,7 @@ import {
   securityFullSyncJob,
   SECURITY_SYNC_JOB_NAME,
 } from "./security-sync-job";
+import { KNOWLEDGE_INDEX_JOB_NAME, knowledgeIndexJob } from "./knowledge-jobs";
 import {
   schedulerMaintenanceWorker,
   SCHEDULER_MAINTENANCE_JOB_NAME,
@@ -61,10 +64,8 @@ export async function getJobQueue(): Promise<PgBoss> {
     return bossInstance;
   }
 
-  const connectionString = Bun.env.DATABASE_URL;
-  if (!connectionString) {
-    throw new Error("DATABASE_URL environment variable is not set");
-  }
+  // Throws a descriptive error when no connection is configured
+  const connectionString = getDatabaseUrl();
 
   const postgres = await import("postgres");
   const sql = postgres.default(connectionString);
@@ -126,10 +127,12 @@ async function createQueues(boss: PgBoss) {
     JELLYFIN_JOB_NAMES.RECENT_ITEMS_SYNC,
     JELLYFIN_JOB_NAMES.RECENT_ACTIVITIES_SYNC,
     JELLYFIN_JOB_NAMES.PEOPLE_SYNC,
+    JELLYFIN_JOB_NAMES.RATINGS_SYNC,
     GEOLOCATION_JOB_NAMES.GEOLOCATE_ACTIVITIES,
     GEOLOCATION_JOB_NAMES.CALCULATE_FINGERPRINTS,
     GEOLOCATION_JOB_NAMES.BACKFILL_LOCATIONS,
     SECURITY_SYNC_JOB_NAME,
+    KNOWLEDGE_INDEX_JOB_NAME,
     BACKFILL_JOB_NAMES.BACKFILL_JELLYFIN_IDS,
     INFER_WATCHTIME_JOB_NAME,
     SCHEDULER_MAINTENANCE_JOB_NAME,
@@ -160,6 +163,7 @@ async function registerJobHandlers(boss: PgBoss) {
   await boss.work(JELLYFIN_JOB_NAMES.RECENT_ITEMS_SYNC, DEFAULT_WORK_OPTIONS, firstJob(jellyfinRecentItemsSyncWorker));
   await boss.work(JELLYFIN_JOB_NAMES.RECENT_ACTIVITIES_SYNC, DEFAULT_WORK_OPTIONS, firstJob(jellyfinRecentActivitiesSyncWorker));
   await boss.work(JELLYFIN_JOB_NAMES.PEOPLE_SYNC, DEFAULT_WORK_OPTIONS, firstJob(jellyfinPeopleSyncWorker));
+  await boss.work(JELLYFIN_JOB_NAMES.RATINGS_SYNC, DEFAULT_WORK_OPTIONS, firstJob(jellyfinRatingsSyncWorker));
 
   // Register geolocation jobs
   await boss.work(GEOLOCATION_JOB_NAMES.GEOLOCATE_ACTIVITIES, DEFAULT_WORK_OPTIONS, firstJob(geolocateActivitiesJob));
@@ -168,6 +172,9 @@ async function registerJobHandlers(boss: PgBoss) {
 
   // Register security sync job
   await boss.work(SECURITY_SYNC_JOB_NAME, DEFAULT_WORK_OPTIONS, firstJob(securityFullSyncJob));
+
+  // Register knowledge index job (subtitle transcripts + synopses)
+  await boss.work(KNOWLEDGE_INDEX_JOB_NAME, DEFAULT_WORK_OPTIONS, firstJob(knowledgeIndexJob));
 
   // Register backfill jobs
   await boss.work(BACKFILL_JOB_NAMES.BACKFILL_JELLYFIN_IDS, DEFAULT_WORK_OPTIONS, firstJob(backfillJellyfinIdsJob));

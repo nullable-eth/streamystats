@@ -6,6 +6,7 @@ import {
   ActivitySquare,
   BarChart3,
   BookOpen,
+  Bot,
   Calendar,
   CalendarDays,
   Clock,
@@ -13,7 +14,6 @@ import {
   Library,
   ListVideo,
   type LucideIcon,
-  MessageSquare,
   Monitor,
   RefreshCw,
   Settings,
@@ -137,9 +137,9 @@ const settings_items = [
     icon: TrendingUp,
   },
   {
-    title: "AI Chat",
-    url: "/settings/chat",
-    icon: MessageSquare,
+    title: "AI Models",
+    url: "/settings/models",
+    icon: Bot,
   },
   {
     title: "Backup & Import",

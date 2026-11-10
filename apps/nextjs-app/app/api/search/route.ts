@@ -1,5 +1,7 @@
 import type { NextRequest } from "next/server";
+import { embedTextForServer } from "@/lib/ai/embed-text";
 import { requireAuth } from "@/lib/api-auth";
+import { type PlotSearchType, searchByPlot } from "@/lib/db/plot-search";
 import {
   globalSearch,
   type SearchResult,
@@ -47,6 +49,17 @@ export type SearchFilterType =
   | "watchlists" // Watchlists
   | "activities" // Activities
   | "sessions"; // Sessions/history
+
+type SearchMode = "title" | "plot";
+
+/** The item types a plot search covers for each `type` filter. */
+const PLOT_SEARCH_TYPES: Partial<Record<SearchFilterType, PlotSearchType[]>> = {
+  all: ["Movie", "Series", "Episode"],
+  media: ["Movie", "Series", "Episode"],
+  movies: ["Movie"],
+  series: ["Series"],
+  episodes: ["Episode"],
+};
 
 const emptyIdsResponse: SearchIdsResponse = {
   movies: [],
@@ -269,6 +282,12 @@ function filterResults(
  * Query params:
  * - q: search query (required)
  * - limit: max results per category (default: 10, max: 100)
+ * - mode: "title" (default) or "plot"
+ *   - "title": matches names (full-text, partial and fuzzy)
+ *   - "plot": finds movies, series and episodes from a description of
+ *     their story or a remembered line, using the item embeddings (with
+ *     the indexed plot synopsis) and the transcripts; needs an embedding
+ *     model, and only covers the media types
  * - format: response format - "full" (default) or "ids"
  *   - "full": returns complete search results with metadata
  *   - "ids": returns only Jellyfin item/actor IDs categorized by type
@@ -280,6 +299,7 @@ function filterResults(
  * Examples:
  *   GET /api/search?q=matrix&limit=20
  *   GET /api/search?q=keanu&type=actors&format=ids&limit=5
+ *   GET /api/search?q=two+astronauts+swap+lives&mode=plot&format=ids
  */
 export async function GET(request: NextRequest) {
   const auth = await requireAuth(request);
@@ -291,6 +311,14 @@ export async function GET(request: NextRequest) {
   const query = searchParams.get("q");
   const format = searchParams.get("format") || "full";
   const type = (searchParams.get("type") || "all") as SearchFilterType;
+  const mode = (searchParams.get("mode") || "title") as SearchMode;
+
+  if (mode !== "title" && mode !== "plot") {
+    return jsonResponse(
+      { error: "Invalid 'mode'. Must be title or plot." },
+      400,
+    );
+  }
 
   if (!query || query.trim() === "") {
     if (format === "ids") {
@@ -317,20 +345,46 @@ export async function GET(request: NextRequest) {
     : 10;
 
   const viewerUserId = session.isAdmin ? undefined : session.id;
-  const results = await globalSearch(
-    session.serverId,
-    query.trim(),
-    session.id,
-    {
-      itemLimit: limit,
-      userLimit: limit,
-      watchlistLimit: limit,
-      activityLimit: limit,
-      sessionLimit: limit,
-      actorLimit: limit,
-    },
-    viewerUserId,
-  );
+  let results: SearchResults;
+  if (mode === "plot") {
+    const embed = await embedTextForServer({
+      serverId: session.serverId,
+      text: query.trim(),
+    });
+    if (!embed.ok) {
+      return jsonResponse(
+        {
+          error: embed.error,
+          data: format === "ids" ? emptyIdsResponse : emptyFullResponse,
+        },
+        embed.reason === "not_configured" ? 400 : 502,
+      );
+    }
+    const found = await searchByPlot({
+      serverId: session.serverId,
+      viewerUserId,
+      query: query.trim(),
+      embedding: embed.embedding,
+      types: PLOT_SEARCH_TYPES[type] ?? [],
+      limit,
+    });
+    results = { ...emptyFullResponse, items: found, total: found.length };
+  } else {
+    results = await globalSearch(
+      session.serverId,
+      query.trim(),
+      session.id,
+      {
+        itemLimit: limit,
+        userLimit: limit,
+        watchlistLimit: limit,
+        activityLimit: limit,
+        sessionLimit: limit,
+        actorLimit: limit,
+      },
+      viewerUserId,
+    );
+  }
 
   // Apply type filter
   const filteredResults = filterResults(results, type);

@@ -13,7 +13,9 @@ import {
   unique,
   customType,
   primaryKey,
+  foreignKey,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 // Custom vector type that supports variable dimensions
 // This allows storing embeddings of any size without hardcoding dimensions
@@ -138,6 +140,18 @@ export const servers = pgTable(
     chatBaseUrl: text("chat_base_url"),
     chatApiKey: text("chat_api_key"),
     chatModel: text("chat_model"),
+    // What the settings show the chat and embedding models as.
+    chatName: text("chat_name"),
+    embeddingName: text("embedding_name"),
+
+    // Optional reranker: a cross-encoder plot search asks to reorder its top
+    // titles, reading the query and each title's best passages together. Any
+    // service with a Jina/Cohere-style /rerank: llama.cpp (--reranking),
+    // Infinity, TEI, vLLM, Jina, Cohere.
+    rerankerBaseUrl: text("reranker_base_url"),
+    rerankerApiKey: text("reranker_api_key"),
+    rerankerModel: text("reranker_model"),
+    rerankerName: text("reranker_name"),
 
     // Sync status tracking
     syncStatus: text("sync_status").notNull().default("pending"), // pending, syncing, completed, failed
@@ -159,6 +173,27 @@ export const servers = pgTable(
       .notNull()
       .default(false),
 
+    // Knowledge index: transcripts from library subtitles, chunked and
+    // embedded, plus a chat-model synopsis folded into each item's embedding.
+    knowledgeIndexEnabled: boolean("knowledge_index_enabled")
+      .notNull()
+      .default(false),
+
+    // Which item types get an item embedding, and which get transcripts and
+    // synopses. Admin-selectable: episodes are most of a typical library.
+    embeddingItemTypes: text("embedding_item_types")
+      .array()
+      .notNull()
+      .default(["Movie", "Series", "Episode"]),
+    knowledgeItemTypes: text("knowledge_item_types")
+      .array()
+      .notNull()
+      .default(["Movie", "Episode"]),
+    // Fetch each title's plot from Wikipedia (by its IMDb id, through
+    // Wikidata): a reference the synopsis is written with, and searched on
+    // its own. Off by default: it calls out to Wikimedia.
+    knowledgeWikipedia: boolean("knowledge_wikipedia").notNull().default(false),
+
     // Display timezone for this server (IANA timezone identifier)
     // All data is stored in UTC; this controls display formatting only
     timezone: text("timezone").notNull().default("Etc/UTC"),
@@ -172,7 +207,7 @@ export const servers = pgTable(
 export const libraries = pgTable(
   "libraries",
   {
-    id: text("id").primaryKey(), // External library ID from server
+    id: text("id").notNull(), // External library ID from server
     name: text("name").notNull(),
     type: text("type").notNull(), // Movie, TV, Music, etc.
     serverId: integer("server_id")
@@ -182,6 +217,7 @@ export const libraries = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
+    primaryKey({ columns: [table.serverId, table.id] }),
     index("libraries_server_id_idx").on(table.serverId),
   ]
 );
@@ -289,11 +325,39 @@ export const users = pgTable(
   },
   (table) => [
     index("users_server_id_idx").on(table.serverId),
+    unique("users_server_id_id_unique").on(table.serverId, table.id),
     index("users_search_vector_idx").using("gin", table.searchVector),
   ]
 );
 
 // Activities table - user activities and server events
+// Retired external IDs remain mapped so sync/import cannot recreate an account.
+export const userMerges = pgTable("user_merges", {
+  serverId: integer("server_id").notNull().references(() => servers.id, { onDelete: "cascade" }),
+  sourceUserId: text("source_user_id").notNull(),
+  sourceName: text("source_name").notNull(),
+  targetUserId: text("target_user_id").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.serverId, table.sourceUserId] }),
+  foreignKey({ columns: [table.serverId, table.targetUserId], foreignColumns: [users.serverId, users.id], name: "user_merges_target_fk" }).onDelete("cascade"),
+]);
+
+export const userMergeAudit = pgTable("user_merge_audit", {
+  id: serial("id").primaryKey(),
+  serverId: integer("server_id").notNull().references(() => servers.id, { onDelete: "cascade" }),
+  operationId: text("operation_id").notNull(),
+  actorId: text("actor_id").notNull(),
+  actorName: text("actor_name").notNull(),
+  requestHash: text("request_hash").notNull(),
+  sourceUserId: text("source_user_id").notNull(),
+  sourceName: text("source_name").notNull(),
+  targetUserId: text("target_user_id").notNull(),
+  targetName: text("target_name").notNull(),
+  transferred: jsonb("transferred").$type<Record<string, number>>().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [unique("user_merge_audit_operation_unique").on(table.serverId, table.operationId)]);
+
 export const activities = pgTable(
   "activities",
   {
@@ -366,13 +430,11 @@ export const items = pgTable(
   "items",
   {
     // Primary key and relationships
-    id: text("id").primaryKey(),
+    id: text("id").notNull(),
     serverId: integer("server_id")
       .notNull()
       .references(() => servers.id, { onDelete: "cascade" }),
-    libraryId: text("library_id")
-      .notNull()
-      .references(() => libraries.id, { onDelete: "cascade" }),
+    libraryId: text("library_id").notNull(),
 
     // Core metadata fields
     name: text("name").notNull(),
@@ -469,7 +531,16 @@ export const items = pgTable(
   // CREATE INDEX items_embedding_idx ON items USING hnsw ((embedding::vector(N)) vector_cosine_ops)
   // WHERE vector_dims(embedding) = N;
   (table) => [
+    foreignKey({
+      name: "items_libraries_server_fk",
+      columns: [table.serverId, table.libraryId],
+      foreignColumns: [libraries.serverId, libraries.id],
+    }).onDelete("cascade"),
+    primaryKey({ columns: [table.serverId, table.id] }),
     index("items_server_type_idx").on(table.serverId, table.type),
+    // Lookups by Jellyfin id alone (much of the knowledge index) lost the old
+    // primary key's index when it became (server_id, id).
+    index("items_id_idx").on(table.id),
     index("items_series_id_idx").on(table.seriesId),
     index("items_library_id_idx").on(table.libraryId),
     index("items_search_vector_idx").using("gin", table.searchVector),
@@ -480,10 +551,8 @@ export const items = pgTable(
 export const mediaSources = pgTable(
   "media_sources",
   {
-    id: text("id").primaryKey(), // MediaSource ID from Jellyfin
-    itemId: text("item_id")
-      .notNull()
-      .references(() => items.id, { onDelete: "cascade" }),
+    id: text("id").notNull(), // MediaSource ID from Jellyfin
+    itemId: text("item_id").notNull(),
     serverId: integer("server_id")
       .notNull()
       .references(() => servers.id, { onDelete: "cascade" }),
@@ -504,9 +573,211 @@ export const mediaSources = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
+    foreignKey({
+      name: "media_sources_items_server_fk",
+      columns: [table.serverId, table.itemId],
+      foreignColumns: [items.serverId, items.id],
+    }).onDelete("cascade"),
+    primaryKey({ columns: [table.serverId, table.id] }),
     index("media_sources_item_id_idx").on(table.itemId),
     index("media_sources_server_id_idx").on(table.serverId),
   ]
+);
+
+// Full texts behind the knowledge index, one row per item and kind:
+// "transcript" (cleaned dialogue from a library subtitle track), "scenes" and
+// "synopsis" (written by the chat model from the transcript) or "reference"
+// (the plot from Wikipedia). status "missing" records that no usable subtitle
+// (or Wikipedia plot) existed when last checked, so the item is retried later
+// instead of on every run.
+export const itemTexts = pgTable(
+  "item_texts",
+  {
+    id: serial("id").primaryKey(),
+    serverId: integer("server_id")
+      .notNull()
+      .references(() => servers.id, { onDelete: "cascade" }),
+    itemId: text("item_id").notNull(),
+    kind: text("kind").notNull(), // "transcript" | "scenes" | "synopsis" | "reference"
+    // "ready" | "missing"; scenes also "wanted" (asked to be written next) and
+    // "declined" (every model tried refused it: see knowledge_refusals)
+    status: text("status").notNull(),
+    // transcript: the subtitle stream it was read from; scenes (the plot part
+    // by part, each under its times) and synopsis: the transcript hash they
+    // were written from, and the reference's when there was one (a change
+    // means rebuild); reference: the Wikipedia revision's permanent link.
+    source: text("source"),
+    content: text("content").notNull().default(""),
+    contentHash: text("content_hash"),
+    // scenes and synopsis: the model that wrote them ("provider:model"), so
+    // a model can be asked to rewrite another's (knowledge_models.rewrite_from).
+    writtenBy: text("written_by"),
+    // transcript: when each line of `content` starts, so a matched line can
+    // be located to the moment it is said.
+    cueStartsMs: integer("cue_starts_ms").array(),
+    checkedAt: timestamp("checked_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({
+      name: "item_texts_items_server_fk",
+      columns: [table.serverId, table.itemId],
+      foreignColumns: [items.serverId, items.id],
+    }).onDelete("cascade"),
+    unique("item_texts_item_kind_unique").on(table.itemId, table.kind),
+    index("item_texts_server_kind_idx").on(table.serverId, table.kind),
+  ]
+);
+
+// The models the knowledge index writes scene notes and synopses with, tried
+// in order: a title goes to the first one not resting after a failure of its
+// own, and on to the next if it fails. None: the AI Chat model.
+export const knowledgeModels = pgTable(
+  "knowledge_models",
+  {
+    id: serial("id").primaryKey(),
+    serverId: integer("server_id")
+      .notNull()
+      .references(() => servers.id, { onDelete: "cascade" }),
+    position: integer("position").notNull(),
+    // What the settings show it as; the provider and model when unset.
+    name: text("name"),
+    // Off: kept, but not tried.
+    enabled: boolean("enabled").notNull().default(true),
+    provider: text("provider").notNull(), // as chatProvider
+    baseUrl: text("base_url"),
+    apiKey: text("api_key"),
+    model: text("model").notNull(),
+    // Writers ("provider:model") whose notes it replaces, as asked in the settings.
+    rewriteFrom: text("rewrite_from").array().notNull().default([]),
+    // Requests it is sent at once; null: its provider's default (see the job).
+    parallelRequests: integer("parallel_requests"),
+    // Out of credit, rate limited, or down: not tried again until then.
+    unavailableUntil: timestamp("unavailable_until", { withTimezone: true }),
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index("knowledge_models_server_idx").on(table.serverId, table.position)]
+);
+
+// Models that declined to write a title's notes: the provider's content filter
+// refused it (a usage-policy block, say). The title is not sent to that model
+// again; any other model may still write it.
+export const knowledgeRefusals = pgTable(
+  "knowledge_refusals",
+  {
+    serverId: integer("server_id")
+      .notNull()
+      .references(() => servers.id, { onDelete: "cascade" }),
+    itemId: text("item_id").notNull(),
+    // The model, as written_by names it ("provider:model").
+    model: text("model").notNull(),
+    // What the provider said, shortened.
+    reason: text("reason"),
+    refusedAt: timestamp("refused_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({
+      name: "knowledge_refusals_items_server_fk",
+      columns: [table.serverId, table.itemId],
+      foreignColumns: [items.serverId, items.id],
+    }).onDelete("cascade"),
+    primaryKey({ columns: [table.serverId, table.itemId, table.model] }),
+  ]
+);
+
+// Texts the knowledge index must not use for a title: a subtitle track that
+// isn't the title's (another episode's, in another language, only part of
+// the dialogue) or a Wikipedia plot of another title, kept by the hash of the
+// text as read. A track or plot with the same text is passed over and the
+// next one tried; a new download with other text is read as usual.
+export const knowledgeRejectedTexts = pgTable(
+  "knowledge_rejected_texts",
+  {
+    serverId: integer("server_id")
+      .notNull()
+      .references(() => servers.id, { onDelete: "cascade" }),
+    itemId: text("item_id").notNull(),
+    // "transcript" | "reference"
+    kind: text("kind").notNull(),
+    contentHash: text("content_hash").notNull(),
+    // Why, in a few words: "another title", "not in the library's language", "part of the dialogue".
+    reason: text("reason"),
+    rejectedAt: timestamp("rejected_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({
+      name: "knowledge_rejected_texts_items_server_fk",
+      columns: [table.serverId, table.itemId],
+      foreignColumns: [items.serverId, items.id],
+    }).onDelete("cascade"),
+    primaryKey({
+      columns: [table.serverId, table.itemId, table.kind, table.contentHash],
+    }),
+  ]
+);
+
+// Searchable windows of an item's texts, each with an embedding (HNSW index
+// created per dimension at runtime, as for items.embedding) and a generated
+// tsvector for exact-wording search. Transcript windows are up to two
+// minutes of dialogue with their timestamps; synopsis windows are the plot:
+// the whole synopsis and each of its paragraphs (no timestamps) and each
+// part of the scene notes (with its timestamps), so a single plot point can
+// match on its own.
+export const itemTextChunks = pgTable(
+  "item_text_chunks",
+  {
+    id: serial("id").primaryKey(),
+    itemTextId: integer("item_text_id")
+      .notNull()
+      .references(() => itemTexts.id, { onDelete: "cascade" }),
+    serverId: integer("server_id")
+      .notNull()
+      .references(() => servers.id, { onDelete: "cascade" }),
+    itemId: text("item_id").notNull(),
+    kind: text("kind").notNull().default("transcript"), // "transcript" | "synopsis" | "reference"
+    startMs: integer("start_ms"),
+    endMs: integer("end_ms"),
+    text: text("text").notNull(),
+    embedding: vector("embedding"),
+    searchVector: tsvector("search_vector").generatedAlwaysAs(
+      sql`to_tsvector('english', text)`
+    ),
+  },
+  (table) => [
+    foreignKey({
+      name: "item_text_chunks_items_server_fk",
+      columns: [table.serverId, table.itemId],
+      foreignColumns: [items.serverId, items.id],
+    }).onDelete("cascade"),
+    index("item_text_chunks_item_idx").on(table.itemId),
+    // Windows are replaced per text: keeps those deletes (and cascades) cheap.
+    index("item_text_chunks_text_idx").on(table.itemTextId),
+    index("item_text_chunks_server_idx").on(table.serverId),
+    index("item_text_chunks_search_idx").using("gin", table.searchVector),
+    // Plus, created by the knowledge index job (CONCURRENTLY, as they take a
+    // while on a large library): an HNSW index per dimension and kind, and a
+    // full-text (GIN) index per kind, so a word looked up in the plot windows
+    // doesn't wade through its matches in the dialogue.
+  ]
+);
+
+// The words too common to rank by, per kind of window: those in more than
+// COMMON_TERM_WINDOWS windows (as the full-text search stems them), with how
+// many; and, under the empty word, how many windows the kind has. Refreshed
+// daily by the knowledge index job (ts_stat). Keyword search ranks windows by
+// the rare words of a query, weighted by how rare (see keyword-rank.ts);
+// without this table it finds the common words by counting, only slower.
+export const itemTextCommonTerms = pgTable(
+  "item_text_common_terms",
+  {
+    kind: text("kind").notNull(),
+    term: text("term").notNull(),
+    windows: integer("windows").notNull(),
+    refreshedAt: timestamp("refreshed_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.kind, table.term] })]
 );
 
 // Sessions table - user sessions and playback information
@@ -521,9 +792,7 @@ export const sessions = pgTable(
     userId: text("user_id").references(() => users.id, {
       onDelete: "set null",
     }),
-    itemId: text("item_id").references(() => items.id, {
-      onDelete: "set null",
-    }),
+    itemId: text("item_id"),
 
     // User information
     userName: text("user_name").notNull(),
@@ -612,6 +881,12 @@ export const sessions = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
+    // Migration limits SET NULL to item_id, preserving the session server.
+    foreignKey({
+      name: "sessions_items_server_fk",
+      columns: [table.serverId, table.itemId],
+      foreignColumns: [items.serverId, items.id],
+    }).onDelete("set null"),
     // Performance indexes for common query patterns
     index("sessions_server_user_idx").on(table.serverId, table.userId),
     index("sessions_server_item_idx").on(table.serverId, table.itemId),
@@ -660,13 +935,101 @@ export const hiddenRecommendations = pgTable(
       .references(() => servers.id, { onDelete: "cascade" })
       .notNull(),
     userId: text("user_id").notNull(), // Jellyfin user ID
-    itemId: text("item_id")
-      .references(() => items.id, { onDelete: "cascade" })
-      .notNull(),
+    itemId: text("item_id").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
+    foreignKey({
+      name: "hidden_recommendations_items_server_fk",
+      columns: [table.serverId, table.itemId],
+      foreignColumns: [items.serverId, items.id],
+    }).onDelete("cascade"),
     index("hidden_recommendations_server_user_idx").on(table.serverId, table.userId),
+  ]
+);
+
+/** A short phrase from a taste profile and its embedding. */
+export interface TasteTheme {
+  text: string;
+  embedding: number[];
+}
+
+// How each user wants their recommendations steered. Themes are embedded with
+// the server's embedding model when saved, so they compare directly against
+// item embeddings.
+export const userRecommendationProfiles = pgTable(
+  "user_recommendation_profiles",
+  {
+    id: serial("id").primaryKey(),
+    serverId: integer("server_id")
+      .references(() => servers.id, { onDelete: "cascade" })
+      .notNull(),
+    userId: text("user_id").notNull(), // Jellyfin user ID
+    likesText: text("likes_text").default("").notNull(),
+    dislikesText: text("dislikes_text").default("").notNull(),
+    likeThemes: jsonb("like_themes").$type<TasteTheme[]>().default([]).notNull(),
+    dislikeThemes: jsonb("dislike_themes").$type<TasteTheme[]>().default([]).notNull(),
+    // Off: watch history no longer steers recommendations (watched titles are
+    // still never recommended). For shared viewing that isn't your taste.
+    useWatchHistory: boolean("use_watch_history").default(true).notNull(),
+    // On: skip anything started at all (any session, any episode of a series,
+    // or another copy of the same title), not only what was watched past half.
+    excludeStarted: boolean("exclude_started").default(false).notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    unique("user_recommendation_profiles_server_user_unique").on(
+      table.serverId,
+      table.userId
+    ),
+  ]
+);
+
+// Explicit per-user opinions on items, normalized to a 0-5 scale. Watch history
+// only says what someone sat through; ratings say what they actually liked, and
+// an episode rating says which content they liked, not just which series.
+// Rows are replaced per (server, user, source) on every ratings sync, so a
+// rating removed in Jellyfin disappears here too.
+export const userItemRatings = pgTable(
+  "user_item_ratings",
+  {
+    id: serial("id").primaryKey(),
+    serverId: integer("server_id")
+      .references(() => servers.id, { onDelete: "cascade" })
+      .notNull(),
+    userId: text("user_id").notNull(), // Jellyfin user ID
+    // Null when the rated title is not (or no longer) in the library; kept so
+    // it matches as soon as the item is added.
+    itemId: text("item_id"),
+    // "jellyfin-enhanced" (plugin star reviews) or "jellyfin" (likes/favorites)
+    source: text("source").notNull(),
+    // Stable key within the source: "movie:603" / "tv:1418:s4:e12" for
+    // Jellyfin Enhanced, the Jellyfin item ID for native user data.
+    sourceKey: text("source_key").notNull(),
+    rating: doublePrecision("rating").notNull(),
+    review: text("review"),
+    ratedAt: timestamp("rated_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    // Migration limits SET NULL to item_id, preserving the rating's server.
+    foreignKey({
+      name: "user_item_ratings_items_server_fk",
+      columns: [table.serverId, table.itemId],
+      foreignColumns: [items.serverId, items.id],
+    }).onDelete("set null"),
+    unique("user_item_ratings_unique").on(
+      table.serverId,
+      table.userId,
+      table.source,
+      table.sourceKey
+    ),
+    index("user_item_ratings_server_user_rating_idx").on(
+      table.serverId,
+      table.userId,
+      table.rating
+    ),
+    index("user_item_ratings_item_idx").on(table.itemId),
   ]
 );
 
@@ -863,9 +1226,7 @@ export const itemPeople = pgTable(
   "item_people",
   {
     id: serial("id").primaryKey(),
-    itemId: text("item_id")
-      .notNull()
-      .references(() => items.id, { onDelete: "cascade" }),
+    itemId: text("item_id").notNull(),
     personId: text("person_id").notNull(),
     serverId: integer("server_id")
       .notNull()
@@ -876,8 +1237,13 @@ export const itemPeople = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
+    foreignKey({
+      name: "item_people_items_server_fk",
+      columns: [table.serverId, table.itemId],
+      foreignColumns: [items.serverId, items.id],
+    }).onDelete("cascade"),
     // Unique per item+person+type (same person can be Actor AND Director in same item)
-    unique("item_people_unique").on(table.itemId, table.personId, table.type),
+    unique("item_people_unique").on(table.serverId, table.itemId, table.personId, table.type),
     index("item_people_person_idx").on(table.personId, table.serverId),
     index("item_people_item_idx").on(table.itemId),
     index("item_people_type_idx").on(table.serverId, table.type),
@@ -906,6 +1272,7 @@ export const watchlists = pgTable(
     searchVector: tsvector("search_vector"),
   },
   (table) => [
+    unique("watchlists_server_id_id_unique").on(table.serverId, table.id),
     index("watchlists_server_user_idx").on(table.serverId, table.userId),
     index("watchlists_server_public_idx").on(table.serverId, table.isPublic),
     index("watchlists_server_promoted_idx").on(table.serverId, table.isPromoted),
@@ -918,16 +1285,23 @@ export const watchlistItems = pgTable(
   "watchlist_items",
   {
     id: serial("id").primaryKey(),
-    watchlistId: integer("watchlist_id")
-      .notNull()
-      .references(() => watchlists.id, { onDelete: "cascade" }),
-    itemId: text("item_id")
-      .notNull()
-      .references(() => items.id, { onDelete: "cascade" }),
+    serverId: integer("server_id").notNull(),
+    watchlistId: integer("watchlist_id").notNull(),
+    itemId: text("item_id").notNull(),
     position: integer("position").notNull().default(0), // For custom ordering
     addedAt: timestamp("added_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [
+    foreignKey({
+      name: "watchlist_items_watchlist_server_fk",
+      columns: [table.serverId, table.watchlistId],
+      foreignColumns: [watchlists.serverId, watchlists.id],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "watchlist_items_items_server_fk",
+      columns: [table.serverId, table.itemId],
+      foreignColumns: [items.serverId, items.id],
+    }).onDelete("cascade"),
     index("watchlist_items_watchlist_idx").on(table.watchlistId),
     index("watchlist_items_item_idx").on(table.itemId),
     unique("watchlist_items_unique").on(table.watchlistId, table.itemId),
@@ -998,12 +1372,12 @@ export const itemsRelations = relations(items, ({ one, many }) => ({
     references: [servers.id],
   }),
   library: one(libraries, {
-    fields: [items.libraryId],
-    references: [libraries.id],
+    fields: [items.serverId, items.libraryId],
+    references: [libraries.serverId, libraries.id],
   }),
   parent: one(items, {
-    fields: [items.parentId],
-    references: [items.id],
+    fields: [items.serverId, items.parentId],
+    references: [items.serverId, items.id],
   }),
   sessions: many(sessions),
   hiddenRecommendations: many(hiddenRecommendations),
@@ -1021,8 +1395,8 @@ export const sessionsRelations = relations(sessions, ({ one, many }) => ({
     references: [users.id],
   }),
   item: one(items, {
-    fields: [sessions.itemId],
-    references: [items.id],
+    fields: [sessions.serverId, sessions.itemId],
+    references: [items.serverId, items.id],
   }),
 }));
 
@@ -1073,8 +1447,8 @@ export const hiddenRecommendationsRelations = relations(
       references: [servers.id],
     }),
     item: one(items, {
-      fields: [hiddenRecommendations.itemId],
-      references: [items.id],
+      fields: [hiddenRecommendations.serverId, hiddenRecommendations.itemId],
+      references: [items.serverId, items.id],
     }),
   })
 );
@@ -1089,12 +1463,12 @@ export const watchlistsRelations = relations(watchlists, ({ one, many }) => ({
 
 export const watchlistItemsRelations = relations(watchlistItems, ({ one }) => ({
   watchlist: one(watchlists, {
-    fields: [watchlistItems.watchlistId],
-    references: [watchlists.id],
+    fields: [watchlistItems.serverId, watchlistItems.watchlistId],
+    references: [watchlists.serverId, watchlists.id],
   }),
   item: one(items, {
-    fields: [watchlistItems.itemId],
-    references: [items.id],
+    fields: [watchlistItems.serverId, watchlistItems.itemId],
+    references: [items.serverId, items.id],
   }),
 }));
 
@@ -1108,8 +1482,8 @@ export const peopleRelations = relations(people, ({ one, many }) => ({
 
 export const itemPeopleRelations = relations(itemPeople, ({ one }) => ({
   item: one(items, {
-    fields: [itemPeople.itemId],
-    references: [items.id],
+    fields: [itemPeople.serverId, itemPeople.itemId],
+    references: [items.serverId, items.id],
   }),
   person: one(people, {
     fields: [itemPeople.personId, itemPeople.serverId],
@@ -1140,6 +1514,12 @@ export type NewJobResult = typeof jobResults.$inferInsert;
 export type Item = typeof items.$inferSelect;
 export type NewItem = typeof items.$inferInsert;
 
+export type ItemText = typeof itemTexts.$inferSelect;
+export type KnowledgeModel = typeof knowledgeModels.$inferSelect;
+export type KnowledgeRefusal = typeof knowledgeRefusals.$inferSelect;
+export type KnowledgeRejectedText = typeof knowledgeRejectedTexts.$inferSelect;
+export type ItemTextChunk = typeof itemTextChunks.$inferSelect;
+
 export type MediaSource = typeof mediaSources.$inferSelect;
 export type NewMediaSource = typeof mediaSources.$inferInsert;
 
@@ -1154,6 +1534,9 @@ export type NewActivityLogCursor = typeof activityLogCursors.$inferInsert;
 
 export type HiddenRecommendation = typeof hiddenRecommendations.$inferSelect;
 export type NewHiddenRecommendation = typeof hiddenRecommendations.$inferInsert;
+export type UserItemRating = typeof userItemRatings.$inferSelect;
+export type UserRecommendationProfile = typeof userRecommendationProfiles.$inferSelect;
+export type NewUserItemRating = typeof userItemRatings.$inferInsert;
 
 export type ActivityLocation = typeof activityLocations.$inferSelect;
 export type NewActivityLocation = typeof activityLocations.$inferInsert;

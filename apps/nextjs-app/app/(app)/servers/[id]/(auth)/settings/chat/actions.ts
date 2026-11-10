@@ -39,7 +39,8 @@ export async function testChatConnectionAction(
   if (!isAdmin) {
     throw new Error("Admin privileges required");
   }
-  if (config.provider === "gemini" && !config.apiKey) {
+  // Without a new key, the saved one (for the same provider and address only).
+  if (!config.apiKey) {
     const saved = await getChatConfigDb({ serverId });
     // Reuse a saved secret only for the provider and endpoint it belongs to.
     if (

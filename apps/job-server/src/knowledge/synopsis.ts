@@ -1,0 +1,414 @@
+import axios from "axios";
+import { MAX_EMBED_CHARS, splitToFit } from "./fit";
+import { withRetries } from "./retry";
+
+/**
+ * The plot, written from an item's transcript by a knowledge index model (see
+ * models.ts for which). The transcript is the
+ * evidence; a reference plot (Wikipedia's, when the server fetches them)
+ * says who people are and what happens where the dialogue does not. The
+ * whole transcript, cut into parts of a few minutes with their times, goes to
+ * the model in one request, which writes notes on each part and then the
+ * synopsis: seeing the whole story is how a model tells who is speaking.
+ * Given one part at a time, a 27B local model made three times as many
+ * errors, most of them lines put in the wrong mouth. A feature film's
+ * transcript runs to some 30k tokens, so this needs a model with a long
+ * context window; small models do not write usable notes.
+ */
+export interface ChatSettings {
+  provider: string;
+  baseUrl: string | null;
+  apiKey: string | null;
+  model: string;
+}
+
+const TIMEOUT_MS = 15 * 60_000;
+/** A part of the story: a few minutes of dialogue, a scene or two. */
+const PART_MS = 8 * 60_000;
+const PART_CHARS = 12_000;
+/** Faithful rather than creative; server defaults are often 0.8-1.0. */
+const TEMPERATURE = 0.3;
+/** Notes on every part of a long film, and the synopsis. */
+const MAX_TOKENS = 32_000;
+const MAX_CHARACTERS = 40;
+
+/** What the model is told about a title besides its dialogue. */
+export interface TitleInfo {
+  title: string;
+  overview: string | null;
+  /** Character names from the cast, so speakers can be told apart. */
+  characters: string[];
+  /** The plot as written by people who watched it (Wikipedia's). */
+  reference?: string | null;
+}
+
+/** Scene notes on one part of the story, or that part's dialogue. */
+export interface Scene {
+  startMs: number;
+  /** When the part's last line starts. */
+  endMs: number;
+  text: string;
+}
+
+/** Endpoints that rejected the sampling hints (see complete); not sent to them again. */
+const plainEndpoints = new Set<string>();
+
+/**
+ * The synopsis (or a Wikipedia plot) as search windows: the whole of it, for
+ * the story as a whole, and each paragraph on its own, so a single plot point
+ * (a twist in the last scene) is not drowned out by the rest. Each starts with
+ * the title, which a paragraph on its own rarely names, and fits the embedding
+ * model (see MAX_EMBED_CHARS): one too long to embed whole is embedded by
+ * paragraph only, and a paragraph too long in pieces.
+ */
+export function synopsisWindows(title: string, synopsis: string): string[] {
+  const whole = synopsis.trim();
+  if (!whole) return [];
+  const room = MAX_EMBED_CHARS - title.length - 2;
+  const paragraphs = whole
+    .split(/\n\s*\n/)
+    .flatMap((p) => splitToFit(p, room));
+  const windows = whole.length > room ? paragraphs : paragraphs.length > 1 ? [whole, ...paragraphs] : [whole];
+  return windows.map((w) => `${title}: ${w}`);
+}
+
+/** Each scene's notes as a search window of its own, with its times (in pieces, should one not fit). */
+export function sceneWindows(title: string, scenes: Scene[]): Scene[] {
+  const room = MAX_EMBED_CHARS - title.length - 2;
+  return scenes.flatMap((s) => splitToFit(s.text, room).map((text) => ({ ...s, text: `${title}: ${text}` })));
+}
+
+/**
+ * Character names from cast roles: "Rick Sanchez / Morty Smith (voice)" is
+ * two characters, credited notes dropped.
+ */
+export function characterNames(roles: string[]): string[] {
+  const names = roles.flatMap((role) =>
+    role
+      .split("/")
+      .map((name) => name.replace(/\([^)]*\)/g, "").replace(/\s+/g, " ").trim())
+      .filter(Boolean)
+  );
+  return [...new Set(names)].slice(0, MAX_CHARACTERS);
+}
+
+/** A transcript's lines (one per subtitle cue) in parts of a few minutes. */
+export function transcriptParts(lines: string[], startsMs: number[]): Scene[] {
+  const parts: Scene[] = [];
+  for (let i = 0; i < Math.min(lines.length, startsMs.length); i++) {
+    const part = parts.at(-1);
+    if (
+      part &&
+      startsMs[i] - part.startMs < PART_MS &&
+      part.text.length + lines[i].length < PART_CHARS
+    ) {
+      part.text += `\n${lines[i]}`;
+      part.endMs = startsMs[i];
+    } else {
+      parts.push({ startMs: startsMs[i], endMs: startsMs[i], text: lines[i] });
+    }
+  }
+  return parts;
+}
+
+const clock = (ms: number) => {
+  const s = Math.floor(ms / 1000);
+  return [Math.floor(s / 3600), Math.floor(s / 60) % 60, s % 60]
+    .map((n) => String(n).padStart(2, "0"))
+    .join(":");
+};
+
+/** Scene notes as stored: each part under its times, [hh:mm:ss-hh:mm:ss]. */
+export function formatScenes(scenes: Scene[]): string {
+  // The end rounded up, so the part's last line stays inside it.
+  return scenes
+    .map((s) => `[${clock(s.startMs)}-${clock(Math.ceil(s.endMs / 1000) * 1000)}]\n${s.text}`)
+    .join("\n\n");
+}
+
+export function parseScenes(content: string): Scene[] {
+  const ms = (h: string, m: string, s: string) => ((Number(h) * 60 + Number(m)) * 60 + Number(s)) * 1000;
+  const headers = [...content.matchAll(/^\[(\d+):(\d\d):(\d\d)-(\d+):(\d\d):(\d\d)\]$/gm)];
+  return headers.map((h, i) => ({
+    startMs: ms(h[1], h[2], h[3]),
+    endMs: ms(h[4], h[5], h[6]),
+    text: content.slice((h.index ?? 0) + h[0].length, headers[i + 1]?.index ?? content.length).trim(),
+  }));
+}
+
+function about(info: TitleInfo): (string | null)[] {
+  return [
+    `Title: ${info.title}`,
+    info.overview ? `Official overview: ${info.overview}` : null,
+    info.characters.length ? `Characters: ${info.characters.join(", ")}` : null,
+  ];
+}
+
+const WHO_DOES_WHAT = "Name who does what to whom. State any reveal, death, twist or hidden identity plainly.";
+
+/** What the notes may say: only what the transcript shows, or, with a reference plot, what either shows. */
+const ONLY_TRANSCRIPT =
+  "Only what the transcript shows: its dialogue, and any speaker names and sound descriptions the subtitles give. When it is unclear who speaks or what happens, leave it out rather than guess.";
+const WITH_REFERENCE =
+  "Use the reference plot to know who people are and what happens, including what the dialogue does not show, and the transcript for when it happens: put each event in the part where the transcript shows it, or, if it shows no sign of it, in the part where it most likely happens. Say nothing that neither the reference plot nor the transcript supports, and when it is unclear who speaks or what happens, leave it out rather than guess.";
+
+/** How the transcript is introduced; SDH subtitles name speakers and describe sounds, plain ones do not. */
+const FROM_SUBTITLES = "(from subtitles; some name the speaker or describe sounds in brackets)";
+
+const SUMMARY =
+  "for each part, at most three sentences on what matters to the story (who does what, any reveal, death or twist), and for the last part, how it ends.";
+
+/** The whole title in one request: notes on each part, then the synopsis. */
+export function wholeTitlePrompt(info: TitleInfo, parts: Scene[]): string {
+  return [
+    ...about(info),
+    ...(info.reference
+      ? ["", "Reference plot (from Wikipedia, written by people who watched it):", "<reference>", info.reference, "</reference>"]
+      : []),
+    "",
+    `Dialogue transcript ${FROM_SUBTITLES}, in ${parts.length} parts with their times:`,
+    ...parts.map(
+      (p, i) => `<part n="${i + 1}" time="${clock(p.startMs)}-${clock(p.endMs)}">\n${p.text}\n</part>`
+    ),
+    "",
+    "For each part, write what happens in it, in order, as short factual sentences, one per line, each event in the part where it happens.",
+    WHO_DOES_WHAT,
+    info.reference ? WITH_REFERENCE : ONLY_TRANSCRIPT,
+    "Use the whole transcript to work out who is speaking and who people are.",
+    `Then summarise the story from your notes: ${SUMMARY} Write it as plain prose paragraphs, without the times.`,
+    'Reply with <notes n="1">...</notes> for every part, in order, then <synopsis>...</synopsis>, nothing else.',
+  ]
+    .filter((line) => line !== null)
+    .join("\n");
+}
+
+/**
+ * Scene notes and synopsis out of a whole-title answer, on the parts' times.
+ * A part's notes run from its opening tag to the next part or the synopsis:
+ * models sometimes close them with the input's </part>, or not at all, or
+ * open a later part with <part n="2"> instead of <notes n="2">.
+ */
+export function parseWholeTitle(answer: string, parts: Scene[]): { scenes: Scene[]; synopsis: string } {
+  const text = answer.replace(/<think>[\s\S]*?<\/think>/gi, "");
+  const synopsisAt = text.search(/<synopsis>/i);
+  const body = synopsisAt >= 0 ? text.slice(0, synopsisAt) : text;
+  const opens = [...body.matchAll(/<(?:notes|part)\s+n=["']?(\d+)["']?[^>]*>/gi)];
+  const notes = new Map(
+    opens.map((m, i) => [
+      Number(m[1]),
+      body
+        .slice((m.index ?? 0) + m[0].length, opens[i + 1]?.index ?? body.length)
+        .replace(/<\/(?:notes|part)>/gi, "")
+        .trim(),
+    ])
+  );
+  const scenes = parts.flatMap((p, i) => {
+    const notesText = notes.get(i + 1);
+    return notesText ? [{ startMs: p.startMs, endMs: p.endMs, text: notesText }] : [];
+  });
+  const synopsis = /<synopsis>([\s\S]*?)(?:<\/synopsis>|$)/i.exec(text)?.[1]?.trim() ?? "";
+  return { scenes, synopsis };
+}
+
+/**
+ * The provider would not write this title: its content filter refused it (a
+ * usage-policy block, a safety stop). The title's doing, but for that model
+ * only: another model may write it, and this one is not asked again.
+ */
+export class RefusalError extends Error {
+  constructor(reason: string) {
+    super(`The model declined to write it: ${reason}`);
+    this.name = "RefusalError";
+  }
+}
+
+/**
+ * How providers say a content filter refused a request, in an error's body:
+ * a usage-policy block (Claude Code's "appears to violate our Usage Policy"),
+ * OpenAI's content_policy_violation and content_filter, Azure's "content
+ * management policy", Gemini's PROHIBITED_CONTENT.
+ */
+const REFUSED = /usage polic|content[ _-]?(?:management[ _-]?)?polic|content[ _-]?filter|prohibited[ _-]?content/i;
+
+/** Stop reasons that mean the provider's filter cut the answer off (Gemini's finishReason and blockReason). */
+const FILTER_STOPS = new Set(["SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST", "SPII", "IMAGE_SAFETY"]);
+
+/** The refusal in an error body, shortened to the words around it, or null when it says no such thing. */
+export function refusalIn(body: string): string | null {
+  const text = body.replace(/\\"/g, '"').replace(/\s+/g, " ");
+  const at = text.search(REFUSED);
+  if (at < 0) return null;
+  const start = Math.max(0, text.lastIndexOf(".", at) + 1, at - 160);
+  return text.slice(start, at + 60).replace(/^[\s"{:,]+/, "").trim();
+}
+
+/** A failed request's body when it is already read (not a stream still to read). */
+function readBody(error: unknown): string {
+  if (!axios.isAxiosError(error) || !error.response) return "";
+  const data: unknown = error.response.data;
+  if (typeof data === "string") return data;
+  if (data && typeof (data as { pipe?: unknown }).pipe === "function") return "";
+  return JSON.stringify(data ?? "");
+}
+
+/** The fields of Anthropic's and Gemini's stream events that carry text, or say why it stopped. */
+export type StreamEvent = {
+  type?: string;
+  error?: { message?: string };
+  delta?: { text?: unknown; stop_reason?: unknown };
+  candidates?: { content?: { parts?: { text?: unknown }[] }; finishReason?: unknown }[];
+  promptFeedback?: { blockReason?: unknown };
+};
+
+/** An Anthropic stream event's text. Claude's own safety stop ends the answer with stop reason "refusal". */
+export function anthropicText(event: StreamEvent): string {
+  if (event.type === "error") throw new Error(event.error?.message ?? "Stream error");
+  if (event.type === "message_delta" && event.delta?.stop_reason === "refusal") {
+    throw new RefusalError("the answer stopped with stop reason refusal");
+  }
+  return event.type === "content_block_delta" && typeof event.delta?.text === "string" ? event.delta.text : "";
+}
+
+/** A Gemini stream event's text; a blocked prompt or a safety stop is a refusal. */
+export function geminiText(event: StreamEvent): string {
+  const blocked = event.promptFeedback?.blockReason;
+  if (typeof blocked === "string" && blocked) throw new RefusalError(`the prompt was blocked (${blocked})`);
+  const stop = event.candidates?.[0]?.finishReason;
+  if (typeof stop === "string" && FILTER_STOPS.has(stop)) {
+    throw new RefusalError(`the answer stopped with finish reason ${stop}`);
+  }
+  const parts = event.candidates?.[0]?.content?.parts ?? [];
+  return parts.map((p) => (typeof p.text === "string" ? p.text : "")).join("");
+}
+
+/** An OpenAI-compatible answer's text; a refusal message or a content-filter stop is a refusal. */
+export function openAiText(data: unknown): string {
+  const choice = (data as { choices?: { message?: { content?: unknown; refusal?: unknown }; finish_reason?: unknown }[] })
+    ?.choices?.[0];
+  const refusal = choice?.message?.refusal;
+  if (typeof refusal === "string" && refusal) throw new RefusalError(refusal.slice(0, 200));
+  if (choice?.finish_reason === "content_filter") {
+    throw new RefusalError("the answer stopped with finish reason content_filter");
+  }
+  const content = choice?.message?.content;
+  return typeof content === "string" ? content : "";
+}
+
+/** The text of a server-sent event stream, each event's `data` read by `text`. */
+export async function readEvents(
+  stream: AsyncIterable<Buffer | string>,
+  text: (event: StreamEvent) => string
+): Promise<string> {
+  let buffer = "";
+  let out = "";
+  const take = (block: string) => {
+    for (const line of block.split("\n")) {
+      const data = line.startsWith("data:") ? line.slice(5).trim() : "";
+      if (data && data !== "[DONE]") out += text(JSON.parse(data));
+    }
+  };
+  for await (const chunk of stream) {
+    buffer += chunk.toString().replace(/\r\n/g, "\n");
+    for (let end = buffer.indexOf("\n\n"); end >= 0; end = buffer.indexOf("\n\n")) {
+      take(buffer.slice(0, end));
+      buffer = buffer.slice(end + 2);
+    }
+  }
+  take(buffer);
+  return out;
+}
+
+/**
+ * One completion. Sent at a low temperature, and to OpenAI-compatible
+ * templates that support it (Qwen3/DeepSeek on llama.cpp, vLLM, SGLang, LM
+ * Studio) with thinking off: thinking through a whole film costs tens of
+ * thousands of tokens, ten times the time on a local server. An endpoint that
+ * rejects these hints (current Claude models and some reasoning models take no
+ * temperature) gets a plain retry and is never sent them again.
+ */
+async function complete(chat: ChatSettings, prompt: string): Promise<string> {
+  const endpoint = `${chat.provider} ${chat.baseUrl ?? ""} ${chat.model}`;
+  const hinted = !plainEndpoints.has(endpoint);
+  try {
+    return await withRetries(() => send(chat, prompt, hinted));
+  } catch (error) {
+    // A refusal is not about the hints: sending it again would only be refused again.
+    const refusal = error instanceof RefusalError ? null : refusalIn(readBody(error));
+    if (refusal !== null) throw new RefusalError(refusal);
+    const status = axios.isAxiosError(error) ? error.response?.status : undefined;
+    if (!hinted || (status !== 400 && status !== 422)) throw error;
+    plainEndpoints.add(endpoint);
+    try {
+      return await withRetries(() => send(chat, prompt, false));
+    } catch (retryError) {
+      const retryRefusal = retryError instanceof RefusalError ? null : refusalIn(readBody(retryError));
+      throw retryRefusal === null ? retryError : new RefusalError(retryRefusal);
+    }
+  }
+}
+
+async function send(chat: ChatSettings, prompt: string, hinted: boolean): Promise<string> {
+  const base = chat.baseUrl?.replace(/\/+$/, "");
+  const temperature = hinted ? { temperature: TEMPERATURE } : {};
+  switch (chat.provider) {
+    // Hosted models stream: a whole title's notes take minutes to write, and
+    // networks drop a connection that stays silent that long.
+    case "anthropic": {
+      const res = await axios.post(
+        `${base || "https://api.anthropic.com"}/v1/messages`,
+        {
+          model: chat.model,
+          max_tokens: MAX_TOKENS,
+          ...temperature,
+          stream: true,
+          messages: [{ role: "user", content: prompt }],
+        },
+        {
+          headers: { "x-api-key": chat.apiKey ?? "", "anthropic-version": "2023-06-01" },
+          responseType: "stream",
+          timeout: TIMEOUT_MS,
+        }
+      );
+      return readEvents(res.data, anthropicText);
+    }
+    case "gemini": {
+      const name = chat.model.startsWith("models/") ? chat.model : `models/${chat.model}`;
+      const res = await axios.post(
+        `${base || "https://generativelanguage.googleapis.com/v1beta"}/${name}:streamGenerateContent?alt=sse`,
+        {
+          contents: [{ role: "user", parts: [{ text: prompt }] }],
+          generationConfig: { ...temperature, maxOutputTokens: MAX_TOKENS },
+        },
+        { headers: { "x-goog-api-key": chat.apiKey ?? "" }, responseType: "stream", timeout: TIMEOUT_MS }
+      );
+      return readEvents(res.data, geminiText);
+    }
+    default: {
+      // "openai-compatible" and "ollama" (its OpenAI-compatible /v1 API).
+      const url = `${base || (chat.provider === "ollama" ? "http://localhost:11434/v1" : "https://api.openai.com/v1")}/chat/completions`;
+      const res = await axios.post(
+        url,
+        {
+          model: chat.model,
+          messages: [{ role: "user", content: prompt }],
+          ...(hinted ? { ...temperature, chat_template_kwargs: { enable_thinking: false } } : {}),
+        },
+        { headers: chat.apiKey ? { Authorization: `Bearer ${chat.apiKey}` } : {}, timeout: TIMEOUT_MS }
+      );
+      return openAiText(res.data);
+    }
+  }
+}
+
+/** Scene notes and the synopsis for a transcript's parts, in one request. */
+export async function writePlot(
+  chat: ChatSettings,
+  info: TitleInfo,
+  parts: Scene[]
+): Promise<{ scenes: Scene[]; synopsis: string }> {
+  const answer = await complete(chat, wholeTitlePrompt(info, parts));
+  const plot = parseWholeTitle(answer, parts);
+  if (plot.scenes.length === 0) throw new Error(`Chat model returned no scene notes: ${answer.slice(0, 300)}`);
+  if (plot.synopsis.split(/\s+/).length < 20) throw new Error("Chat model returned an empty or too-short synopsis");
+  return plot;
+}

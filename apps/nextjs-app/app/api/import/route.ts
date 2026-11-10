@@ -1,4 +1,9 @@
-import { db } from "@streamystats/database";
+import {
+  db,
+  getRetiredUserIds,
+  restoreUserMerges,
+  UserMergeError,
+} from "@streamystats/database";
 import {
   hiddenRecommendations,
   items,
@@ -8,10 +13,14 @@ import {
   users,
 } from "@streamystats/database/schema";
 import { eq } from "drizzle-orm";
+import { revalidatePath, revalidateTag } from "next/cache";
 import { type NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { requireAdmin } from "@/lib/api-auth";
+import { replaceKnowledgeModels } from "@/lib/db/knowledge-models";
 import { getServerWithSecrets } from "@/lib/db/server";
 import { jellyfinHeaders } from "@/lib/jellyfin-auth";
+import { getInternalUrl } from "@/lib/server-url";
 
 type JellyfinSystemInfo = { Id?: string };
 
@@ -122,6 +131,7 @@ interface ImportHiddenRecommendation {
 interface ImportData {
   exportInfo: ExportInfo;
   sessions: ImportSession[];
+  userMerges?: unknown;
   hiddenRecommendations?: ImportHiddenRecommendation[];
   server: {
     id: number;
@@ -142,6 +152,16 @@ interface ImportData {
     chatProvider?: string | null;
     chatBaseUrl?: string | null;
     chatModel?: string | null;
+    chatName?: string | null;
+    embeddingName?: string | null;
+    knowledgeModels?: Parameters<typeof replaceKnowledgeModels>[1];
+    /** Older backups: the one knowledge index model. */
+    synopsisProvider?: string | null;
+    synopsisBaseUrl?: string | null;
+    synopsisModel?: string | null;
+    knowledgeIndexEnabled?: boolean;
+    embeddingItemTypes?: string[] | null;
+    knowledgeItemTypes?: string[] | null;
     disabledHolidays?: string[] | null;
     excludedUserIds?: string[] | null;
     excludedLibraryIds?: string[] | null;
@@ -169,7 +189,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Require admin for data import on this server
-    const { error } = await requireAdmin(serverIdNum);
+    const { error, session } = await requireAdmin(serverIdNum);
     if (error) return error;
 
     // Verify the target server exists
@@ -242,7 +262,7 @@ export async function POST(req: NextRequest) {
     const forceDifferentServer = formData.get("force") === "true";
     const sourceJellyfinSystemId = importData.server?.jellyfinSystemId ?? null;
     const targetJellyfinSystemId = await tryFetchJellyfinSystemId({
-      url: targetServer.url,
+      url: getInternalUrl(targetServer),
       apiKey: targetServer.apiKey,
     });
 
@@ -265,6 +285,48 @@ export async function POST(req: NextRequest) {
       warnings.push(
         "Could not verify Jellyfin server identity (missing System/Info Id). Import proceeded without identity validation.",
       );
+    }
+
+    if (importData.userMerges !== undefined) {
+      const parsed = z
+        .object({
+          retiredUsers: z.array(
+            z.object({
+              sourceUserId: z.string().min(1),
+              sourceName: z.string().min(1),
+              targetUserId: z.string().min(1),
+            }),
+          ),
+          accounts: z.array(
+            z.object({ id: z.string().min(1), name: z.string().min(1) }),
+          ),
+        })
+        .safeParse(importData.userMerges);
+      if (!parsed.success)
+        return NextResponse.json(
+          { error: "Invalid permanent merge metadata." },
+          { status: 400 },
+        );
+      if (
+        parsed.data.retiredUsers.length &&
+        (!sourceJellyfinSystemId ||
+          !targetJellyfinSystemId ||
+          sourceJellyfinSystemId !== targetJellyfinSystemId)
+      )
+        return NextResponse.json(
+          {
+            error:
+              "Restoring permanent merges requires a verified matching Jellyfin server.",
+          },
+          { status: 409 },
+        );
+      await restoreUserMerges({
+        serverId: serverIdNum,
+        backup: parsed.data,
+        actor: session,
+      });
+      revalidateTag("user-analytics", { expire: 0 });
+      revalidatePath(`/servers/${serverIdNum}`, "layout");
     }
 
     // Restore server settings from the backup (never overwrite connection secrets)
@@ -303,6 +365,37 @@ export async function POST(req: NextRequest) {
       if (importData.server.chatModel !== undefined) {
         update.chatModel = importData.server.chatModel ?? null;
       }
+      if (importData.server.chatName !== undefined) {
+        update.chatName = importData.server.chatName ?? null;
+      }
+      if (importData.server.embeddingName !== undefined) {
+        update.embeddingName = importData.server.embeddingName ?? null;
+      }
+      const { synopsisProvider, synopsisBaseUrl, synopsisModel } =
+        importData.server;
+      const knowledgeModels = Array.isArray(importData.server.knowledgeModels)
+        ? importData.server.knowledgeModels
+        : synopsisProvider && synopsisModel
+          ? [
+              {
+                provider: synopsisProvider,
+                baseUrl: synopsisBaseUrl ?? null,
+                model: synopsisModel,
+              },
+            ]
+          : null;
+      if (knowledgeModels) {
+        await replaceKnowledgeModels(serverIdNum, knowledgeModels);
+      }
+      if (typeof importData.server.knowledgeIndexEnabled === "boolean") {
+        update.knowledgeIndexEnabled = importData.server.knowledgeIndexEnabled;
+      }
+      if (Array.isArray(importData.server.embeddingItemTypes)) {
+        update.embeddingItemTypes = importData.server.embeddingItemTypes;
+      }
+      if (Array.isArray(importData.server.knowledgeItemTypes)) {
+        update.knowledgeItemTypes = importData.server.knowledgeItemTypes;
+      }
 
       if (Array.isArray(importData.server.disabledHolidays)) {
         update.disabledHolidays = importData.server.disabledHolidays;
@@ -328,6 +421,8 @@ export async function POST(req: NextRequest) {
       columns: { id: true },
     });
     const existingUserIds = new Set(existingUsers.map((u) => u.id));
+    for (const userId of await getRetiredUserIds({ serverId: serverIdNum }))
+      existingUserIds.add(userId);
 
     const existingItems = await db.query.items.findMany({
       where: eq(items.serverId, serverIdNum),
@@ -561,6 +656,11 @@ export async function POST(req: NextRequest) {
       export_timestamp: importData.exportInfo.timestamp,
     });
   } catch (error) {
+    if (error instanceof UserMergeError)
+      return NextResponse.json(
+        { error: error.message },
+        { status: error.status },
+      );
     console.error("Import error:", error);
     return NextResponse.json(
       {

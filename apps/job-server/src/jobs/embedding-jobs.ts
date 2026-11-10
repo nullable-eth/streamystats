@@ -1,14 +1,17 @@
 import {
   db,
+  embeddableItemCondition,
   type Item,
   itemPeople,
   items,
+  itemTexts,
   people,
   servers,
 } from "@streamystats/database";
 import axios from "axios";
 import { and, eq, sql } from "drizzle-orm";
 import OpenAI from "openai";
+import { MAX_EMBED_CHARS } from "../knowledge/fit";
 import type { PgBossJob } from "../types/job-status";
 import { sleep } from "../utils/sleep";
 import { TIMEOUT_CONFIG } from "./config";
@@ -33,7 +36,6 @@ interface GenerateItemEmbeddingsJobData {
 }
 
 // Default config values
-const DEFAULT_MAX_TEXT_LENGTH = 8000;
 const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_RATE_LIMIT_DELAY = 500;
 const DEFAULT_EMBEDDING_DIMENSIONS = 1536;
@@ -275,10 +277,58 @@ async function ensureEmbeddingIndex(dimensions: number): Promise<void> {
 }
 
 /**
+ * Episodes are embedded for what happens in them. The series name, studio and
+ * the series' regular cast are identical across every episode and would pull
+ * each one toward its own franchise; the overview, plus the series' genres for
+ * context, is what distinguishes one episode from the next.
+ */
+async function prepareEpisodeTextForEmbedding(item: Item): Promise<string> {
+  const parts: string[] = [`Title: ${item.name}`, "Type: Episode"];
+  if (item.overview) parts.push(`Overview: ${item.overview}`);
+  const plot = await getPlot(item.id);
+  if (plot) parts.push(`Plot: ${plot}`);
+
+  let genres = item.genres ?? [];
+  if (genres.length === 0 && item.seriesId) {
+    const series = await db
+      .select({ genres: items.genres })
+      .from(items)
+      .where(and(eq(items.serverId, item.serverId), eq(items.id, item.seriesId)))
+      .limit(1);
+    genres = series[0]?.genres ?? [];
+  }
+  if (genres.length) parts.push(`Genres: ${genres.join(", ")}`);
+  if (item.tags?.length) parts.push(`Tags: ${item.tags.join(", ")}`);
+
+  return parts.join("\n").substring(0, MAX_EMBED_CHARS);
+}
+
+/**
+ * The knowledge index's synopsis for an item, when one has been written. It
+ * gives the item vector the whole story rather than a two-line blurb.
+ */
+async function getPlot(itemId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ content: itemTexts.content })
+    .from(itemTexts)
+    .where(
+      and(
+        eq(itemTexts.itemId, itemId),
+        eq(itemTexts.kind, "synopsis"),
+        eq(itemTexts.status, "ready")
+      )
+    )
+    .limit(1);
+  return row?.content || null;
+}
+
+/**
  * Prepare item text for embedding.
  * Fetches people data from the normalized people/item_people tables.
  */
 async function prepareTextForEmbedding(item: Item, serverId: number): Promise<string> {
+  if (item.type === "Episode") return prepareEpisodeTextForEmbedding(item);
+
   const parts: string[] = [];
 
   parts.push(`Title: ${item.name}`);
@@ -288,6 +338,8 @@ async function prepareTextForEmbedding(item: Item, serverId: number): Promise<st
   if (item.seriesName) parts.push(`Series: ${item.seriesName}`);
   if (item.type) parts.push(`Type: ${item.type}`);
   if (item.overview) parts.push(`Overview: ${item.overview}`);
+  const plot = await getPlot(item.id);
+  if (plot) parts.push(`Plot: ${plot}`);
   if (item.genres?.length) parts.push(`Genres: ${item.genres.join(", ")}`);
   if (item.tags?.length) parts.push(`Tags: ${item.tags.join(", ")}`);
   if (item.productionYear) parts.push(`Year: ${item.productionYear}`);
@@ -327,7 +379,7 @@ async function prepareTextForEmbedding(item: Item, serverId: number): Promise<st
           eq(itemPeople.serverId, people.serverId)
         )
       )
-      .where(eq(itemPeople.itemId, item.id))
+      .where(and(eq(itemPeople.itemId, item.id), eq(itemPeople.serverId, item.serverId)))
       .orderBy(itemPeople.sortOrder);
 
     if (itemPeopleData.length > 0) {
@@ -349,7 +401,7 @@ async function prepareTextForEmbedding(item: Item, serverId: number): Promise<st
     // Ignore errors fetching people
   }
 
-  return parts.join("\n").substring(0, DEFAULT_MAX_TEXT_LENGTH);
+  return parts.join("\n").substring(0, MAX_EMBED_CHARS);
 }
 
 /**
@@ -384,7 +436,7 @@ async function processOpenAIBatch(
     await db
       .update(items)
       .set({ processed: true })
-      .where(eq(items.id, item.id));
+      .where(and(eq(items.id, item.id), eq(items.serverId, item.serverId)));
     skipped++;
   }
 
@@ -441,7 +493,7 @@ async function processOpenAIBatch(
       await db
         .update(items)
         .set({ embedding: sql`${vectorLiteral}::vector`, processed: true })
-        .where(eq(items.id, item.id));
+        .where(and(eq(items.id, item.id), eq(items.serverId, item.serverId)));
       processed++;
     } catch (err) {
       if (!firstDbWriteError) {
@@ -475,7 +527,7 @@ async function processOllamaItem(
     await db
       .update(items)
       .set({ processed: true })
-      .where(eq(items.id, item.id));
+      .where(and(eq(items.id, item.id), eq(items.serverId, item.serverId)));
     return { processed: 0, skipped: 1, errors: 0 };
   }
 
@@ -508,7 +560,7 @@ async function processOllamaItem(
   await db
     .update(items)
     .set({ embedding: sql`${toPgVectorLiteral(embedding)}::vector`, processed: true })
-    .where(eq(items.id, item.id));
+    .where(and(eq(items.id, item.id), eq(items.serverId, item.serverId)));
   return { processed: 1, skipped: 0, errors: 0 };
 }
 
@@ -543,7 +595,7 @@ async function processVoyageBatch(
     await db
       .update(items)
       .set({ processed: true })
-      .where(eq(items.id, item.id));
+      .where(and(eq(items.id, item.id), eq(items.serverId, item.serverId)));
     skipped++;
   }
 
@@ -603,7 +655,7 @@ async function processVoyageBatch(
       await db
         .update(items)
         .set({ embedding: sql`${vectorLiteral}::vector`, processed: true })
-        .where(eq(items.id, item.id));
+        .where(and(eq(items.id, item.id), eq(items.serverId, item.serverId)));
       processed++;
     } catch (err) {
       if (!firstDbWriteError) {
@@ -653,7 +705,7 @@ async function processGeminiBatch(
     await db
       .update(items)
       .set({ processed: true })
-      .where(eq(items.id, item.id));
+      .where(and(eq(items.id, item.id), eq(items.serverId, item.serverId)));
     skipped++;
   }
 
@@ -714,7 +766,7 @@ async function processGeminiBatch(
       await db
         .update(items)
         .set({ embedding: sql`${vectorLiteral}::vector`, processed: true })
-        .where(eq(items.id, item.id));
+        .where(and(eq(items.id, item.id), eq(items.serverId, item.serverId)));
       processed++;
     } catch (err) {
       if (!firstDbWriteError) {
@@ -901,7 +953,10 @@ export async function generateItemEmbeddingsJob(
 
       // Check if we should continue (manual start or auto-embeddings enabled)
       const serverCheck = await db
-        .select({ autoGenerateEmbeddings: servers.autoGenerateEmbeddings })
+        .select({
+          autoGenerateEmbeddings: servers.autoGenerateEmbeddings,
+          embeddingItemTypes: servers.embeddingItemTypes,
+        })
         .from(servers)
         .where(eq(servers.id, serverId))
         .limit(1);
@@ -922,7 +977,7 @@ export async function generateItemEmbeddingsJob(
           and(
             eq(items.serverId, serverId),
             eq(items.processed, false),
-            sql`${items.type} IN ('Movie', 'Series')`
+            embeddableItemCondition(serverCheck[0]?.embeddingItemTypes)
           )
         )
         .limit(ITEMS_PER_BATCH);

@@ -1,0 +1,1 @@
+ALTER TABLE "knowledge_models" ADD COLUMN "rewrite_from" text[] DEFAULT '{}' NOT NULL;

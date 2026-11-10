@@ -6,6 +6,7 @@ import {
   getItemWriters,
 } from "@/lib/db/actor-types";
 import { getItemDetails, getSeasonsAndEpisodes } from "@/lib/db/items";
+import { getSynopsisQueue } from "@/lib/db/knowledge-index";
 import { getServer } from "@/lib/db/server";
 import type { SeriesRecommendationItem } from "@/lib/db/similar-series-statistics";
 import { getSimilarSeriesForItem } from "@/lib/db/similar-series-statistics";
@@ -22,6 +23,7 @@ import { ItemHeader } from "./ItemHeader";
 import { ItemMetadata } from "./ItemMetadata";
 import { SeasonsAndEpisodes } from "./SeasonsAndEpisodes";
 import { SimilarItemsList } from "./SimilarItemsList";
+import { SynopsisQueue } from "./SynopsisQueue";
 
 async function getItemPlayedStatus(
   serverUrl: string,
@@ -69,6 +71,7 @@ export default async function ItemDetailsPage({
     redirect("/login");
   }
   const itemDetails = await getItemDetails({
+    serverId: server.id,
     itemId,
     userId: isAdmin ? undefined : me.id,
     viewerUserId,
@@ -95,7 +98,7 @@ export default async function ItemDetailsPage({
   // Get seasons and episodes for series
   const seasons =
     itemDetails.item.type === "Series"
-      ? await getSeasonsAndEpisodes({ seriesId: itemId })
+      ? await getSeasonsAndEpisodes({ serverId: server.id, seriesId: itemId })
       : [];
 
   // Get cast and crew for movies and series
@@ -107,6 +110,13 @@ export default async function ItemDetailsPage({
           getItemWriters(itemId, server.id),
         ])
       : [[], [], []];
+
+  // Admins see where the synopsis stands and can move it up the queue.
+  const synopsisQueue =
+    isAdmin &&
+    ["Movie", "Episode", "Series"].includes(itemDetails.item.type ?? "")
+      ? await getSynopsisQueue(server.id, itemId)
+      : null;
 
   return (
     <Container className="flex flex-col">
@@ -126,6 +136,14 @@ export default async function ItemDetailsPage({
           serverId={id}
           itemId={itemId}
         />
+        {synopsisQueue && (
+          <SynopsisQueue
+            serverId={server.id}
+            itemId={itemId}
+            series={itemDetails.item.type === "Series"}
+            queue={synopsisQueue}
+          />
+        )}
         {(itemDetails.item.type === "Movie" ||
           itemDetails.item.type === "Series") && (
           <CastSection

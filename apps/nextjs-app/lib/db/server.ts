@@ -1,6 +1,13 @@
 import "server-only";
 
-import { db, items, jobResults, servers } from "@streamystats/database";
+import {
+  db,
+  EMBEDDABLE_ITEM_TYPES,
+  embeddableItemCondition,
+  items,
+  jobResults,
+  servers,
+} from "@streamystats/database";
 import type { EmbeddingJobResult, Server } from "@streamystats/database/schema";
 import { generateText } from "ai";
 import { and, count, desc, eq, sql } from "drizzle-orm";
@@ -11,10 +18,11 @@ import type { ServerPublic } from "@/lib/types";
 
 type ServerPublicSelectRow = Omit<
   ServerPublic,
-  "hasChatApiKey" | "hasEmbeddingApiKey"
+  "hasChatApiKey" | "hasEmbeddingApiKey" | "hasRerankerApiKey"
 > & {
   embeddingApiKey: string | null;
   chatApiKey: string | null;
+  rerankerApiKey: string | null;
 };
 
 const SERVER_PUBLIC_SELECT = {
@@ -38,6 +46,11 @@ const SERVER_PUBLIC_SELECT = {
   chatProvider: servers.chatProvider,
   chatBaseUrl: servers.chatBaseUrl,
   chatModel: servers.chatModel,
+  chatName: servers.chatName,
+  embeddingName: servers.embeddingName,
+  rerankerBaseUrl: servers.rerankerBaseUrl,
+  rerankerModel: servers.rerankerModel,
+  rerankerName: servers.rerankerName,
   syncStatus: servers.syncStatus,
   syncProgress: servers.syncProgress,
   syncError: servers.syncError,
@@ -53,14 +66,19 @@ const SERVER_PUBLIC_SELECT = {
   // Select secrets only to compute boolean flags; never return them to callers
   embeddingApiKey: servers.embeddingApiKey,
   chatApiKey: servers.chatApiKey,
+  rerankerApiKey: servers.rerankerApiKey,
 } satisfies Record<string, unknown>;
 
 function toServerPublic(row: ServerPublicSelectRow): ServerPublic {
-  const { embeddingApiKey, chatApiKey, ...rest } = row;
+  const { embeddingApiKey, chatApiKey, rerankerApiKey, ...rest } = row;
   return {
-    ...(rest as Omit<ServerPublic, "hasChatApiKey" | "hasEmbeddingApiKey">),
+    ...(rest as Omit<
+      ServerPublic,
+      "hasChatApiKey" | "hasEmbeddingApiKey" | "hasRerankerApiKey"
+    >),
     hasEmbeddingApiKey: Boolean(embeddingApiKey),
     hasChatApiKey: Boolean(chatApiKey),
+    hasRerankerApiKey: Boolean(rerankerApiKey),
   };
 }
 
@@ -181,6 +199,8 @@ export interface EmbeddingConfig {
   apiKey?: string;
   model: string;
   dimensions?: number;
+  /** What the settings show it as; left as is when undefined. */
+  name?: string | null;
 }
 
 export const saveEmbeddingConfig = async ({
@@ -201,6 +221,9 @@ export const saveEmbeddingConfig = async ({
       embeddingBaseUrl: normalizedBaseUrl,
       embeddingModel: config.model,
       embeddingDimensions: config.dimensions || 1536,
+      ...(config.name !== undefined
+        ? { embeddingName: config.name?.trim() || null }
+        : {}),
     };
 
     // Only update API key if a non-empty value is provided
@@ -302,10 +325,23 @@ export const clearEmbeddings = async ({ serverId }: { serverId: number }) => {
   }
 };
 
-export interface EmbeddingProgress {
+export interface EmbeddingTypeProgress {
+  type: (typeof EMBEDDABLE_ITEM_TYPES)[number];
+  enabled: boolean;
   total: number;
-  processed: number;
+  /** Items that have an embedding (refreshing ones included). */
+  embedded: number;
+  /** Embedded, but queued to be re-embedded (e.g. a new synopsis). */
+  refreshing: number;
+}
+
+export interface EmbeddingProgress {
+  /** Totals over the enabled types only. */
+  total: number;
+  embedded: number;
+  refreshing: number;
   percentage: number;
+  byType: EmbeddingTypeProgress[];
   status: string;
   existingDimension: number | null;
 }
@@ -348,32 +384,41 @@ export const getEmbeddingProgress = async ({
   serverId: number;
 }): Promise<EmbeddingProgress> => {
   try {
-    // Get total count of movies and series for this server
-    const totalResult = await db
-      .select({ count: count() })
+    // Per type, so the counts stay put while synopses re-queue items: an
+    // item keeps counting as embedded while it waits to be refreshed.
+    const [serverRow] = await db
+      .select({ types: servers.embeddingItemTypes })
+      .from(servers)
+      .where(eq(servers.id, serverId))
+      .limit(1);
+    const enabledTypes: readonly string[] =
+      serverRow?.types ?? EMBEDDABLE_ITEM_TYPES;
+    const rows = await db
+      .select({
+        type: items.type,
+        total: count(),
+        embedded: count(items.embedding),
+        refreshing: sql<number>`count(*) filter (where ${items.embedding} is not null and ${items.processed} = false)::int`,
+      })
       .from(items)
-      .where(
-        and(
-          eq(items.serverId, serverId),
-          sql`${items.type} IN ('Movie', 'Series')`,
-        ),
-      );
+      .where(and(eq(items.serverId, serverId), embeddableItemCondition()))
+      .groupBy(items.type);
 
-    const total = totalResult[0]?.count || 0;
-
-    // Get count of processed movies and series
-    const processedResult = await db
-      .select({ count: count() })
-      .from(items)
-      .where(
-        and(
-          eq(items.serverId, serverId),
-          eq(items.processed, true),
-          sql`${items.type} IN ('Movie', 'Series')`,
-        ),
-      );
-
-    const processed = processedResult[0]?.count || 0;
+    const byType = EMBEDDABLE_ITEM_TYPES.map((type) => {
+      const row = rows.find((r) => r.type === type);
+      return {
+        type,
+        enabled: enabledTypes.includes(type),
+        total: row?.total ?? 0,
+        embedded: row?.embedded ?? 0,
+        refreshing: row?.refreshing ?? 0,
+      };
+    });
+    const enabled = byType.filter((t) => t.enabled);
+    const total = enabled.reduce((n, t) => n + t.total, 0);
+    const embedded = enabled.reduce((n, t) => n + t.embedded, 0);
+    const refreshing = enabled.reduce((n, t) => n + t.refreshing, 0);
+    const processed = embedded - refreshing;
 
     // Check if there's an active embedding job
     const recentJob = await db
@@ -434,15 +479,17 @@ export const getEmbeddingProgress = async ({
       }
     }
 
-    const percentage = total > 0 ? (processed / total) * 100 : 0;
+    const percentage = total > 0 ? (embedded / total) * 100 : 0;
 
     // Get existing embedding dimension
     const existingDimension = await getExistingEmbeddingDimension({ serverId });
 
     return {
       total,
-      processed,
+      embedded,
+      refreshing,
       percentage,
+      byType,
       status,
       existingDimension,
     };
@@ -613,6 +660,21 @@ export const stopEmbedding = async ({ serverId }: { serverId: number }) => {
         : "Failed to stop embedding process",
     );
   }
+};
+
+/** Which item types get an item embedding (subset of EMBEDDABLE_ITEM_TYPES). */
+export const setEmbeddingItemTypes = async ({
+  serverId,
+  types,
+}: {
+  serverId: number;
+  types: string[];
+}) => {
+  const allowed: readonly string[] = EMBEDDABLE_ITEM_TYPES;
+  await db
+    .update(servers)
+    .set({ embeddingItemTypes: types.filter((t) => allowed.includes(t)) })
+    .where(eq(servers.id, serverId));
 };
 
 export const toggleAutoEmbeddings = async ({
@@ -866,6 +928,8 @@ export interface ChatAIConfig {
   baseUrl: string;
   apiKey?: string;
   model: string;
+  /** What the settings show it as; left as is when undefined. */
+  name?: string | null;
 }
 
 export const saveChatConfig = async ({
@@ -885,6 +949,9 @@ export const saveChatConfig = async ({
       chatProvider: config.provider,
       chatBaseUrl: normalizedBaseUrl,
       chatModel: config.model,
+      ...(config.name !== undefined
+        ? { chatName: config.name?.trim() || null }
+        : {}),
     };
 
     // Only update API key if a non-empty value is provided
@@ -931,6 +998,7 @@ export const clearChatConfig = async ({ serverId }: { serverId: number }) => {
         chatBaseUrl: null,
         chatApiKey: null,
         chatModel: null,
+        chatName: null,
       })
       .where(eq(servers.id, serverId));
   } catch (error) {
@@ -1029,7 +1097,10 @@ export const testChatConnection = async ({
     });
 
     if (!response.ok) {
-      return { success: false, message: "Failed to connect to API" };
+      return {
+        success: false,
+        message: `Failed to connect to API: ${response.status} ${(await response.text()).slice(0, 200)}`,
+      };
     }
     return { success: true, message: "Connection successful" };
   } catch (error) {
@@ -1038,4 +1109,74 @@ export const testChatConnection = async ({
       message: error instanceof Error ? error.message : "Connection failed",
     };
   }
+};
+
+/** Where the reranker is and which model, as saved; the key only on the server. */
+export interface RerankerConfig {
+  baseUrl: string;
+  apiKey?: string;
+  model: string;
+  /** What the settings show it as; left as is when undefined. */
+  name?: string | null;
+}
+
+/** Save the reranker; an empty key keeps the saved one. */
+export const saveRerankerConfig = async ({
+  serverId,
+  config,
+}: {
+  serverId: number;
+  config: RerankerConfig;
+}) => {
+  const updateData: Partial<typeof servers.$inferInsert> = {
+    rerankerBaseUrl: config.baseUrl.replace(/\/+$/, ""),
+    rerankerModel: config.model,
+    ...(config.name !== undefined
+      ? { rerankerName: config.name?.trim() || null }
+      : {}),
+  };
+  if (config.apiKey && config.apiKey.trim().length > 0) {
+    updateData.rerankerApiKey = config.apiKey;
+  }
+  await db.update(servers).set(updateData).where(eq(servers.id, serverId));
+};
+
+/** No reranker: plot search keeps its own order. */
+export const clearRerankerConfig = async ({
+  serverId,
+}: {
+  serverId: number;
+}) => {
+  await db
+    .update(servers)
+    .set({
+      rerankerBaseUrl: null,
+      rerankerApiKey: null,
+      rerankerModel: null,
+      rerankerName: null,
+    })
+    .where(eq(servers.id, serverId));
+};
+
+/** The reranker with its key, for calling it; null when none is set. */
+export const getRerankerConfig = async ({
+  serverId,
+}: {
+  serverId: number;
+}): Promise<{
+  baseUrl: string;
+  apiKey: string | null;
+  model: string;
+} | null> => {
+  const [row] = await db
+    .select({
+      baseUrl: servers.rerankerBaseUrl,
+      apiKey: servers.rerankerApiKey,
+      model: servers.rerankerModel,
+    })
+    .from(servers)
+    .where(eq(servers.id, serverId))
+    .limit(1);
+  if (!row?.baseUrl || !row.model) return null;
+  return { baseUrl: row.baseUrl, apiKey: row.apiKey, model: row.model };
 };

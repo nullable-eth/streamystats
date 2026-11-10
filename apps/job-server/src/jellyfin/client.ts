@@ -3,6 +3,16 @@ import Bottleneck from "bottleneck";
 import pRetry from "p-retry";
 import { Server } from "@streamystats/database";
 import { JellyfinSession } from "./types";
+import {
+  isRecord,
+  matchesOpinionFilter,
+  OPINION_FILTERS,
+  type OpinionFilter,
+  parseJellyfinEnhancedReviewPage,
+  parseOpinionUserData,
+  type JellyfinEnhancedReview,
+  type JellyfinOpinionItem,
+} from "./ratings-parse";
 import { getInternalUrl } from "../utils/server-url";
 import { STREAMYSTATS_VERSION } from "../utils/version";
 
@@ -351,6 +361,7 @@ export class JellyfinClient {
       timeoutMs?: number;
       signal?: AbortSignal;
       retries?: number;
+      responseType?: "json" | "text";
     }
   ): Promise<T> {
     const timeoutMs = options?.timeoutMs ?? this.config.timeout;
@@ -365,6 +376,7 @@ export class JellyfinClient {
           data: options?.data,
           timeout: timeoutMs,
           signal: options?.signal,
+          responseType: options?.responseType,
         })
       );
       return response.data;
@@ -665,6 +677,162 @@ export class JellyfinClient {
     }
 
     return allItems;
+  }
+
+  /**
+   * Every movie, series and episode a user favorited, liked or disliked.
+   *
+   * Each filter is queried on its own and its results are checked, because
+   * Jellyfin versions disagree on what the filters mean: from 12.0,
+   * `IsFavoriteOrLikes` returns favorites only and `Dislikes` returns every
+   * item that is not liked. A filter whose results include items that do not
+   * match it contributes nothing and is reported in `unsupportedFilters`.
+   * Its first page is kept small, so an unsupported filter costs one short
+   * request instead of a walk through the whole library.
+   */
+  async getUserOpinionItems(
+    userId: string,
+    pageSize: number = 1000,
+    probeSize: number = 50
+  ): Promise<{ items: JellyfinOpinionItem[]; unsupportedFilters: OpinionFilter[] }> {
+    const byId = new Map<string, JellyfinOpinionItem>();
+    const unsupportedFilters: OpinionFilter[] = [];
+    for (const filter of OPINION_FILTERS) {
+      const matched: JellyfinOpinionItem[] = [];
+      let honored = true;
+      let startIndex = 0;
+      while (true) {
+        const limit = startIndex === 0 ? Math.min(probeSize, pageSize) : pageSize;
+        const response = await this.request<ItemsResponse>("get", "/Items", {
+          params: {
+            UserId: userId,
+            Recursive: true,
+            Filters: filter,
+            Fields: "UserData",
+            IncludeItemTypes: "Movie,Series,Episode",
+            EnableUserData: true,
+            StartIndex: startIndex,
+            Limit: limit,
+            IsPlaceHolder: false,
+          },
+        });
+        const page = response.Items || [];
+        for (const item of page) {
+          const userData = parseOpinionUserData(item.UserData);
+          if (!userData || !matchesOpinionFilter(filter, userData)) {
+            honored = false;
+            break;
+          }
+          matched.push({ Id: item.Id, UserData: userData });
+        }
+        startIndex += page.length;
+        if (!honored || page.length === 0) break;
+        if (startIndex >= response.TotalRecordCount) break;
+      }
+      if (!honored) {
+        unsupportedFilters.push(filter);
+        continue;
+      }
+      for (const item of matched) byId.set(item.Id, item);
+    }
+    return { items: [...byId.values()], unsupportedFilters };
+  }
+
+  /**
+   * All star reviews from the Jellyfin Enhanced plugin, or null when the
+   * plugin is not installed (or its reviews API is unavailable to this key).
+   */
+  async getJellyfinEnhancedReviews(
+    pageSize: number = 1000
+  ): Promise<JellyfinEnhancedReview[] | null> {
+    const reviews: JellyfinEnhancedReview[] = [];
+    let offset = 0;
+    while (true) {
+      let page: unknown;
+      try {
+        page = await this.request<unknown>(
+          "get",
+          "/JellyfinEnhanced/reviews/admin/all",
+          { params: { limit: pageSize, offset }, retries: offset === 0 ? 0 : undefined }
+        );
+      } catch (error) {
+        // Absent plugin (404) or a non-admin key (401/403) is not a failure:
+        // ratings from this source are simply unavailable on this server.
+        const status = axios.isAxiosError(error) ? error.response?.status : undefined;
+        if (offset === 0 && (status === 404 || status === 401 || status === 403)) {
+          return null;
+        }
+        throw error;
+      }
+      const parsed = parseJellyfinEnhancedReviewPage(page);
+      if (!parsed) {
+        if (offset === 0) return null;
+        throw new Error("Unexpected Jellyfin Enhanced reviews response");
+      }
+      reviews.push(...parsed.reviews);
+      // Advance by raw entries: text-only reviews are filtered out of
+      // `parsed.reviews` but still occupy their place in the API's paging.
+      offset += parsed.pageSize;
+      if (parsed.pageSize === 0 || offset >= parsed.total) break;
+    }
+    return reviews;
+  }
+
+  /**
+   * The media source an item plays by default (its first), with its streams.
+   * External subtitle files (e.g. a subtitle downloader's sidecars) appear here alongside
+   * embedded tracks.
+   */
+  async getPrimaryMediaSource(
+    itemId: string
+  ): Promise<{ id: string; streams: unknown[] } | null> {
+    // The item query, not /Items/{id}: with a server API key and no user,
+    // Jellyfin 10.11 answers /Items/{id} with 400.
+    const page = await this.request<{ Items?: Array<{ MediaSources?: unknown[] }> }>(
+      "get",
+      "/Items",
+      { params: { ids: itemId, fields: "MediaSources", enableImages: false } }
+    );
+    const source = page.Items?.[0]?.MediaSources?.[0];
+    if (!isRecord(source) || typeof source.Id !== "string") return null;
+    return {
+      id: source.Id,
+      streams: Array.isArray(source.MediaStreams) ? source.MediaStreams : [],
+    };
+  }
+
+  /**
+   * The server's metadata language under every code a stream may carry it
+   * ("en" -> ["en", "eng"], "de" -> ["de", "deu", "ger"]). English when none
+   * is set.
+   */
+  async getMetadataLanguageCodes(): Promise<string[]> {
+    const config = await this.request<{ PreferredMetadataLanguage?: string }>(
+      "get",
+      "/System/Configuration"
+    );
+    const language = config.PreferredMetadataLanguage?.toLowerCase().split("-")[0];
+    if (!language) return ["en", "eng"];
+    const cultures = await this.request<
+      Array<{ TwoLetterISOLanguageName?: string; ThreeLetterISOLanguageNames?: string[] }>
+    >("get", "/Localization/Cultures");
+    const culture = cultures.find(
+      (c) => c.TwoLetterISOLanguageName?.toLowerCase() === language
+    );
+    return [language, ...(culture?.ThreeLetterISOLanguageNames ?? []).map((c) => c.toLowerCase())];
+  }
+
+  /** A text subtitle stream converted to SRT by Jellyfin. */
+  async getSubtitleSrt(
+    itemId: string,
+    mediaSourceId: string,
+    streamIndex: number
+  ): Promise<string> {
+    return this.request<string>(
+      "get",
+      `/Videos/${itemId}/${mediaSourceId}/Subtitles/${streamIndex}/Stream.srt`,
+      { responseType: "text", timeoutMs: 120_000 }
+    );
   }
 
   // Helper method to create client from server configuration
