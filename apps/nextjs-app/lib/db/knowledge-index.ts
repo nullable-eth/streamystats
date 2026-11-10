@@ -144,7 +144,8 @@ export async function getKnowledgeIndexStatus(
         count(*) FILTER (WHERE t.status <> 'ready')::int AS "noSubtitles",
         count(*) FILTER (WHERE t.status <> 'ready' AND EXISTS (
           SELECT 1 FROM knowledge_rejected_texts x
-          WHERE x.item_id = ${items.id} AND x.kind = 'transcript'))::int AS rejected,
+          WHERE x.server_id = ${items.serverId} AND x.item_id = ${items.id}
+            AND x.kind = 'transcript'))::int AS rejected,
         count(*) FILTER (WHERE t.status = 'ready' AND s.status <> 'ready' AND s.status <> 'declined'
                          AND s.checked_at > now() - interval '1 day')::int AS failed,
         count(*) FILTER (WHERE t.status = 'ready' AND s.status = 'declined')::int AS declined,
@@ -186,7 +187,13 @@ export async function getKnowledgeIndexStatus(
             year: items.productionYear,
           })
           .from(itemTexts)
-          .innerJoin(items, eq(items.id, itemTexts.itemId))
+          .innerJoin(
+            items,
+            and(
+              eq(items.serverId, itemTexts.serverId),
+              eq(items.id, itemTexts.itemId),
+            ),
+          )
           .where(
             and(
               inLibrary,

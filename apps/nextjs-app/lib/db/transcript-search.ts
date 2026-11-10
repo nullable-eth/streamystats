@@ -103,7 +103,13 @@ export async function searchTextWindows({
       db
         .select(columns)
         .from(itemTextChunks)
-        .innerJoin(items, eq(items.id, itemTextChunks.itemId))
+        .innerJoin(
+          items,
+          and(
+            eq(items.serverId, itemTextChunks.serverId),
+            eq(items.id, itemTextChunks.itemId),
+          ),
+        )
         .where(
           and(...visible, sql`${itemTextChunks.searchVector} @@ ${tsQuery}`),
         )
@@ -122,7 +128,13 @@ export async function searchTextWindows({
     return db
       .select(columns)
       .from(itemTextChunks)
-      .innerJoin(items, eq(items.id, itemTextChunks.itemId))
+      .innerJoin(
+        items,
+        and(
+          eq(items.serverId, itemTextChunks.serverId),
+          eq(items.id, itemTextChunks.itemId),
+        ),
+      )
       .where(and(...visible, dimensionFilter))
       .orderBy(asc(distance))
       .limit(pool);
@@ -155,7 +167,13 @@ export async function searchTextWindows({
       db
         .select(columns)
         .from(itemTextChunks)
-        .innerJoin(items, eq(items.id, itemTextChunks.itemId));
+        .innerJoin(
+          items,
+          and(
+            eq(items.serverId, itemTextChunks.serverId),
+            eq(items.id, itemTextChunks.itemId),
+          ),
+        );
     const asPhrase = windows()
       .where(
         and(

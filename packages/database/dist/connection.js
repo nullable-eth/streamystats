@@ -40,16 +40,17 @@ exports.closeConnection = exports.db = exports.client = exports.getDb = exports.
 const postgres_js_1 = require("drizzle-orm/postgres-js");
 const postgres_1 = __importDefault(require("postgres"));
 const dotenv = __importStar(require("dotenv"));
+const env_1 = require("./env");
 const schema = __importStar(require("./schema"));
 // Ensure environment variables are loaded
 dotenv.config({ quiet: true });
 const getDatabaseUrl = () => {
-    const databaseUrl = process.env.DATABASE_URL;
+    const databaseUrl = (0, env_1.resolveDatabaseUrl)();
     if (!databaseUrl) {
         // Important: if the connection string is missing, postgres-js falls back to
         // PG* env vars and then the OS user. In root-run containers that becomes
         // "root", leading to confusing errors like: `FATAL: role "root" does not exist`.
-        throw new Error('DATABASE_URL environment variable is missing. Set DATABASE_URL (e.g. "postgresql://postgres:postgres@host:5432/streamystats").');
+        throw new Error(env_1.MISSING_DATABASE_URL_MESSAGE);
     }
     return databaseUrl;
 };

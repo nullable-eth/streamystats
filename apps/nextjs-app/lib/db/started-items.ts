@@ -40,6 +40,7 @@ export async function getStartedItemIds({
       .from(items)
       .where(
         and(
+          eq(items.serverId, serverId),
           inArray(items.id, startedIds.slice(i, i + 5000)),
           inArray(items.type, ["Movie", "Series"]),
           isNotNull(sql`${items.providerIds}->>'Tmdb'`),

@@ -139,7 +139,7 @@ export async function rankWindowsByWords({
              item_text_chunks.text, s.complete
       FROM scored s
       JOIN item_text_chunks ON item_text_chunks.id = s.id
-      JOIN items ON items.id = item_text_chunks.item_id
+      JOIN items ON items.server_id = item_text_chunks.server_id AND items.id = item_text_chunks.item_id
       WHERE ${and(...visible)}
       ORDER BY s.score * (CASE WHEN s.complete THEN 2 ELSE 1 END) DESC, s.near DESC, item_text_chunks.id
       LIMIT ${limit}::int`),

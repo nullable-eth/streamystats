@@ -140,14 +140,24 @@ const stripEmbedding = (
 
 const RECOMMENDATION_POOL_SIZE = 500;
 
-async function getLikedSeedCards(
-  likedItemIds: string[],
-): Promise<SeriesRecommendationCardItemWithEmbedding[]> {
+async function getLikedSeedCards({
+  serverId,
+  likedItemIds,
+}: {
+  serverId: number;
+  likedItemIds: string[];
+}): Promise<SeriesRecommendationCardItemWithEmbedding[]> {
   if (likedItemIds.length === 0) return [];
   const rows = await db
     .select(itemCardWithEmbeddingSelect)
     .from(items)
-    .where(and(inArray(items.id, likedItemIds), isNotNull(items.embedding)));
+    .where(
+      and(
+        eq(items.serverId, serverId),
+        inArray(items.id, likedItemIds),
+        isNotNull(items.embedding),
+      ),
+    );
   const order = new Map(likedItemIds.map((id, index) => [id, index]));
   return rows.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
 }
@@ -159,6 +169,7 @@ async function getSeriesRecommendations(
   viewerUserId?: string,
 ): Promise<SeriesRecommendationItem[]> {
   "use cache";
+  cacheTag("user-analytics");
   cacheLife("hours");
   cacheTag(
     `series-recommendations-${serverIdNum}`,
@@ -445,7 +456,10 @@ async function getUserSpecificSeriesRecommendations(
   // when the user allows it (watched series stay excluded either way).
   const likedSeeds = [
     ...themeSeeds,
-    ...(await getLikedSeedCards(ratingSignals.likedItemIds)),
+    ...(await getLikedSeedCards({
+      serverId,
+      likedItemIds: ratingSignals.likedItemIds,
+    })),
   ];
   const likedSeedIds = new Set(likedSeeds.map((item) => item.id));
   const seedSeries: SeriesRecommendationCardItemWithEmbedding[] = [
@@ -554,6 +568,7 @@ async function getUserSpecificSeriesRecommendations(
   }
 
   const dislikeRelevance = await getDislikeRelevances({
+    serverId,
     dislikedItemIds: ratingSignals.dislikedItemIds,
     dislikedEmbeddings: profile.dislikeThemes.map((theme) => theme.embedding),
     candidateIds: [...candidateSeries.keys()],
@@ -638,6 +653,7 @@ export const getSimilarSeriesForItem = async (
   limit = 10,
 ): Promise<SeriesRecommendationItem[]> => {
   "use cache";
+  cacheTag("user-analytics");
   cacheLife("hours");
   cacheTag(
     `series-recommendations-${serverId}`,

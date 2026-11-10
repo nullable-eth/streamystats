@@ -293,7 +293,7 @@ async function prepareEpisodeTextForEmbedding(item: Item): Promise<string> {
     const series = await db
       .select({ genres: items.genres })
       .from(items)
-      .where(eq(items.id, item.seriesId))
+      .where(and(eq(items.serverId, item.serverId), eq(items.id, item.seriesId)))
       .limit(1);
     genres = series[0]?.genres ?? [];
   }
@@ -379,7 +379,7 @@ async function prepareTextForEmbedding(item: Item, serverId: number): Promise<st
           eq(itemPeople.serverId, people.serverId)
         )
       )
-      .where(eq(itemPeople.itemId, item.id))
+      .where(and(eq(itemPeople.itemId, item.id), eq(itemPeople.serverId, item.serverId)))
       .orderBy(itemPeople.sortOrder);
 
     if (itemPeopleData.length > 0) {
@@ -436,7 +436,7 @@ async function processOpenAIBatch(
     await db
       .update(items)
       .set({ processed: true })
-      .where(eq(items.id, item.id));
+      .where(and(eq(items.id, item.id), eq(items.serverId, item.serverId)));
     skipped++;
   }
 
@@ -493,7 +493,7 @@ async function processOpenAIBatch(
       await db
         .update(items)
         .set({ embedding: sql`${vectorLiteral}::vector`, processed: true })
-        .where(eq(items.id, item.id));
+        .where(and(eq(items.id, item.id), eq(items.serverId, item.serverId)));
       processed++;
     } catch (err) {
       if (!firstDbWriteError) {
@@ -527,7 +527,7 @@ async function processOllamaItem(
     await db
       .update(items)
       .set({ processed: true })
-      .where(eq(items.id, item.id));
+      .where(and(eq(items.id, item.id), eq(items.serverId, item.serverId)));
     return { processed: 0, skipped: 1, errors: 0 };
   }
 
@@ -560,7 +560,7 @@ async function processOllamaItem(
   await db
     .update(items)
     .set({ embedding: sql`${toPgVectorLiteral(embedding)}::vector`, processed: true })
-    .where(eq(items.id, item.id));
+    .where(and(eq(items.id, item.id), eq(items.serverId, item.serverId)));
   return { processed: 1, skipped: 0, errors: 0 };
 }
 
@@ -595,7 +595,7 @@ async function processVoyageBatch(
     await db
       .update(items)
       .set({ processed: true })
-      .where(eq(items.id, item.id));
+      .where(and(eq(items.id, item.id), eq(items.serverId, item.serverId)));
     skipped++;
   }
 
@@ -655,7 +655,7 @@ async function processVoyageBatch(
       await db
         .update(items)
         .set({ embedding: sql`${vectorLiteral}::vector`, processed: true })
-        .where(eq(items.id, item.id));
+        .where(and(eq(items.id, item.id), eq(items.serverId, item.serverId)));
       processed++;
     } catch (err) {
       if (!firstDbWriteError) {
@@ -705,7 +705,7 @@ async function processGeminiBatch(
     await db
       .update(items)
       .set({ processed: true })
-      .where(eq(items.id, item.id));
+      .where(and(eq(items.id, item.id), eq(items.serverId, item.serverId)));
     skipped++;
   }
 
@@ -766,7 +766,7 @@ async function processGeminiBatch(
       await db
         .update(items)
         .set({ embedding: sql`${vectorLiteral}::vector`, processed: true })
-        .where(eq(items.id, item.id));
+        .where(and(eq(items.id, item.id), eq(items.serverId, item.serverId)));
       processed++;
     } catch (err) {
       if (!firstDbWriteError) {
