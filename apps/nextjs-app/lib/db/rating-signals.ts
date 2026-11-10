@@ -38,7 +38,13 @@ export async function getUserRatingSignals({
       hasEmbedding: sql<boolean>`${items.embedding} IS NOT NULL`,
     })
     .from(userItemRatings)
-    .innerJoin(items, eq(userItemRatings.itemId, items.id))
+    .innerJoin(
+      items,
+      and(
+        eq(items.serverId, userItemRatings.serverId),
+        eq(items.id, userItemRatings.itemId),
+      ),
+    )
     .where(
       and(
         eq(userItemRatings.serverId, serverId),
@@ -75,10 +81,12 @@ export async function getUserRatingSignals({
  * index scan.
  */
 export async function getDislikeRelevances({
+  serverId,
   dislikedItemIds,
   dislikedEmbeddings = [],
   candidateIds,
 }: {
+  serverId: number;
   dislikedItemIds: string[];
   /** Extra things to steer away from, e.g. a user's "not for me" themes. */
   dislikedEmbeddings?: number[][];
@@ -98,7 +106,11 @@ export async function getDislikeRelevances({
           .select({ embedding: items.embedding })
           .from(items)
           .where(
-            and(inArray(items.id, dislikedItemIds), isNotNull(items.embedding)),
+            and(
+              eq(items.serverId, serverId),
+              inArray(items.id, dislikedItemIds),
+              isNotNull(items.embedding),
+            ),
           )
       : [];
 
@@ -111,7 +123,13 @@ export async function getDislikeRelevances({
     const rows = await db
       .select({ id: items.id, similarity: sql<number>`1 - (${distance})` })
       .from(items)
-      .where(and(inArray(items.id, candidateIds), dimensionFilter));
+      .where(
+        and(
+          eq(items.serverId, serverId),
+          inArray(items.id, candidateIds),
+          dimensionFilter,
+        ),
+      );
     const top = Math.max(0, ...rows.map((row) => Number(row.similarity)));
     for (const row of rows) {
       const relevance = relativeSimilarity(Number(row.similarity), top);

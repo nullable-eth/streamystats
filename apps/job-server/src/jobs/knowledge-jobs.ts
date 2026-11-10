@@ -197,7 +197,8 @@ async function dueItems(
   const fresh = sql`i.id <> ALL(${sql.param([...taken])}::text[])`;
   const notDeclinedByAll = sql`EXISTS (
     SELECT 1 FROM unnest(${sql.param(usable.map(modelLabel))}::text[]) AS u(label)
-    WHERE NOT EXISTS (SELECT 1 FROM knowledge_refusals kr WHERE kr.item_id = i.id AND kr.model = u.label))`;
+    WHERE NOT EXISTS (SELECT 1 FROM knowledge_refusals kr
+                      WHERE kr.server_id = i.server_id AND kr.item_id = i.id AND kr.model = u.label))`;
   const referenceDue = sql`(${withReferences} AND (r.id IS NULL
     OR r.checked_at < now() - CASE WHEN r.status = 'ready' THEN interval '90 days' ELSE interval '30 days' END))`;
   const rows = await db.execute<DueItem>(sql`
@@ -246,25 +247,37 @@ async function getText(itemId: string, kind: string): Promise<ItemText | undefin
  * Hashes of the texts of a kind the title must not use (see
  * knowledge_rejected_texts): read, but passed over.
  */
-async function rejectedOf(itemId: string, kind: "transcript" | "reference"): Promise<Set<string>> {
+async function rejectedOf(serverId: number, itemId: string, kind: "transcript" | "reference"): Promise<Set<string>> {
   const rows = await db
     .select({ contentHash: knowledgeRejectedTexts.contentHash })
     .from(knowledgeRejectedTexts)
-    .where(and(eq(knowledgeRejectedTexts.itemId, itemId), eq(knowledgeRejectedTexts.kind, kind)));
+    .where(
+      and(
+        eq(knowledgeRejectedTexts.serverId, serverId),
+        eq(knowledgeRejectedTexts.itemId, itemId),
+        eq(knowledgeRejectedTexts.kind, kind)
+      )
+    );
   return new Set(rows.map((r) => r.contentHash));
 }
 
 /** Keep a text the title must not use, so it is passed over from now on. */
-async function reject(itemId: string, kind: "transcript" | "reference", contentHash: string, reason: string) {
-  await db.insert(knowledgeRejectedTexts).values({ itemId, kind, contentHash, reason }).onConflictDoNothing();
+async function reject(
+  serverId: number,
+  itemId: string,
+  kind: "transcript" | "reference",
+  contentHash: string,
+  reason: string
+) {
+  await db.insert(knowledgeRejectedTexts).values({ serverId, itemId, kind, contentHash, reason }).onConflictDoNothing();
 }
 
 /** The models ("provider:model") that declined to write the title's notes. */
-async function refusalsOf(itemId: string): Promise<Set<string>> {
+async function refusalsOf(serverId: number, itemId: string): Promise<Set<string>> {
   const rows = await db
     .select({ model: knowledgeRefusals.model })
     .from(knowledgeRefusals)
-    .where(eq(knowledgeRefusals.itemId, itemId));
+    .where(and(eq(knowledgeRefusals.serverId, serverId), eq(knowledgeRefusals.itemId, itemId)));
   return new Set(rows.map((r) => r.model));
 }
 
@@ -296,6 +309,7 @@ async function saveText(
  * settings can say why the title has no transcript.
  */
 async function readTranscript(
+  serverId: number,
   client: JellyfinClient,
   itemId: string,
   previous: ItemText | undefined,
@@ -304,7 +318,7 @@ async function readTranscript(
   const media = await client.getPrimaryMediaSource(itemId);
   if (!media) return null;
   const candidates = rankTranscriptStreams(media.streams, media.id, languages);
-  const rejected = await rejectedOf(itemId, "transcript");
+  const rejected = await rejectedOf(serverId, itemId, "transcript");
   if (
     previous?.status === "ready" &&
     previous.cueStartsMs &&
@@ -321,7 +335,7 @@ async function readTranscript(
     const contentHash = hash(lines.join("\n"));
     if (rejected.has(contentHash)) continue;
     if (!readsAs(lines, languages)) {
-      await reject(itemId, "transcript", contentHash, "not in the library's language");
+      await reject(serverId, itemId, "transcript", contentHash, "not in the library's language");
       continue;
     }
     return { ref: candidate.ref, cues };
@@ -337,7 +351,7 @@ async function indexTranscript(
   item: DueItem
 ): Promise<Outcome> {
   const previous = await getText(item.id, "transcript");
-  const read = await readTranscript(client, item.id, previous, languages);
+  const read = await readTranscript(serverId, client, item.id, previous, languages);
 
   if (read === "unchanged") {
     await saveText(serverId, item.id, "transcript", { status: "ready" });
@@ -513,7 +527,7 @@ async function indexReferences(
     }
     const previous = await getText(item.id, "reference");
     const contentHash = hash(plot.plot);
-    if ((await rejectedOf(item.id, "reference")).has(contentHash)) {
+    if ((await rejectedOf(serverId, item.id, "reference")).has(contentHash)) {
       // Another title's plot, as found before: none, until the lists change.
       const none = await saveText(serverId, item.id, "reference", { status: "missing", source: null, content: "", contentHash: null });
       await db.delete(itemTextChunks).where(eq(itemTextChunks.itemTextId, none));
@@ -574,7 +588,7 @@ async function indexSynopsis(
 
   const title = titleOf(item);
   const saved: PlotText[] = [];
-  const refusals = await refusalsOf(item.id);
+  const refusals = await refusalsOf(serverId, item.id);
   try {
     const { scenes, synopsis, model } = await writePlotWithModels(
       writers,
@@ -592,9 +606,9 @@ async function indexSynopsis(
           console.warn(`[knowledge] serverId=${serverId} item=${item.id} declined by ${label}: ${title}: ${reason}`);
           await db
             .insert(knowledgeRefusals)
-            .values({ itemId: item.id, model: label, reason: reason.slice(0, 500) })
+            .values({ serverId, itemId: item.id, model: label, reason: reason.slice(0, 500) })
             .onConflictDoUpdate({
-              target: [knowledgeRefusals.itemId, knowledgeRefusals.model],
+              target: [knowledgeRefusals.serverId, knowledgeRefusals.itemId, knowledgeRefusals.model],
               set: { reason: reason.slice(0, 500), refusedAt: new Date() },
             });
         },
@@ -663,7 +677,7 @@ async function plotTextsWithoutWindows(serverId: number, failed: Set<number>): P
     SELECT s.id AS text_id, s.kind, s.content, i.id, i.name, i.type, i.series_name,
            i.parent_index_number, i.index_number, i.production_year, i.overview
     FROM item_texts s
-    JOIN items i ON i.id = s.item_id
+    JOIN items i ON i.server_id = s.server_id AND i.id = s.item_id
     WHERE s.server_id = ${serverId}
       AND s.kind IN ('synopsis', 'scenes', 'reference')
       AND s.status = 'ready'

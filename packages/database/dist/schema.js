@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.itemPeopleRelations = exports.peopleRelations = exports.watchlistItemsRelations = exports.watchlistsRelations = exports.hiddenRecommendationsRelations = exports.anomalyEventsRelations = exports.userFingerprintsRelations = exports.activityLocationsRelations = exports.sessionsRelations = exports.itemsRelations = exports.activitiesRelations = exports.usersRelations = exports.librariesRelations = exports.serverJobConfigurationsRelations = exports.serversRelations = exports.watchlistItems = exports.watchlists = exports.itemPeople = exports.people = exports.anomalyEvents = exports.userFingerprints = exports.activityLocations = exports.userItemRatings = exports.userRecommendationProfiles = exports.hiddenRecommendations = exports.activityLogCursors = exports.activeSessions = exports.sessions = exports.itemTextCommonTerms = exports.itemTextChunks = exports.knowledgeRejectedTexts = exports.knowledgeRefusals = exports.knowledgeModels = exports.itemTexts = exports.mediaSources = exports.items = exports.serverJobConfigurations = exports.jobResults = exports.activities = exports.users = exports.libraries = exports.servers = void 0;
+exports.itemPeopleRelations = exports.peopleRelations = exports.watchlistItemsRelations = exports.watchlistsRelations = exports.hiddenRecommendationsRelations = exports.anomalyEventsRelations = exports.userFingerprintsRelations = exports.activityLocationsRelations = exports.sessionsRelations = exports.itemsRelations = exports.activitiesRelations = exports.usersRelations = exports.librariesRelations = exports.serverJobConfigurationsRelations = exports.serversRelations = exports.watchlistItems = exports.watchlists = exports.itemPeople = exports.people = exports.anomalyEvents = exports.userFingerprints = exports.activityLocations = exports.userItemRatings = exports.userRecommendationProfiles = exports.hiddenRecommendations = exports.activityLogCursors = exports.activeSessions = exports.sessions = exports.itemTextCommonTerms = exports.itemTextChunks = exports.knowledgeRejectedTexts = exports.knowledgeRefusals = exports.knowledgeModels = exports.itemTexts = exports.mediaSources = exports.items = exports.serverJobConfigurations = exports.jobResults = exports.activities = exports.userMergeAudit = exports.userMerges = exports.users = exports.libraries = exports.servers = void 0;
 const pg_core_1 = require("drizzle-orm/pg-core");
 const drizzle_orm_1 = require("drizzle-orm");
 // Custom vector type that supports variable dimensions
@@ -125,7 +125,7 @@ exports.servers = (0, pg_core_1.pgTable)("servers", {
     updatedAt: (0, pg_core_1.timestamp)("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [(0, pg_core_1.unique)("servers_url_unique").on(table.url)]);
 exports.libraries = (0, pg_core_1.pgTable)("libraries", {
-    id: (0, pg_core_1.text)("id").primaryKey(), // External library ID from server
+    id: (0, pg_core_1.text)("id").notNull(), // External library ID from server
     name: (0, pg_core_1.text)("name").notNull(),
     type: (0, pg_core_1.text)("type").notNull(), // Movie, TV, Music, etc.
     serverId: (0, pg_core_1.integer)("server_id")
@@ -134,6 +134,7 @@ exports.libraries = (0, pg_core_1.pgTable)("libraries", {
     createdAt: (0, pg_core_1.timestamp)("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: (0, pg_core_1.timestamp)("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
+    (0, pg_core_1.primaryKey)({ columns: [table.serverId, table.id] }),
     (0, pg_core_1.index)("libraries_server_id_idx").on(table.serverId),
 ]);
 // Users table - users from various servers
@@ -227,9 +228,35 @@ exports.users = (0, pg_core_1.pgTable)("users", {
     searchVector: tsvector("search_vector"),
 }, (table) => [
     (0, pg_core_1.index)("users_server_id_idx").on(table.serverId),
+    (0, pg_core_1.unique)("users_server_id_id_unique").on(table.serverId, table.id),
     (0, pg_core_1.index)("users_search_vector_idx").using("gin", table.searchVector),
 ]);
 // Activities table - user activities and server events
+// Retired external IDs remain mapped so sync/import cannot recreate an account.
+exports.userMerges = (0, pg_core_1.pgTable)("user_merges", {
+    serverId: (0, pg_core_1.integer)("server_id").notNull().references(() => exports.servers.id, { onDelete: "cascade" }),
+    sourceUserId: (0, pg_core_1.text)("source_user_id").notNull(),
+    sourceName: (0, pg_core_1.text)("source_name").notNull(),
+    targetUserId: (0, pg_core_1.text)("target_user_id").notNull(),
+    createdAt: (0, pg_core_1.timestamp)("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+    (0, pg_core_1.primaryKey)({ columns: [table.serverId, table.sourceUserId] }),
+    (0, pg_core_1.foreignKey)({ columns: [table.serverId, table.targetUserId], foreignColumns: [exports.users.serverId, exports.users.id], name: "user_merges_target_fk" }).onDelete("cascade"),
+]);
+exports.userMergeAudit = (0, pg_core_1.pgTable)("user_merge_audit", {
+    id: (0, pg_core_1.serial)("id").primaryKey(),
+    serverId: (0, pg_core_1.integer)("server_id").notNull().references(() => exports.servers.id, { onDelete: "cascade" }),
+    operationId: (0, pg_core_1.text)("operation_id").notNull(),
+    actorId: (0, pg_core_1.text)("actor_id").notNull(),
+    actorName: (0, pg_core_1.text)("actor_name").notNull(),
+    requestHash: (0, pg_core_1.text)("request_hash").notNull(),
+    sourceUserId: (0, pg_core_1.text)("source_user_id").notNull(),
+    sourceName: (0, pg_core_1.text)("source_name").notNull(),
+    targetUserId: (0, pg_core_1.text)("target_user_id").notNull(),
+    targetName: (0, pg_core_1.text)("target_name").notNull(),
+    transferred: (0, pg_core_1.jsonb)("transferred").$type().notNull(),
+    createdAt: (0, pg_core_1.timestamp)("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [(0, pg_core_1.unique)("user_merge_audit_operation_unique").on(table.serverId, table.operationId)]);
 exports.activities = (0, pg_core_1.pgTable)("activities", {
     id: (0, pg_core_1.text)("id").primaryKey(), // External activity ID from server
     name: (0, pg_core_1.text)("name").notNull(),
@@ -284,13 +311,11 @@ exports.serverJobConfigurations = (0, pg_core_1.pgTable)("server_job_configurati
 // Items table - media items within servers
 exports.items = (0, pg_core_1.pgTable)("items", {
     // Primary key and relationships
-    id: (0, pg_core_1.text)("id").primaryKey(),
+    id: (0, pg_core_1.text)("id").notNull(),
     serverId: (0, pg_core_1.integer)("server_id")
         .notNull()
         .references(() => exports.servers.id, { onDelete: "cascade" }),
-    libraryId: (0, pg_core_1.text)("library_id")
-        .notNull()
-        .references(() => exports.libraries.id, { onDelete: "cascade" }),
+    libraryId: (0, pg_core_1.text)("library_id").notNull(),
     // Core metadata fields
     name: (0, pg_core_1.text)("name").notNull(),
     type: (0, pg_core_1.text)("type").notNull(), // Movie, Episode, Series, etc.
@@ -373,17 +398,24 @@ exports.items = (0, pg_core_1.pgTable)("items", {
 // CREATE INDEX items_embedding_idx ON items USING hnsw ((embedding::vector(N)) vector_cosine_ops)
 // WHERE vector_dims(embedding) = N;
 (table) => [
+    (0, pg_core_1.foreignKey)({
+        name: "items_libraries_server_fk",
+        columns: [table.serverId, table.libraryId],
+        foreignColumns: [exports.libraries.serverId, exports.libraries.id],
+    }).onDelete("cascade"),
+    (0, pg_core_1.primaryKey)({ columns: [table.serverId, table.id] }),
     (0, pg_core_1.index)("items_server_type_idx").on(table.serverId, table.type),
+    // Lookups by Jellyfin id alone (much of the knowledge index) lost the old
+    // primary key's index when it became (server_id, id).
+    (0, pg_core_1.index)("items_id_idx").on(table.id),
     (0, pg_core_1.index)("items_series_id_idx").on(table.seriesId),
     (0, pg_core_1.index)("items_library_id_idx").on(table.libraryId),
     (0, pg_core_1.index)("items_search_vector_idx").using("gin", table.searchVector),
 ]);
 // Media sources table - file information for items (size, bitrate, etc.)
 exports.mediaSources = (0, pg_core_1.pgTable)("media_sources", {
-    id: (0, pg_core_1.text)("id").primaryKey(), // MediaSource ID from Jellyfin
-    itemId: (0, pg_core_1.text)("item_id")
-        .notNull()
-        .references(() => exports.items.id, { onDelete: "cascade" }),
+    id: (0, pg_core_1.text)("id").notNull(), // MediaSource ID from Jellyfin
+    itemId: (0, pg_core_1.text)("item_id").notNull(),
     serverId: (0, pg_core_1.integer)("server_id")
         .notNull()
         .references(() => exports.servers.id, { onDelete: "cascade" }),
@@ -400,6 +432,12 @@ exports.mediaSources = (0, pg_core_1.pgTable)("media_sources", {
     createdAt: (0, pg_core_1.timestamp)("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: (0, pg_core_1.timestamp)("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
+    (0, pg_core_1.foreignKey)({
+        name: "media_sources_items_server_fk",
+        columns: [table.serverId, table.itemId],
+        foreignColumns: [exports.items.serverId, exports.items.id],
+    }).onDelete("cascade"),
+    (0, pg_core_1.primaryKey)({ columns: [table.serverId, table.id] }),
     (0, pg_core_1.index)("media_sources_item_id_idx").on(table.itemId),
     (0, pg_core_1.index)("media_sources_server_id_idx").on(table.serverId),
 ]);
@@ -414,9 +452,7 @@ exports.itemTexts = (0, pg_core_1.pgTable)("item_texts", {
     serverId: (0, pg_core_1.integer)("server_id")
         .notNull()
         .references(() => exports.servers.id, { onDelete: "cascade" }),
-    itemId: (0, pg_core_1.text)("item_id")
-        .notNull()
-        .references(() => exports.items.id, { onDelete: "cascade" }),
+    itemId: (0, pg_core_1.text)("item_id").notNull(),
     kind: (0, pg_core_1.text)("kind").notNull(), // "transcript" | "scenes" | "synopsis" | "reference"
     // "ready" | "missing"; scenes also "wanted" (asked to be written next) and
     // "declined" (every model tried refused it: see knowledge_refusals)
@@ -437,6 +473,11 @@ exports.itemTexts = (0, pg_core_1.pgTable)("item_texts", {
     checkedAt: (0, pg_core_1.timestamp)("checked_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: (0, pg_core_1.timestamp)("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
+    (0, pg_core_1.foreignKey)({
+        name: "item_texts_items_server_fk",
+        columns: [table.serverId, table.itemId],
+        foreignColumns: [exports.items.serverId, exports.items.id],
+    }).onDelete("cascade"),
     (0, pg_core_1.unique)("item_texts_item_kind_unique").on(table.itemId, table.kind),
     (0, pg_core_1.index)("item_texts_server_kind_idx").on(table.serverId, table.kind),
 ]);
@@ -471,31 +512,49 @@ exports.knowledgeModels = (0, pg_core_1.pgTable)("knowledge_models", {
 // refused it (a usage-policy block, say). The title is not sent to that model
 // again; any other model may still write it.
 exports.knowledgeRefusals = (0, pg_core_1.pgTable)("knowledge_refusals", {
-    itemId: (0, pg_core_1.text)("item_id")
+    serverId: (0, pg_core_1.integer)("server_id")
         .notNull()
-        .references(() => exports.items.id, { onDelete: "cascade" }),
+        .references(() => exports.servers.id, { onDelete: "cascade" }),
+    itemId: (0, pg_core_1.text)("item_id").notNull(),
     // The model, as written_by names it ("provider:model").
     model: (0, pg_core_1.text)("model").notNull(),
     // What the provider said, shortened.
     reason: (0, pg_core_1.text)("reason"),
     refusedAt: (0, pg_core_1.timestamp)("refused_at", { withTimezone: true }).defaultNow().notNull(),
-}, (table) => [(0, pg_core_1.primaryKey)({ columns: [table.itemId, table.model] })]);
+}, (table) => [
+    (0, pg_core_1.foreignKey)({
+        name: "knowledge_refusals_items_server_fk",
+        columns: [table.serverId, table.itemId],
+        foreignColumns: [exports.items.serverId, exports.items.id],
+    }).onDelete("cascade"),
+    (0, pg_core_1.primaryKey)({ columns: [table.serverId, table.itemId, table.model] }),
+]);
 // Texts the knowledge index must not use for a title: a subtitle track that
 // isn't the title's (another episode's, in another language, only part of
 // the dialogue) or a Wikipedia plot of another title, kept by the hash of the
 // text as read. A track or plot with the same text is passed over and the
 // next one tried; a new download with other text is read as usual.
 exports.knowledgeRejectedTexts = (0, pg_core_1.pgTable)("knowledge_rejected_texts", {
-    itemId: (0, pg_core_1.text)("item_id")
+    serverId: (0, pg_core_1.integer)("server_id")
         .notNull()
-        .references(() => exports.items.id, { onDelete: "cascade" }),
+        .references(() => exports.servers.id, { onDelete: "cascade" }),
+    itemId: (0, pg_core_1.text)("item_id").notNull(),
     // "transcript" | "reference"
     kind: (0, pg_core_1.text)("kind").notNull(),
     contentHash: (0, pg_core_1.text)("content_hash").notNull(),
     // Why, in a few words: "another title", "not in the library's language", "part of the dialogue".
     reason: (0, pg_core_1.text)("reason"),
     rejectedAt: (0, pg_core_1.timestamp)("rejected_at", { withTimezone: true }).defaultNow().notNull(),
-}, (table) => [(0, pg_core_1.primaryKey)({ columns: [table.itemId, table.kind, table.contentHash] })]);
+}, (table) => [
+    (0, pg_core_1.foreignKey)({
+        name: "knowledge_rejected_texts_items_server_fk",
+        columns: [table.serverId, table.itemId],
+        foreignColumns: [exports.items.serverId, exports.items.id],
+    }).onDelete("cascade"),
+    (0, pg_core_1.primaryKey)({
+        columns: [table.serverId, table.itemId, table.kind, table.contentHash],
+    }),
+]);
 // Searchable windows of an item's texts, each with an embedding (HNSW index
 // created per dimension at runtime, as for items.embedding) and a generated
 // tsvector for exact-wording search. Transcript windows are up to two
@@ -511,9 +570,7 @@ exports.itemTextChunks = (0, pg_core_1.pgTable)("item_text_chunks", {
     serverId: (0, pg_core_1.integer)("server_id")
         .notNull()
         .references(() => exports.servers.id, { onDelete: "cascade" }),
-    itemId: (0, pg_core_1.text)("item_id")
-        .notNull()
-        .references(() => exports.items.id, { onDelete: "cascade" }),
+    itemId: (0, pg_core_1.text)("item_id").notNull(),
     kind: (0, pg_core_1.text)("kind").notNull().default("transcript"), // "transcript" | "synopsis" | "reference"
     startMs: (0, pg_core_1.integer)("start_ms"),
     endMs: (0, pg_core_1.integer)("end_ms"),
@@ -521,6 +578,11 @@ exports.itemTextChunks = (0, pg_core_1.pgTable)("item_text_chunks", {
     embedding: vector("embedding"),
     searchVector: tsvector("search_vector").generatedAlwaysAs((0, drizzle_orm_1.sql) `to_tsvector('english', text)`),
 }, (table) => [
+    (0, pg_core_1.foreignKey)({
+        name: "item_text_chunks_items_server_fk",
+        columns: [table.serverId, table.itemId],
+        foreignColumns: [exports.items.serverId, exports.items.id],
+    }).onDelete("cascade"),
     (0, pg_core_1.index)("item_text_chunks_item_idx").on(table.itemId),
     // Windows are replaced per text: keeps those deletes (and cascades) cheap.
     (0, pg_core_1.index)("item_text_chunks_text_idx").on(table.itemTextId),
@@ -553,9 +615,7 @@ exports.sessions = (0, pg_core_1.pgTable)("sessions", {
     userId: (0, pg_core_1.text)("user_id").references(() => exports.users.id, {
         onDelete: "set null",
     }),
-    itemId: (0, pg_core_1.text)("item_id").references(() => exports.items.id, {
-        onDelete: "set null",
-    }),
+    itemId: (0, pg_core_1.text)("item_id"),
     // User information
     userName: (0, pg_core_1.text)("user_name").notNull(),
     userServerId: (0, pg_core_1.text)("user_server_id"), // User ID from Jellyfin server
@@ -627,6 +687,12 @@ exports.sessions = (0, pg_core_1.pgTable)("sessions", {
     createdAt: (0, pg_core_1.timestamp)("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: (0, pg_core_1.timestamp)("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
+    // Migration limits SET NULL to item_id, preserving the session server.
+    (0, pg_core_1.foreignKey)({
+        name: "sessions_items_server_fk",
+        columns: [table.serverId, table.itemId],
+        foreignColumns: [exports.items.serverId, exports.items.id],
+    }).onDelete("set null"),
     // Performance indexes for common query patterns
     (0, pg_core_1.index)("sessions_server_user_idx").on(table.serverId, table.userId),
     (0, pg_core_1.index)("sessions_server_item_idx").on(table.serverId, table.itemId),
@@ -665,11 +731,14 @@ exports.hiddenRecommendations = (0, pg_core_1.pgTable)("hidden_recommendations",
         .references(() => exports.servers.id, { onDelete: "cascade" })
         .notNull(),
     userId: (0, pg_core_1.text)("user_id").notNull(), // Jellyfin user ID
-    itemId: (0, pg_core_1.text)("item_id")
-        .references(() => exports.items.id, { onDelete: "cascade" })
-        .notNull(),
+    itemId: (0, pg_core_1.text)("item_id").notNull(),
     createdAt: (0, pg_core_1.timestamp)("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
+    (0, pg_core_1.foreignKey)({
+        name: "hidden_recommendations_items_server_fk",
+        columns: [table.serverId, table.itemId],
+        foreignColumns: [exports.items.serverId, exports.items.id],
+    }).onDelete("cascade"),
     (0, pg_core_1.index)("hidden_recommendations_server_user_idx").on(table.serverId, table.userId),
 ]);
 // How each user wants their recommendations steered. Themes are embedded with
@@ -708,7 +777,7 @@ exports.userItemRatings = (0, pg_core_1.pgTable)("user_item_ratings", {
     userId: (0, pg_core_1.text)("user_id").notNull(), // Jellyfin user ID
     // Null when the rated title is not (or no longer) in the library; kept so
     // it matches as soon as the item is added.
-    itemId: (0, pg_core_1.text)("item_id").references(() => exports.items.id, { onDelete: "set null" }),
+    itemId: (0, pg_core_1.text)("item_id"),
     // "jellyfin-enhanced" (plugin star reviews) or "jellyfin" (likes/favorites)
     source: (0, pg_core_1.text)("source").notNull(),
     // Stable key within the source: "movie:603" / "tv:1418:s4:e12" for
@@ -719,6 +788,12 @@ exports.userItemRatings = (0, pg_core_1.pgTable)("user_item_ratings", {
     ratedAt: (0, pg_core_1.timestamp)("rated_at", { withTimezone: true }),
     createdAt: (0, pg_core_1.timestamp)("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
+    // Migration limits SET NULL to item_id, preserving the rating's server.
+    (0, pg_core_1.foreignKey)({
+        name: "user_item_ratings_items_server_fk",
+        columns: [table.serverId, table.itemId],
+        foreignColumns: [exports.items.serverId, exports.items.id],
+    }).onDelete("set null"),
     (0, pg_core_1.unique)("user_item_ratings_unique").on(table.serverId, table.userId, table.source, table.sourceKey),
     (0, pg_core_1.index)("user_item_ratings_server_user_rating_idx").on(table.serverId, table.userId, table.rating),
     (0, pg_core_1.index)("user_item_ratings_item_idx").on(table.itemId),
@@ -834,9 +909,7 @@ exports.people = (0, pg_core_1.pgTable)("people", {
 // (e.g., Clint Eastwood can be Actor in one movie and Director in another)
 exports.itemPeople = (0, pg_core_1.pgTable)("item_people", {
     id: (0, pg_core_1.serial)("id").primaryKey(),
-    itemId: (0, pg_core_1.text)("item_id")
-        .notNull()
-        .references(() => exports.items.id, { onDelete: "cascade" }),
+    itemId: (0, pg_core_1.text)("item_id").notNull(),
     personId: (0, pg_core_1.text)("person_id").notNull(),
     serverId: (0, pg_core_1.integer)("server_id")
         .notNull()
@@ -846,8 +919,13 @@ exports.itemPeople = (0, pg_core_1.pgTable)("item_people", {
     sortOrder: (0, pg_core_1.integer)("sort_order"),
     createdAt: (0, pg_core_1.timestamp)("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
+    (0, pg_core_1.foreignKey)({
+        name: "item_people_items_server_fk",
+        columns: [table.serverId, table.itemId],
+        foreignColumns: [exports.items.serverId, exports.items.id],
+    }).onDelete("cascade"),
     // Unique per item+person+type (same person can be Actor AND Director in same item)
-    (0, pg_core_1.unique)("item_people_unique").on(table.itemId, table.personId, table.type),
+    (0, pg_core_1.unique)("item_people_unique").on(table.serverId, table.itemId, table.personId, table.type),
     (0, pg_core_1.index)("item_people_person_idx").on(table.personId, table.serverId),
     (0, pg_core_1.index)("item_people_item_idx").on(table.itemId),
     (0, pg_core_1.index)("item_people_type_idx").on(table.serverId, table.type),
@@ -870,6 +948,7 @@ exports.watchlists = (0, pg_core_1.pgTable)("watchlists", {
     // Full-text search vector - populated by database trigger
     searchVector: tsvector("search_vector"),
 }, (table) => [
+    (0, pg_core_1.unique)("watchlists_server_id_id_unique").on(table.serverId, table.id),
     (0, pg_core_1.index)("watchlists_server_user_idx").on(table.serverId, table.userId),
     (0, pg_core_1.index)("watchlists_server_public_idx").on(table.serverId, table.isPublic),
     (0, pg_core_1.index)("watchlists_server_promoted_idx").on(table.serverId, table.isPromoted),
@@ -878,15 +957,22 @@ exports.watchlists = (0, pg_core_1.pgTable)("watchlists", {
 // Watchlist items junction table - items within watchlists
 exports.watchlistItems = (0, pg_core_1.pgTable)("watchlist_items", {
     id: (0, pg_core_1.serial)("id").primaryKey(),
-    watchlistId: (0, pg_core_1.integer)("watchlist_id")
-        .notNull()
-        .references(() => exports.watchlists.id, { onDelete: "cascade" }),
-    itemId: (0, pg_core_1.text)("item_id")
-        .notNull()
-        .references(() => exports.items.id, { onDelete: "cascade" }),
+    serverId: (0, pg_core_1.integer)("server_id").notNull(),
+    watchlistId: (0, pg_core_1.integer)("watchlist_id").notNull(),
+    itemId: (0, pg_core_1.text)("item_id").notNull(),
     position: (0, pg_core_1.integer)("position").notNull().default(0), // For custom ordering
     addedAt: (0, pg_core_1.timestamp)("added_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
+    (0, pg_core_1.foreignKey)({
+        name: "watchlist_items_watchlist_server_fk",
+        columns: [table.serverId, table.watchlistId],
+        foreignColumns: [exports.watchlists.serverId, exports.watchlists.id],
+    }).onDelete("cascade"),
+    (0, pg_core_1.foreignKey)({
+        name: "watchlist_items_items_server_fk",
+        columns: [table.serverId, table.itemId],
+        foreignColumns: [exports.items.serverId, exports.items.id],
+    }).onDelete("cascade"),
     (0, pg_core_1.index)("watchlist_items_watchlist_idx").on(table.watchlistId),
     (0, pg_core_1.index)("watchlist_items_item_idx").on(table.itemId),
     (0, pg_core_1.unique)("watchlist_items_unique").on(table.watchlistId, table.itemId),
@@ -947,12 +1033,12 @@ exports.itemsRelations = (0, drizzle_orm_2.relations)(exports.items, ({ one, man
         references: [exports.servers.id],
     }),
     library: one(exports.libraries, {
-        fields: [exports.items.libraryId],
-        references: [exports.libraries.id],
+        fields: [exports.items.serverId, exports.items.libraryId],
+        references: [exports.libraries.serverId, exports.libraries.id],
     }),
     parent: one(exports.items, {
-        fields: [exports.items.parentId],
-        references: [exports.items.id],
+        fields: [exports.items.serverId, exports.items.parentId],
+        references: [exports.items.serverId, exports.items.id],
     }),
     sessions: many(exports.sessions),
     hiddenRecommendations: many(exports.hiddenRecommendations),
@@ -969,8 +1055,8 @@ exports.sessionsRelations = (0, drizzle_orm_2.relations)(exports.sessions, ({ on
         references: [exports.users.id],
     }),
     item: one(exports.items, {
-        fields: [exports.sessions.itemId],
-        references: [exports.items.id],
+        fields: [exports.sessions.serverId, exports.sessions.itemId],
+        references: [exports.items.serverId, exports.items.id],
     }),
 }));
 exports.activityLocationsRelations = (0, drizzle_orm_2.relations)(exports.activityLocations, ({ one }) => ({
@@ -1009,8 +1095,8 @@ exports.hiddenRecommendationsRelations = (0, drizzle_orm_2.relations)(exports.hi
         references: [exports.servers.id],
     }),
     item: one(exports.items, {
-        fields: [exports.hiddenRecommendations.itemId],
-        references: [exports.items.id],
+        fields: [exports.hiddenRecommendations.serverId, exports.hiddenRecommendations.itemId],
+        references: [exports.items.serverId, exports.items.id],
     }),
 }));
 exports.watchlistsRelations = (0, drizzle_orm_2.relations)(exports.watchlists, ({ one, many }) => ({
@@ -1022,12 +1108,12 @@ exports.watchlistsRelations = (0, drizzle_orm_2.relations)(exports.watchlists, (
 }));
 exports.watchlistItemsRelations = (0, drizzle_orm_2.relations)(exports.watchlistItems, ({ one }) => ({
     watchlist: one(exports.watchlists, {
-        fields: [exports.watchlistItems.watchlistId],
-        references: [exports.watchlists.id],
+        fields: [exports.watchlistItems.serverId, exports.watchlistItems.watchlistId],
+        references: [exports.watchlists.serverId, exports.watchlists.id],
     }),
     item: one(exports.items, {
-        fields: [exports.watchlistItems.itemId],
-        references: [exports.items.id],
+        fields: [exports.watchlistItems.serverId, exports.watchlistItems.itemId],
+        references: [exports.items.serverId, exports.items.id],
     }),
 }));
 exports.peopleRelations = (0, drizzle_orm_2.relations)(exports.people, ({ one, many }) => ({
@@ -1039,8 +1125,8 @@ exports.peopleRelations = (0, drizzle_orm_2.relations)(exports.people, ({ one, m
 }));
 exports.itemPeopleRelations = (0, drizzle_orm_2.relations)(exports.itemPeople, ({ one }) => ({
     item: one(exports.items, {
-        fields: [exports.itemPeople.itemId],
-        references: [exports.items.id],
+        fields: [exports.itemPeople.serverId, exports.itemPeople.itemId],
+        references: [exports.items.serverId, exports.items.id],
     }),
     person: one(exports.people, {
         fields: [exports.itemPeople.personId, exports.itemPeople.serverId],

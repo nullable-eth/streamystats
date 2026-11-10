@@ -87,7 +87,10 @@ export async function getRatedItems({
       },
     })
     .from(perItem)
-    .innerJoin(items, eq(perItem.itemId, items.id))
+    .innerJoin(
+      items,
+      and(eq(items.serverId, serverId), eq(items.id, perItem.itemId)),
+    )
     .where(
       and(
         isNull(items.deletedAt),

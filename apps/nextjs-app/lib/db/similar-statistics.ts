@@ -135,14 +135,24 @@ const stripEmbedding = (
 
 const RECOMMENDATION_POOL_SIZE = 500;
 
-async function getLikedSeedCards(
-  likedItemIds: string[],
-): Promise<RecommendationCardItemWithEmbedding[]> {
+async function getLikedSeedCards({
+  serverId,
+  likedItemIds,
+}: {
+  serverId: number;
+  likedItemIds: string[];
+}): Promise<RecommendationCardItemWithEmbedding[]> {
   if (likedItemIds.length === 0) return [];
   const rows = await db
     .select(itemCardWithEmbeddingSelect)
     .from(items)
-    .where(and(inArray(items.id, likedItemIds), isNotNull(items.embedding)));
+    .where(
+      and(
+        eq(items.serverId, serverId),
+        inArray(items.id, likedItemIds),
+        isNotNull(items.embedding),
+      ),
+    );
   const order = new Map(likedItemIds.map((id, index) => [id, index]));
   return rows.sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
 }
@@ -155,6 +165,7 @@ async function getRecommendations(
   viewerUserId?: string,
 ): Promise<RecommendationItem[]> {
   "use cache";
+  cacheTag("user-analytics");
   cacheLife("hours");
   cacheTag(
     `recommendations-${serverIdNum}`,
@@ -272,7 +283,10 @@ async function getUserSpecificRecommendations(
       ),
     })
     .from(sessions)
-    .innerJoin(items, eq(sessions.itemId, items.id))
+    .innerJoin(
+      items,
+      and(eq(sessions.itemId, items.id), eq(sessions.serverId, items.serverId)),
+    )
     .where(
       and(
         eq(sessions.serverId, serverId),
@@ -283,7 +297,7 @@ async function getUserSpecificRecommendations(
         ...sessionTimeConditions,
       ),
     )
-    .groupBy(sessions.itemId, items.id)
+    .groupBy(sessions.itemId, items.serverId, items.id)
     .having(sql`MAX(${sessions.percentComplete}) > 50`)
     .orderBy(sql`MAX(${sessions.endTime}) DESC`);
 
@@ -368,7 +382,10 @@ async function getUserSpecificRecommendations(
       ),
     })
     .from(sessions)
-    .innerJoin(items, eq(sessions.itemId, items.id))
+    .innerJoin(
+      items,
+      and(eq(sessions.itemId, items.id), eq(sessions.serverId, items.serverId)),
+    )
     .where(
       and(
         eq(sessions.serverId, serverId),
@@ -379,7 +396,7 @@ async function getUserSpecificRecommendations(
         ...sessionTimeConditions,
       ),
     )
-    .groupBy(sessions.itemId, items.id)
+    .groupBy(sessions.itemId, items.serverId, items.id)
     .having(sql`MAX(${sessions.percentComplete}) > 50`)
     .orderBy(desc(sql<number>`SUM(${sessions.playDuration})`))
     .limit(10);
@@ -405,7 +422,10 @@ async function getUserSpecificRecommendations(
   // episode's own content, not on the series as a whole.
   // The user's own stated interests lead, then their ratings; watch history
   // only seeds when they allow it (shared viewing is not always their taste).
-  const likedSeeds = await getLikedSeedCards(ratingSignals.likedItemIds);
+  const likedSeeds = await getLikedSeedCards({
+    serverId,
+    likedItemIds: ratingSignals.likedItemIds,
+  });
   const likedSeedIds = new Set([
     ...themeSeeds.map((seed) => seed.id),
     ...likedSeeds.map((item) => item.id),
@@ -536,6 +556,7 @@ async function getUserSpecificRecommendations(
   }
 
   const dislikeRelevance = await getDislikeRelevances({
+    serverId,
     dislikedItemIds: ratingSignals.dislikedItemIds,
     dislikedEmbeddings: profile.dislikeThemes.map((theme) => theme.embedding),
     candidateIds: [...candidateItems.keys()],
@@ -675,6 +696,7 @@ export const getSimilarItemsForItem = async (
   limit = 10,
 ): Promise<RecommendationItem[]> => {
   "use cache";
+  cacheTag("user-analytics");
   cacheLife("hours");
   cacheTag(`recommendations-${serverId}`, `recommendations-item-${itemId}`);
 
